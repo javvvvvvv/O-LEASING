@@ -1,0 +1,15 @@
+streamlit==1.59.0
+pandas==2.2.3
+numpy==1.26.4
+numpy_financial==1.0.0
+python-dateutil==2.9.0.post0
+plotly==5.24.1
+reportlab==4.2.5
+Pillow==10.4.0
+python-pptx==1.0.2
+openpyxl==3.1.5
+matplotlib==3.9.2
+pywebview==5.3.2
+streamlit-desktop-app==0.3.4
+pyinstaller==6.11.1
+pyzipper==0.3.6

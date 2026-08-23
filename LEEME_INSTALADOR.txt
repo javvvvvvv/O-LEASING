@@ -1,0 +1,81 @@
+Cómo convertir esto en una app instalable de Windows
+------------------------------------------------------------
+
+Vas a terminar con un archivo "ERP_Leasing_Pro_Setup.exe" que cualquier
+cliente puede descargar y ejecutar como instala cualquier programa: elige
+la carpeta, se crea el acceso directo en el Escritorio y en el Menú
+Inicio, y queda registrado en "Agregar o quitar programas" con su propio
+desinstalador.
+
+Ya no hace falta que el cliente instale Python, ni que abra una consola,
+ni que sepa qué es Streamlit. Para él es un programa normal, con su
+propio ícono y su propia ventana.
+
+Todo esto se hace una sola vez, en tu computadora (la que usas para
+preparar el programa antes de vender o entregar).
+
+
+Paso 0 — Requisito único de Windows (una sola vez, gratis)
+------------------------------------------------------------
+Para que la ventana de la app funcione, Windows necesita tener
+"Microsoft Edge WebView2" instalado. La mayoría de las computadoras con
+Windows 10/11 actualizado ya lo tienen de fábrica. Si la ventana no abre,
+descárgalo aquí (gratis, de Microsoft):
+
+  https://developer.microsoft.com/microsoft-edge/webview2
+
+Esto aplica también a las computadoras de tus clientes, sobre todo si son
+antiguas o llevan tiempo sin actualizarse.
+
+
+Paso 1 — Preparar el programa (si no lo has hecho)
+------------------------------------------------------------
+1) Ejecuta "instalar.bat" (solo la primera vez).
+2) Ejecuta "construir_app_escritorio.bat".
+   Tarda varios minutos la primera vez. Al terminar, tendrás:
+
+       dist\O-Leasing\O-Leasing.exe
+
+   Puedes hacerle doble clic ahí mismo para probarla: debe abrirse en su
+   propia ventana, sin navegador y sin consola.
+
+   Si no abre o se cierra sola: junto al .exe aparece un archivo
+   "error_al_iniciar.txt" con el detalle técnico de qué falló, más una
+   ventana con el mismo mensaje, en vez de quedarse en silencio.
+
+
+Paso 2 — Generar el instalador real (Setup.exe)
+------------------------------------------------------------
+1) Descarga e instala Inno Setup (gratis, una sola vez):
+
+       https://jrsoftware.org/isdl.php
+
+2) Abre el archivo "instalador.iss" (doble clic, se abre con Inno Setup).
+3) Presiona el botón "Compile" (o Ctrl+F9).
+4) Cuando termine, el instalador final queda en:
+
+       instalador_salida\ERP_Leasing_Pro_Setup.exe
+
+Ese archivo es el que le entregas a tus clientes o a quien le vendas el
+sistema. Es autocontenido: no necesita internet para instalarse ni para
+funcionar.
+
+
+Notas
+------------------------------------------------------------
+- La app se instala en "C:\O-Leasing" (no en "Archivos de programa") a
+  propósito: así puede guardar y modificar su base de datos (leasing.db)
+  sin pedir permisos de administrador cada vez que alguien guarda un
+  contrato. Es normal y seguro para este tipo de programa de uso interno.
+
+- Cada vez que hagas cambios al código (app.py) y quieras actualizar la
+  app instalada, repite el Paso 1 y el Paso 2: se genera un instalador
+  nuevo con la versión más reciente.
+
+- Si necesitas que varias computadoras de la misma oficina usen el
+  sistema a la vez (modo servidor), eso es distinto a instalarlo en una
+  sola PC: para eso sigue existiendo "ejecutar.bat" (modo servidor de
+  red), igual que antes. La app instalable (.exe) es para uso en una
+  sola computadora a la vez.
+
+Autor: Javier Illán

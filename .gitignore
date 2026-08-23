@@ -1,0 +1,39 @@
+# Entorno y credenciales
+.env
+.env.*
+!.env.example
+
+# Bases de datos y respaldos (datos reales de clientes, nunca al repo)
+*.db
+*.db-journal
+*.bak
+data/
+respaldos_auto/
+*/respaldos_auto/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# Empaquetado de escritorio (PyInstaller / Inno Setup)
+build/
+dist/
+dist_src/
+*.spec
+Output/
+error_al_iniciar.txt
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Editor / SO
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

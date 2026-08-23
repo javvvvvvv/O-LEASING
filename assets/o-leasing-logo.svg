@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 150" width="100%" height="100%">
+  <defs>
+    <!-- Estilos de color y tipografía -->
+    <style>
+      .logo-orange { 
+        fill: #FF6619; /* Naranja vibrante característico */
+      }
+      .logo-text {
+        font-family: 'Optima', 'Segoe UI', 'Trebuchet MS', sans-serif;
+        font-size: 52px;
+        fill: #1A1A1A; /* Negro suave */
+        letter-spacing: 0.5px;
+      }
+    </style>
+    
+    <!-- Máscara para hacer el corte diagonal del círculo transparente -->
+    <mask id="cut-mask">
+      <rect width="100%" height="100%" fill="white" />
+      <line x1="75" y1="125" x2="115" y2="45" stroke="black" stroke-width="4.5" />
+    </mask>
+  </defs>
+
+  <!-- Círculo Naranja con el corte diagonal aplicado -->
+  <circle cx="95" cy="85" r="40" class="logo-orange" mask="url(#cut-mask)" />
+
+  <!-- Hoja Naranja -->
+  <!-- Curva trazada para coincidir con la parte superior izquierda -->
+  <path d="M 85 48 C 65 32, 45 38, 42 45 C 55 58, 78 55, 85 48 Z" class="logo-orange" />
+  
+  <!-- Línea interior de la hoja (Nervadura) -->
+  <path d="M 45 46 Q 65 46 80 49" stroke="white" stroke-width="1.8" fill="none" />
+
+  <!-- Texto del Logotipo -->
+  <text x="150" y="102" class="logo-text">O-LEASING</text>
+</svg>

@@ -1,0 +1,6 @@
+# Dependencias SOLO para desarrollo/pruebas (no se necesitan para correr
+# la app en producción). Instalar con:
+#   pip install -r requirements.txt -r requirements-dev.txt
+# y correr las pruebas con:
+#   pytest test_finanzas.py -v
+pytest==8.3.3
