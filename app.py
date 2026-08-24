@@ -4189,8 +4189,6 @@ DESCRIPCIONES = {
 # respaldos, altas/bajas de empresas) — solo el rol admin los ve en el menú.
 AUTH_USER = st.session_state.get("auth_user", {"username": "—", "nombre_completo": "—", "rol": "admin"})
 ROL_ACTUAL = AUTH_USER.get("rol", "admin")
-if ROL_ACTUAL not in ("admin", "super_usuario"):
-    GRUPOS = {g: its for g, its in GRUPOS.items() if g != "Configuración"}
 
 # Filtrar empresas visibles según grupo del usuario (si no es super_usuario)
 def obtener_empresas_visibles(usuario: dict, todas_empresas: list) -> list:
@@ -4205,6 +4203,9 @@ def obtener_empresas_visibles(usuario: dict, todas_empresas: list) -> list:
     if not empresas_grupo:
         return []  # Grupo sin empresas asignadas
     return [e for e in todas_empresas if e["id"] in empresas_grupo]
+
+if ROL_ACTUAL not in ("admin", "super_usuario"):
+    GRUPOS = {g: its for g, its in GRUPOS.items() if g != "Configuración"}
 
 if 'menu_grupo' not in st.session_state:
     st.session_state['menu_grupo'] = "Cartera"
