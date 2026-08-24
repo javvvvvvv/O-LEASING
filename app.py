@@ -2573,10 +2573,10 @@ def _render_conciliacion():
         col1, col2 = st.columns([3, 1])
         with col1:
             archivos = st.file_uploader(
-                "Selecciona archivos XML (puedes subir cientos de una vez)",
-                type=['xml'],
+                "Sube XMLs de CFDI o un Excel (.xlsx) con el listado de facturas",
+                type=['xml', 'xlsx', 'csv'],
                 accept_multiple_files=True,
-                help="CFDI 4.0 emitidos por tu arrendadora. Archivos de más de 2 MB se rechazan por seguridad (un CFDI normal pesa unos cuantos KB)."
+                help="Puedes subir múltiples XMLs, o un Layout en Excel con columnas: UUID, FECHA, FOLIO, SUBTOTAL, TOTAL, CONTRATO, CONCEPTO"
             )
         with col2:
             periodo_ref = st.date_input(
@@ -2623,37 +2623,64 @@ def _render_conciliacion():
                     if i % paso_barra == 0 or i == total - 1:
                         barra.progress((i + 1) / total, text=f"Procesando {arch.name} ({i+1}/{total})")
                     try:
-                        raw = arch.read()
-                        fact = parse_cfdi(raw, reglas)
-                        if fact.get('uuid') and fact['uuid'] in uuids_en_lote:
-                            errores_parse.append(
-                                f"**{arch.name}**: mismo UUID que **{uuids_en_lote[fact['uuid']]}** — "
-                                f"parece el mismo CFDI subido dos veces en este lote, se omitió el duplicado."
-                            )
-                            continue
-                        if fact.get('uuid'):
-                            uuids_en_lote[fact['uuid']] = arch.name
-                        if not fact['periodo']:
-                            fact['periodo'] = periodo_ref.strftime('%Y-%m')
-                        # Número tal como venía en el XML, antes de cualquier
-                        # ajuste — se conserva para poder verlo después y
-                        # para poder aprender la regla si aún no existe.
-                        fact['id_contrato_detectado'] = fact.get('id_contrato')
-                        detectado = fact.get('id_contrato')
-                        id_final, se_aplico = resolver_numero_contrato(detectado, alias_map)
-                        fact['id_contrato'] = id_final
-                        fact['alias_aplicado'] = 1 if se_aplico else 0
-                        if se_aplico:
-                            usos_alias[detectado] = usos_alias.get(detectado, 0) + 1
-                        res = conciliar_factura(fact, cache_lote)
-                        merged = {**fact, **res}
-                        merged['status'] = res['status']
-                        if fact['alias_aplicado']:
-                            merged['msg'] = (
-                                f"{merged.get('msg', '')} · Se detectó como '{detectado}' y se asignó automáticamente "
-                                f"a {fact['id_contrato']} por una regla ya aprendida."
-                            ).strip(' ·')
-                        resultados.append(merged)
+                        name_lower = arch.name.lower()
+                        facts = []
+                        if name_lower.endswith('.xml'):
+                            raw = arch.read()
+                            facts = [parse_cfdi(raw, reglas)]
+                        elif name_lower.endswith(('.xlsx', '.csv')):
+                            import pandas as pd
+                            from core.cfdi import clasificar_concepto
+                            df_arch = pd.read_excel(arch) if name_lower.endswith('.xlsx') else pd.read_csv(arch)
+                            df_arch.columns = [str(col).strip().upper() for col in df_arch.columns]
+                            for idx, row in df_arch.iterrows():
+                                _uuid = str(row.get('UUID', f'VIRTUAL-{arch.name}-{idx}')).strip()
+                                _fecha = str(row.get('FECHA', '')).split(' ')[0]
+                                _folio = str(row.get('FOLIO', ''))
+                                try: _subt = float(row.get('SUBTOTAL', 0.0) or 0)
+                                except: _subt = 0.0
+                                try: _tot = float(row.get('TOTAL', 0.0) or 0)
+                                except: _tot = 0.0
+                                _con = str(row.get('CONTRATO', '')).strip()
+                                _desc = str(row.get('CONCEPTO', 'Renta'))
+                                
+                                c_clave = clasificar_concepto(_desc, reglas)
+                                fact = {
+                                    'uuid': _uuid, 'fecha': _fecha, 'folio': _folio,
+                                    'subtotal': _subt, 'total': _tot,
+                                    'id_contrato': _con, 'mes_contrato': None,
+                                    'tipo': c_clave, 'periodo': _fecha[:7] if len(_fecha)>=7 else '',
+                                    'conceptos': {c_clave: _subt}, 'conceptos_raw': [{'descripcion': _desc, 'importe': _subt, 'clave': c_clave}],
+                                    'rfc_emisor': '', 'rfc_receptor': '', 'tipo_comprobante': 'I', 'moneda': 'MXN'
+                                }
+                                facts.append(fact)
+                        
+                        for fact in facts:
+                            if fact.get('uuid') and fact['uuid'] in uuids_en_lote:
+                                errores_parse.append(
+                                    f"**{arch.name}**: UUID duplicado omitido."
+                                )
+                                continue
+                            if fact.get('uuid'):
+                                uuids_en_lote[fact['uuid']] = arch.name
+                            if not fact['periodo']:
+                                fact['periodo'] = periodo_ref.strftime('%Y-%m')
+                                
+                            fact['id_contrato_detectado'] = fact.get('id_contrato')
+                            detectado = fact.get('id_contrato')
+                            id_final, se_aplico = resolver_numero_contrato(detectado, alias_map)
+                            fact['id_contrato'] = id_final
+                            fact['alias_aplicado'] = 1 if se_aplico else 0
+                            if se_aplico:
+                                usos_alias[detectado] = usos_alias.get(detectado, 0) + 1
+                            res = conciliar_factura(fact, cache_lote)
+                            merged = {**fact, **res}
+                            merged['status'] = res['status']
+                            if fact['alias_aplicado']:
+                                merged['msg'] = (
+                                    f"{merged.get('msg', '')} -> Se aplicó alias ({detectado} -> {id_final})"
+                                ).strip(' ->')
+                            resultados.append(merged)
                     except Exception as e:
                         errores_parse.append(f"**{arch.name}**: {e}")
 
