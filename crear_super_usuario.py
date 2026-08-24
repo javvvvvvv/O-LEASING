@@ -70,8 +70,27 @@ def crear_super_usuario(username: str = None, password: str = None, nombre_compl
         conn = sqlite3.connect(str(db_path))
         cursor = conn.cursor()
 
-        # Inicializar todas las tablas necesarias (igual que en models/auth.py)
-        # Tabla de usuarios
+        # Verificar si la tabla usuarios ya existe y revisar su estructura
+        cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='usuarios'")
+        result = cursor.fetchone()
+        
+        necesita_recrear = False
+        if result:
+            sql_actual = result[0]
+            # Verificar si la restricción CHECK incluye 'super_usuario'
+            if "'super_usuario'" not in sql_actual and '"super_usuario"' not in sql_actual:
+                necesita_recrear = True
+                print("⚠️  La tabla 'usuarios' existe pero no soporta el rol 'super_usuario'.")
+                print("   Se recreará la tabla con la estructura correcta.\n")
+        
+        if necesita_recrear:
+            # Eliminar la tabla antigua (los datos no se pueden migrar porque el CHECK era incompatible)
+            cursor.execute("DROP TABLE usuarios")
+            print("   Nota: Los usuarios existentes se han eliminado debido al cambio de estructura.")
+            print("   Deberás crearlos nuevamente.\n")
+        
+        # Inicializar todas las tablas necesarias con la estructura CORRECTA
+        # Tabla de usuarios (con super_usuario en el CHECK)
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS usuarios (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
