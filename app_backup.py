@@ -173,211 +173,138 @@ _LOGO_WORDMARK_B64      = _svg_b64(_LOGO_WORDMARK_PATH)
 _LOGO_WORDMARK_CLARO_B64 = _svg_b64(_LOGO_WORDMARK_CLARO_PATH) or _LOGO_WORDMARK_B64
 _LOGO_ORANGE_B64    = _svg_b64(os.path.join(BASE_DIR, "assets", "orange-crew-logo.svg"))
 
-# ============================================================================
-# NUEVA PALETA PROFESIONAL - Diseño moderno y sofisticado
-# ============================================================================
-C = dict(
-    primary="#2563EB",      # Azul real profesional
-    secondary="#1E40AF",    # Azul profundo
-    accent="#F59E0B",       # Ámbar vibrante
-    success="#10B981",      # Esmeralda moderno
-    warning="#F59E0B",      # Ámbar
-    info="#3B82F6",         # Azul brillante
-    gold="#D97706",         # Oro antiguo
-    light="#F8FAFC",        # Blanco humo
-    purple="#8B5CF6",       # Violeta sofisticado
-    teal="#14B8A6",         # Turquesa moderno
-    brand="#2563EB",        # Azul corporativo
-    brand2="#1E40AF"        # Azul oscuro
-)
-PAL = ["#2563EB", "#10B981", "#F59E0B", "#EF4444", "#3B82F6",
-       "#8B5CF6", "#D97706", "#EC4899", "#14B8A6", "#1E40AF"]
+C = dict(primary="#1E5C4F", secondary="#3B7C6E", accent="#B3261E",
+         success="#1C7A4D", warning="#96660C", info="#3E6FA6",
+         gold="#8A6D2F", light="#E1EEEC", purple="#6E5A9C", teal="#1C7A4D",
+         brand="#1E5C4F", brand2="#3B7C6E")
+PAL = ["#1E5C4F","#1C7A4D","#96660C","#B3261E","#3E6FA6",
+       "#6E5A9C","#8A6D2F","#B4607E","#5C7A3E","#3B7C6E"]
 
-# Paleta para gráficas - moderna y profesional
-PAL_PASTEL = ["#60A5FA", "#34D399", "#FBBF24", "#F87171", "#818CF8",
-              "#A78BFA", "#FCD34D", "#FB7185", "#2DD4BF", "#93C5FD"]
-C_PASTEL = dict(primary="#60A5FA", secondary="#34D399", accent="#FBBF24",
-                success="#34D399", warning="#FBBF24", info="#818CF8",
-                gold="#FCD34D", purple="#A78BFA", teal="#2DD4BF")
+# Paleta para gráficas — tonos suaves de la misma paleta del tema (verde
+# contable, azul pizarra, ámbar, ladrillo), para que las gráficas no se vean
+# "pegadas" encima del resto del diseño.
+PAL_PASTEL = ["#5E9587","#7C93AD","#D9A75C","#C4796C","#7FA8C9",
+              "#9C8AA5","#B49A5E","#C79AAA","#84AD79","#6E86AE"]
+C_PASTEL = dict(primary="#5E9587", secondary="#7C93AD", accent="#C4796C",
+                success="#5E9587", warning="#D9A75C", info="#7FA8C9",
+                gold="#B49A5E", purple="#9C8AA5", teal="#5E9587")
 px.defaults.color_discrete_sequence = PAL_PASTEL
-px.defaults.color_continuous_scale = ["#F1F5F9", "#93C5FD", "#2563EB"]
+px.defaults.color_continuous_scale = ["#F3F4F6", "#9BC4B8", "#1E5C4F"]
 
-# Colormaps propios para las tablas con degradado - actualizados a nueva paleta
+# Colormaps propios para las tablas con degradado (pandas Styler), en vez
+# de los de matplotlib de fábrica que no combinaban con la paleta de la app.
 import matplotlib
 matplotlib.use('Agg')  # backend sin ventana — el servidor no tiene pantalla
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
-CMAP_INDIGO = LinearSegmentedColormap.from_list("ledger_indigo", ["#F1F5F9", "#BFDBFE", "#2563EB"])
-CMAP_CORAL  = LinearSegmentedColormap.from_list("ledger_coral",  ["#F1F5F9", "#FECACA", "#EF4444"])
-CMAP_TEAL   = LinearSegmentedColormap.from_list("ledger_teal",   ["#F1F5F9", "#99F6E4", "#14B8A6"])
+CMAP_INDIGO = LinearSegmentedColormap.from_list("ledger_indigo", ["#F3F4F6", "#BFDBD4", "#1E5C4F"])
+CMAP_CORAL  = LinearSegmentedColormap.from_list("ledger_coral",  ["#F3F4F6", "#EBC4C0", "#B3261E"])
+CMAP_TEAL   = LinearSegmentedColormap.from_list("ledger_teal",   ["#F3F4F6", "#BEE0D9", "#1C7A4D"])
 
 st.markdown("""
 <style>
-/* ============================================================================
-   NUEVO DISEÑO PROFESIONAL - Moderno, limpio y sofisticado
-   Sin barra lateral - Navegación superior tipo dashboard ejecutivo
-   ============================================================================ */
+/* Tema visual: oficina contable clásica. Superficies planas con borde fino
+   (nada de sombras dobles ni degradados), sidebar sólido oscuro como un
+   panel de control, acento verde-azulado (ligado a "números en verde/rojo"),
+   y cifras en tabular-nums para que las columnas de números se alineen
+   como en una hoja de cálculo. */
 :root{
-  /* Tipografía moderna */
-  --app-font: "Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", Arial, sans-serif;
-  
-  /* Paleta de colores profesional */
-  --paper: #F8FAFC;        /* Fondo principal - gris azulado muy claro */
-  --paper-hi: #FFFFFF;     /* Superficies elevadas */
-  --paper-lo: #F1F5F9;     /* Fondos secundarios */
-  
-  /* Sombras sutiles */
-  --sh-dark: #CBD5E1;
-  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
-  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
-  
-  /* Textos */
-  --ink: #0F172A;          /* Texto principal - azul noche */
-  --ink-soft: #475569;     /* Texto secundario */
-  --ink-faint: #94A3B8;    /* Texto tenue */
-  
-  /* Bordes y líneas */
-  --line: #E2E8F0;
-  --line-soft: #F1F5F9;
-  
-  /* Colores de acento - Azul real profesional */
-  --accent: #2563EB;       /* Azul corporativo */
-  --accent-hover: #1D4ED8;
-  --accent-soft: #EFF6FF;  /* Fondo azul muy claro */
-  --accent-line: #BFDBFE;
-  
-  /* Estados */
-  --ok: #10B981;           /* Esmeralda moderno */
-  --ok-soft: #ECFDF5;
-  --warn: #F59E0B;         /* Ámbar vibrante */
-  --warn-soft: #FFFBEB;
-  --bad: #EF4444;          /* Rojo moderno */
-  --bad-soft: #FEF2F2;
-  
-  /* Gradientes */
-  --gradient-primary: linear-gradient(135deg, #2563EB 0%, #1E40AF 100%);
-  --gradient-accent: linear-gradient(135deg, #F59E0B 0%, #D97706 100%);
-  --gradient-success: linear-gradient(135deg, #10B981 0%, #059669 100%);
+  --app-font:"Segoe UI","Segoe UI Variable",-apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-serif;
+  --paper:#F3F4F6; --paper-hi:#FFFFFF; --paper-lo:#E9EBEE;
+  --sh-dark:#D7DBE0;
+  --ink:#20242B; --ink-soft:#565E68; --ink-faint:#8A929C;
+  --line:#DCE0E5;
+  --accent:#1E5C4F; --accent-soft:#E1EEEC; --accent-line:#BFDBD4;
+  --ok:#1C7A4D; --ok-soft:#E1F2E7;
+  --warn:#96660C; --warn-soft:#FBF0DA;
+  --bad:#B3261E; --bad-soft:#FAE3E1;
+  --side-bg:#1C2530; --side-line:rgba(255,255,255,.09); --side-ink-faint:#98A3AE;
 }
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
-@keyframes slideDown{from{transform:translateY(-10px);opacity:0}to{transform:translateY(0);opacity:1}}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.7}}
 *{font-family:var(--app-font)!important;}
 [data-testid="stMetricValue"],[data-testid="stMetricDelta"],.stDataFrame,table{font-variant-numeric:tabular-nums;}
-
-/* Expander personalizado moderno */
 [data-testid="stExpanderIconChevron"],[data-testid="stExpanderToggleIcon"],
 .streamlit-expanderHeader svg,[data-testid="stIconMaterial"]{font-size:0!important;line-height:0!important;color:transparent!important;}
 [data-testid="stExpander"] summary{position:relative!important;}
 [data-testid="stExpander"] summary::after{
   content:"";position:absolute;right:16px;top:50%;width:7px;height:7px;
   border-right:2px solid var(--ink-soft);border-bottom:2px solid var(--ink-soft);
-  transform:translateY(-65%) rotate(45deg);transition:transform .2s ease;
+  transform:translateY(-65%) rotate(45deg);transition:transform .15s ease;
 }
 [data-testid="stExpander"] summary[aria-expanded="true"]::after{transform:translateY(-35%) rotate(-135deg);}
 span[class*="material-symbols"]{font-size:0!important;}
 
-/* OCULTAR SIDEBAR COMPLETAMENTE - Diseño sin barra lateral */
-[data-testid="stSidebar"], [data-testid="stSidebar"] * {display:none!important;}
-header[data-testid="stHeader"]{display:none!important;}
-
-/* Fondo general con gradiente sutil */
+/* Fondo general */
 .stApp{
-  background: linear-gradient(180deg, #F8FAFC 0%, #FFFFFF 100%)!important;
-  min-height: 100vh;
+  background-color:var(--paper)!important;
 }
-.main .block-container{
-  padding: 2rem 3rem 3rem 3rem!important;
-  max-width: 100%!important;
-  overflow-x: hidden!important;
+.main .block-container{padding:1.4rem 2rem 2rem 2rem!important;max-width:100%!important;overflow-x:hidden!important;}
+
+/* Sidebar */
+[data-testid="stSidebar"]{
+  background:var(--side-bg)!important;
+  border-right:1px solid var(--side-line)!important;
+}
+[data-testid="stSidebar"]>div{padding-bottom:1rem!important;}
+[data-testid="stSidebar"] *{color:#E7EAEE!important;}
+[data-testid="stSidebar"] h1{font-size:1.05rem!important;font-weight:700!important;letter-spacing:-.2px;margin-bottom:0!important;color:#FFFFFF!important;}
+/* Widgets nativos de Streamlit dentro del sidebar (selectbox, fecha,
+   expander, botones sueltos como "Aplicar"/"Cerrar sesión"): por default
+   traen el fondo claro del tema general. Como la regla de arriba ya fuerza
+   TODO el texto del sidebar a un color claro, un fondo que se queda claro
+   produce texto claro sobre fondo claro — prácticamente invisible, que es
+   justo lo que se veía en "Empresa activa", la fecha de análisis y los
+   botones. Aquí se oscurece el fondo de cada uno para que haga juego con
+   el resto del menú. Se usa selector descendiente (no ">direct child")
+   porque BaseWeb anida el color real varios niveles adentro — con ">"
+   la regla se quedaba sin alcanzarlo y el cuadro seguía blanco por dentro.*/
+[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] div,
+[data-testid="stSidebar"] [data-testid="stDateInput"] input,
+[data-testid="stSidebar"] [data-testid="stExpander"]{
+  background:rgba(255,255,255,.07)!important;
+  color:#E7EAEE!important;
+}
+[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"]{
+  background:rgba(255,255,255,.07)!important;border:1px solid var(--side-line)!important;
+  border-radius:6px!important;box-shadow:none!important;
+}
+[data-testid="stSidebar"] [data-testid="stDateInput"] input{border:1px solid var(--side-line)!important;border-radius:6px!important;}
+[data-testid="stSidebar"] [data-testid="stExpander"]{border:1px solid var(--side-line)!important;border-radius:6px!important;}
+[data-testid="stSidebar"] [data-testid="stExpanderDetails"]{background:rgba(255,255,255,.03)!important;}
+[data-testid="stSidebar"] [data-testid="stExpander"] summary::after{
+  border-right-color:var(--side-ink-faint)!important;border-bottom-color:var(--side-ink-faint)!important;
+}
+[data-testid="stSidebar"] [data-testid="stSelectbox"] svg,
+[data-testid="stSidebar"] [data-testid="stDateInput"] svg{fill:var(--side-ink-faint)!important;}
+/* Cualquier botón del sidebar que no tenga ya un estilo más específico
+   (los del menú de grupos/páginas sí lo tienen, y siguen ganando por ser
+   más específicos): mismo tratamiento oscuro por default. */
+[data-testid="stSidebar"] .stButton>button{
+  background:rgba(255,255,255,.06)!important;border:1px solid var(--side-line)!important;
+  color:#E7EAEE!important;
+}
+[data-testid="stSidebar"] .stButton>button:hover{
+  background:rgba(255,255,255,.13)!important;border-color:rgba(255,255,255,.28)!important;
 }
 
-/* Nueva barra de navegación superior */
-.top-nav-bar{
-  position: sticky;
-  top: 0;
-  z-index: 1000;
-  background: rgba(255, 255, 255, 0.95);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border-bottom: 1px solid var(--line);
-  box-shadow: var(--shadow-sm);
-  padding: 0.75rem 2rem;
-  margin-bottom: 2rem;
+.firma-badge{text-align:center;padding:10px 8px 6px;margin-top:2px;margin-bottom:10px;}
+.firma-badge .firma-main{color:#FFFFFF!important;font-weight:700!important;font-size:1rem!important;display:block;letter-spacing:.2px;}
+.firma-badge .firma-sub{color:var(--side-ink-faint)!important;font-size:.68rem!important;letter-spacing:1.2px;text-transform:uppercase;}
+.sidebar-footer{color:var(--side-ink-faint)!important;font-size:9px;text-align:center;border-top:1px solid var(--side-line);padding-top:8px;margin-top:8px;line-height:1.6;}
+.sidebar-submarca{text-align:center;margin-top:10px;padding-top:8px;border-top:1px solid var(--side-line);}
+.sidebar-submarca img{height:20px;width:auto;opacity:.95;vertical-align:middle;margin-right:6px;}
+.sidebar-submarca span{color:var(--side-ink-faint)!important;font-size:9px;letter-spacing:.3px;vertical-align:middle;}
+.empresa-badge{
+  background:rgba(255,255,255,.05);border:1px solid var(--side-line);border-radius:6px;padding:10px 12px;margin-bottom:10px;text-align:center;
 }
-.top-nav-bar .nav-content{
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 2rem;
-  max-width: 100%;
-}
-.top-nav-bar .brand-section{
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-}
-.top-nav-bar .brand-logo{
-  height: 32px;
-  width: auto;
-  object-fit: contain;
-}
-.top-nav-bar .brand-name{
-  font-size: 1.25rem;
-  font-weight: 700;
-  color: var(--accent);
-  letter-spacing: -0.5px;
-}
-.top-nav-bar .nav-links{
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-}
-.nav-link-btn{
-  padding: 0.5rem 1rem;
-  border-radius: 8px;
-  font-size: 0.875rem;
-  font-weight: 500;
-  color: var(--ink-soft);
-  background: transparent;
-  border: none;
-  transition: all 0.2s ease;
-  cursor: pointer;
-}
-.nav-link-btn:hover{
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-.nav-link-btn.active{
-  background: var(--accent);
-  color: #FFFFFF;
-  box-shadow: var(--shadow-sm);
-}
+.empresa-badge .emp-name{color:#FFFFFF!important;font-weight:700!important;font-size:.92rem!important;display:block;}
+.empresa-badge .emp-label{color:var(--side-ink-faint)!important;font-size:9px!important;text-transform:uppercase;letter-spacing:1.2px;}
 
-/* Header de página moderno */
-.page-header{
-  background: var(--paper-hi);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 1.5rem 2rem;
-  margin-bottom: 2rem;
-  box-shadow: var(--shadow-sm);
-}
-.page-header h1{
-  color: var(--ink);
-  font-size: 1.75rem;
-  font-weight: 700;
-  letter-spacing: -0.5px;
-  margin: 0 0 0.5rem 0;
-}
-.page-header .subtitle{
-  color: var(--ink-soft);
-  font-size: 0.95rem;
-  line-height: 1.6;
-}
+/* Logo */
+.logo-seal{width:44px;height:44px;margin:2px auto 8px;border-radius:6px;
+  display:flex;align-items:center;justify-content:center;}
+.logo-seal img{width:100%;height:100%;object-fit:contain;}
+.logo-seal span{color:#FFFFFF!important;font-weight:700;font-size:1.15rem;letter-spacing:-.5px;}
 /* Tarjeta clara detrás de un logo personalizado subido por el usuario: sin
    esto, un logo con trazos oscuros pensado para fondo blanco se perdería
    sobre el sidebar oscuro igual que le pasaba al wordmark por defecto. */

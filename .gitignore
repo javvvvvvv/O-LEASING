@@ -1,39 +1,78 @@
-# Entorno y credenciales
+```
+# Environment
 .env
-.env.*
-!.env.example
+.env.local
+*.env.*
 
-# Bases de datos y respaldos (datos reales de clientes, nunca al repo)
-*.db
-*.db-journal
+# Logs and temporary files
+*.log
+*.tmp
+
+# Backup files
+*~
 *.bak
-data/
-respaldos_auto/
-*/respaldos_auto/
+*.backup
 
-# Python
+# Python specific
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
+.Python
+*.so
 *.egg-info/
-.pytest_cache/
-.venv/
+
+# Dependencies
+node_modules/
 venv/
-env/
+.venv/
+.env/
+.env.d/
 
-# Empaquetado de escritorio (PyInstaller / Inno Setup)
-build/
-dist/
-dist_src/
-*.spec
-Output/
-error_al_iniciar.txt
-
-# Streamlit
-.streamlit/secrets.toml
-
-# Editor / SO
+# Editors
 .vscode/
 .idea/
+*.swp
+*.swo
+
+# OS generated files
 .DS_Store
 Thumbs.db
+
+# Build outputs
+dist/
+build/
+target/
+coverage/
+htmlcov/
+.mypy_cache/
+.pytest_cache/
+
+# Compressed files
+*.zip
+*.gz
+*.tar
+*.tgz
+*.bz2
+*.xz
+*.7z
+*.rar
+*.zst
+*.lz4
+*.lzh
+*.cab
+*.arj
+*.rpm
+*.deb
+*.Z
+*.lz
+*.lzo
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.tar.zst
+
+# Temp directories
+temp_*/
+tmp_*/
+```
