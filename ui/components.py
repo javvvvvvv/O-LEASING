@@ -16,22 +16,24 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
+PAL_PASTEL = ["#5E9587","#7C93AD","#D9A75C","#C4796C","#7FA8C9","#9C8AA5","#B49A5E","#C79AAA","#84AD79","#6E86AE"]
+
 def sfig(fig, title=None, h=300):
     layout = dict(
-        font=dict(family="Segoe UI, Helvetica Neue, Arial, sans-serif", color="#565E68", size=12),
+        font=dict(family="Segoe UI, Helvetica Neue, Arial, sans-serif", color="#8b949e", size=12),
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         margin=dict(t=56, r=18, b=42, l=18),
         hoverlabel=dict(bgcolor="#1E5C4F", font_color="#fff", bordercolor="#1E5C4F",
                         font_size=13, font_family="Segoe UI, Helvetica Neue, Arial, sans-serif",
                         align="left", namelength=-1),
-        xaxis=dict(gridcolor="rgba(32,36,43,.07)", linecolor="rgba(32,36,43,.16)",
+        xaxis=dict(gridcolor="rgba(255,255,255,.05)", linecolor="rgba(255,255,255,.1)",
                    showspikes=True, spikethickness=1,
-                   spikecolor="rgba(30,92,79,.35)", spikedash="dot"),
-        yaxis=dict(gridcolor="rgba(32,36,43,.07)", linecolor="rgba(32,36,43,.16)"),
+                   spikecolor="rgba(47,129,247,.35)", spikedash="dot"),
+        yaxis=dict(gridcolor="rgba(255,255,255,.05)", linecolor="rgba(255,255,255,.1)"),
         height=h,
         bargap=0.22, bargroupgap=0.09,
         colorway=PAL_PASTEL,
-        legend=dict(bgcolor="rgba(255,255,255,0)", bordercolor="rgba(32,36,43,.1)",
+        legend=dict(bgcolor="rgba(255,255,255,0)", bordercolor="rgba(255,255,255,.1)",
                     borderwidth=0, font=dict(size=11)),
     )
     _title = title
@@ -39,8 +41,8 @@ def sfig(fig, title=None, h=300):
         _title = fig.layout.title.text if fig.layout.title and fig.layout.title.text else None
     if _title:
         layout['title'] = dict(
-            text=f"<span style='color:#1E5C4F;'>●</span>&nbsp; <b>{_title}</b>",
-            font=dict(size=14.5, color="#20242B"),
+            text=f"<span style='color:#2f81f7;'>●</span>&nbsp; <b>{_title}</b>",
+            font=dict(size=14.5, color="#e6edf3"),
             x=0.012, xanchor='left', y=0.97, yanchor='top'
         )
     fig.update_layout(**layout)

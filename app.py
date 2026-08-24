@@ -209,9 +209,9 @@ import matplotlib
 matplotlib.use('Agg')  # backend sin ventana — el servidor no tiene pantalla
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
-CMAP_INDIGO = LinearSegmentedColormap.from_list("ledger_indigo", ["#F3F4F6", "#BFDBD4", "#1E5C4F"])
-CMAP_CORAL  = LinearSegmentedColormap.from_list("ledger_coral",  ["#F3F4F6", "#EBC4C0", "#B3261E"])
-CMAP_TEAL   = LinearSegmentedColormap.from_list("ledger_teal",   ["#F3F4F6", "#BEE0D9", "#1C7A4D"])
+CMAP_INDIGO = LinearSegmentedColormap.from_list("ledger_indigo", ["#161B2200", "#2F81F766", "#2f81f7"])
+CMAP_CORAL  = LinearSegmentedColormap.from_list("ledger_coral",  ["#161B2200", "#DA363366", "#da3633"])
+CMAP_TEAL   = LinearSegmentedColormap.from_list("ledger_teal",   ["#161B2200", "#23863666", "#238636"])
 
 st.markdown("""
 <style>
