@@ -12,6 +12,17 @@
 # autorización expresa y por escrito del autor. Obra protegida conforme a la
 # Ley Federal del Derecho de Autor y tratados internacionales aplicables.
 # ============================================================================
+# Autor Legal y Titular de Derechos: JAVIER ILLAN GONZALEZ
+# Organización: ORANGE CREW
+# Contacto: ILLANJAVIER9@GMAIL.COM
+#
+# ADVERTENCIA LEGAL (MÉXICO Y GLOBAL):
+# Este código fuente y su arquitectura son propiedad intelectual exclusiva de
+# JAVIER ILLAN GONZALEZ. Queda estrictamente prohibida su reproducción,
+# distribución, modificación, ingeniería inversa, copia o uso comercial sin la
+# autorización expresa y por escrito del autor. Obra protegida conforme a la
+# Ley Federal del Derecho de Autor y tratados internacionales aplicables.
+# ============================================================================
 #
 # O-Leasing v6
 # Control de cartera de arrendamiento (leasing) + conciliación de facturas
@@ -603,7 +614,6 @@ def _video_duracion_segundos(ruta: str) -> float:
         else:
             timescale = int.from_bytes(data[mvhd_start + 12:mvhd_start + 16], "big")
             duracion = int.from_bytes(data[mvhd_start + 16:mvhd_start + 20], "big")
-
         if timescale <= 0:
             return _SPLASH_DURACION_DEFAULT
         segundos = duracion / timescale
@@ -614,97 +624,112 @@ def _video_duracion_segundos(ruta: str) -> float:
         return _SPLASH_DURACION_DEFAULT
 
 
-# Bienvenida y login fusionados en una sola pantalla: el video de fondo
-# sigue reproduciéndose (en loop) y el login aparece ENCIMA de él una vez
-# que ya se vio una vuelta completa (~10s), con un fundido en CSS puro
-# (nada de <script>, que Streamlit sanea y nunca se ejecuta — ver commit
-# anterior). "splash_watched" solo controla el RETRASO del fundido: la
-# primera vez que se entra aquí en la sesión, el login tarda en aparecer;
-# en cualquier rerun posterior (botón "Saltar intro", un intento de login
-# fallido, etc.) ya aparece de inmediato, para no hacer esperar de nuevo
-# a alguien que ya está escribiendo su contraseña.
-if not st.session_state.get("auth_user"):
-    _ya_vio_intro = st.session_state.get("splash_watched", False)
-    st.session_state["splash_watched"] = True
-
+# Bienvenida y login: el video se reproduce desenfocado en el fondo
+if not st.session_state.get('auth_user'):
     st.markdown(
         '<style>[data-testid="stSidebar"],[data-testid="stHeader"],footer{display:none!important;} '
         '.main .block-container{padding:0!important;max-width:100%!important;}</style>',
         unsafe_allow_html=True,
     )
 
-    # IMPORTANTE: se usa st.container(key=...) y NO varios st.markdown()
-    # sueltos con un <div> abierto en uno y cerrado en otro. Ese truco se
-    # ve bien en el código pero en el navegador NO funciona como parece:
-    # cada st.markdown() se pinta por separado (cada uno analiza y cierra
-    # su propio HTML), así que el <div> "nunca se cerraba" en el código
-    # pero el navegador lo cerraba solo al instante — el video, el botón
-    # de saltar y el login terminaban FUERA de la caja, y lo único que
-    # quedaba encima de toda la pantalla era un rectángulo negro vacío
-    # tapándolo todo. Esa era la causa real de la pantalla negra.
-    # st.container(key=...) sí crea una caja real: todo lo que se dibuja
-    # adentro queda de verdad anidado dentro de ella en el navegador.
-    with st.container(key="splash_stage"):
-        # Se usa st.video() (streaming nativo de Streamlit) en vez de
-        # incrustar el MP4 como un bloque de texto base64 de varios MB: es
-        # frágil y puede tardar mucho o trabarse en algunos navegadores.
-        _video_disponible = os.path.exists(_VIDEO_BIENVENIDA)
+    with st.container(key='splash_stage'):
+        _video_disponible = __import__('os').path.exists(_VIDEO_BIENVENIDA)
         if _video_disponible:
             try:
                 st.video(_VIDEO_BIENVENIDA, autoplay=True, muted=True, loop=True)
+                st.markdown(
+                    """<style>
+                    /* Video as fullscreen background */
+                    .st-key-splash_stage [data-testid="stVideo"] {
+                        position: fixed !important;
+                        top: 50% !important;
+                        left: 50% !important;
+                        min-width: 100% !important;
+                        min-height: 100% !important;
+                        width: auto !important;
+                        height: auto !important;
+                        transform: translate(-50%, -50%) scale(1.1) !important;
+                        z-index: 0 !important;
+                    }
+                    .st-key-splash_stage [data-testid="stVideo"] video {
+                        object-fit: cover !important;
+                        filter: blur(8px) brightness(0.4) !important;
+                    }
+                    </style>""", unsafe_allow_html=True
+                )
             except Exception:
-                _video_disponible = False
+                pass
 
-        if _ya_vio_intro or not _video_disponible:
-            _delay_login = "0s"
-        else:
-            # +0.2s de margen sobre la duración real del MP4 para que el
-            # login no se alcance a asomar un instante antes de que
-            # termine la vuelta.
-            _delay_login = f"{_video_duracion_segundos(_VIDEO_BIENVENIDA) + 0.2:.2f}s"
-
-        with st.container(key="splash_skip_wrap"):
-            if st.button("Saltar intro →", key="splash_skip"):
-                st.rerun()
-
-        st.markdown(f'<style>.st-key-login_overlay{{animation-delay:{_delay_login};}}</style>', unsafe_allow_html=True)
-        with st.container(key="login_overlay"):
-            with st.container(key="login_wrap"):
-                _logo_login_path = os.path.join(BASE_DIR, "assets", "o-leasing-logo.png")
-                if os.path.exists(_logo_login_path):
-                    st.image(_logo_login_path, width=190)
+        st.markdown("<div style='height: 12vh;'></div>", unsafe_allow_html=True)
+        col_L, col_C, col_R = st.columns([1, 1.2, 1])
+        
+        with col_C:
+            st.markdown(
+                """<style>
+                /* Glassmorphism box for login */
+                .st-key-login_wrap {
+                    position: relative;
+                    z-index: 10;
+                    background: rgba(255, 255, 255, 0.1) !important;
+                    backdrop-filter: blur(15px) !important;
+                    -webkit-backdrop-filter: blur(15px) !important;
+                    padding: 40px;
+                    border-radius: 12px;
+                    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
+                    border: 1px solid rgba(255, 255, 255, 0.2);
+                }
+                .st-key-login_wrap h3, .st-key-login_wrap p, .st-key-login_wrap label, .st-key-login_wrap div {
+                    text-align: center;
+                    color: white !important;
+                }
+                /* Inputs with readable background */
+                .st-key-login_wrap input {
+                    background: rgba(255, 255, 255, 0.9) !important;
+                    color: black !important;
+                    border-radius: 6px !important;
+                }
+                </style>""", unsafe_allow_html=True
+            )
+            with st.container(key='login_wrap'):
+                _logo_login_path = __import__('os').path.join(BASE_DIR, 'assets', 'o-leasing-logo.png')
+                if __import__('os').path.exists(_logo_login_path):
+                    col_logo1, col_logo2, col_logo3 = st.columns([1, 2, 1])
+                    with col_logo2:
+                        st.image(_logo_login_path, use_container_width=True)
                 if not hay_usuarios(AUTH_DB):
-                    st.markdown('<h3>Crea el usuario administrador</h3>', unsafe_allow_html=True)
-                    st.markdown('<div class="login-sub">Es la primera vez que se abre el sistema — este será el usuario con acceso total.</div>', unsafe_allow_html=True)
-                    with st.form("bootstrap_admin"):
-                        _bu = st.text_input("Usuario")
-                        _bn = st.text_input("Nombre completo")
-                        _bp1 = st.text_input("Contraseña", type="password")
-                        _bp2 = st.text_input("Confirmar contraseña", type="password")
-                        if st.form_submit_button("Crear administrador", width='stretch'):
+                    st.markdown('<h3 style="text-align:center;">Crea el usuario administrador</h3>', unsafe_allow_html=True)
+                    st.markdown('<p style="text-align:center;">Es la primera vez que se abre el sistema.</p>', unsafe_allow_html=True)
+                    with st.form('bootstrap_admin'):
+                        _bu = st.text_input('Usuario')
+                        _bn = st.text_input('Nombre completo')
+                        _bp1 = st.text_input('Contraseña', type='password')
+                        _bp2 = st.text_input('Confirmar contraseña', type='password')
+                        if st.form_submit_button('Crear administrador', use_container_width=True):
                             if _bp1 != _bp2:
-                                st.error("Las contraseñas no coinciden.")
+                                st.error('Las contraseñas no coinciden.')
                             else:
-                                ok, msg = crear_usuario(AUTH_DB, _bu, _bn, _bp1, "admin")
+                                ok, msg = crear_usuario(AUTH_DB, _bu, _bn, _bp1, 'admin')
                                 if ok:
-                                    st.success(msg + " Ahora inicia sesión.")
+                                    st.success(msg + ' Ahora inicia sesión.')
                                     st.rerun()
                                 else:
                                     st.error(msg)
                 else:
-                    st.markdown('<h3>Iniciar sesión</h3>', unsafe_allow_html=True)
-                    st.markdown('<div class="login-sub">Sistema de gestión de arrendamiento</div>', unsafe_allow_html=True)
-                    with st.form("login_form"):
-                        _lu = st.text_input("Usuario")
-                        _lp = st.text_input("Contraseña", type="password")
-                        if st.form_submit_button("Entrar", width='stretch'):
+                    st.markdown('<h3 style="text-align:center;">Iniciar sesión</h3>', unsafe_allow_html=True)
+                    st.markdown('<p style="text-align:center;">Sistema de gestión de arrendamiento</p>', unsafe_allow_html=True)
+                    with st.form('login_form'):
+                        _lu = st.text_input('Usuario')
+                        _lp = st.text_input('Contraseña', type='password')
+                        if st.form_submit_button('Entrar', use_container_width=True):
                             _user = verificar_login(AUTH_DB, _lu, _lp)
                             if _user:
-                                st.session_state["auth_user"] = _user
+                                st.session_state['auth_user'] = _user
                                 st.rerun()
                             else:
-                                st.error("Usuario o contraseña incorrectos.")
+                                st.error('Usuario o contraseña incorrectos.')
     st.stop()
+
+
 
 
 def sfig(fig, title=None, h=300):
@@ -2566,7 +2591,7 @@ def conciliar_factura(fact: dict, _cache: dict | None = None) -> dict:
             pass
     return res
 
-def calcular_avance_pago(con: dict) -> dict:
+def calcular_avance_pago(con: dict, facturas_dict: dict = None) -> dict:
     """Con base en las facturas ya conciliadas (no en el nivel de morosidad
     manual), calcula si el cliente va adelantado, atrasado o al corriente
     con sus mensualidades. 'Adelantado' significa que ya pagó meses futuros
@@ -2578,14 +2603,17 @@ def calcular_avance_pago(con: dict) -> dict:
     mes_esperado_hoy = max(0, (hoy.year - fa.year) * 12 + (hoy.month - fa.month) + 1)
     mes_esperado_hoy = min(mes_esperado_hoy, pl)
 
-    conn = get_db()
-    rows = conn.execute(
-        """SELECT DISTINCT mes_contrato FROM facturas
-           WHERE id_contrato=? AND tipo='MENSUAL' AND estatus IN ('CONCILIADO','DISCREPANCIA')
-             AND (cancelada IS NULL OR cancelada=0)""",
-        (con['ID_Contrato'],)
-    ).fetchall()
-    meses_facturados = {r['mes_contrato'] for r in rows if r['mes_contrato']}
+    if facturas_dict is not None:
+        meses_facturados = facturas_dict.get(con['ID_Contrato'], set())
+    else:
+        conn = get_db()
+        rows = conn.execute(
+            """SELECT DISTINCT mes_contrato FROM facturas
+               WHERE id_contrato=? AND tipo='MENSUAL' AND estatus IN ('CONCILIADO','DISCREPANCIA')
+                 AND (cancelada IS NULL OR cancelada=0)""",
+            (con['ID_Contrato'],)
+        ).fetchall()
+        meses_facturados = {r['mes_contrato'] for r in rows if r['mes_contrato']}
     mes_max_facturado = max(meses_facturados) if meses_facturados else 0
 
     tope = min(mes_esperado_hoy, pl)
@@ -3235,10 +3263,20 @@ def _render_conciliacion():
         if df_avance_base.empty:
             st.info("No hay contratos activos.")
         else:
-            with st.spinner("Calculando avance de pago de cada contrato…"):
+            with st.spinner("Calculando avance de pago de la cartera..."):
+                conn = get_db()
+                todas_fact = conn.execute(
+                    """SELECT id_contrato, mes_contrato FROM facturas
+                       WHERE tipo='MENSUAL' AND estatus IN ('CONCILIADO','DISCREPANCIA')
+                         AND (cancelada IS NULL OR cancelada=0) AND mes_contrato IS NOT NULL"""
+                ).fetchall()
+                facturas_dict = {}
+                for r in todas_fact:
+                    facturas_dict.setdefault(r['id_contrato'], set()).add(r['mes_contrato'])
+                
                 filas_avance = []
                 for _, _con_av in df_avance_base.iterrows():
-                    _avp = calcular_avance_pago(_con_av)
+                    _avp = calcular_avance_pago(_con_av, facturas_dict)
                     filas_avance.append({
                         'ID_Contrato': _con_av['ID_Contrato'], 'Cliente': _con_av['Cliente'],
                         'Estado': _avp['estado'],
@@ -5114,36 +5152,42 @@ try:
                 )
 
             if inv > 0:
-                if st.button("Generar PDF para imprimir (con gráfica)", width='stretch', key="ec_pdf_btn"):
-                    dfa_pdf, _, _, _, _ = calc_amort(round(inv,4), r_m, res, pl, t)
-                    dfa_pdf = dfa_pdf.copy()
-                    dfa_pdf['Fecha'] = dfa_pdf['Mes'].apply(lambda m: (fa + relativedelta(months=m)).strftime('%Y-%m'))
-                    saldos_ini_pdf = [round(inv,4)] + list(dfa_pdf['Saldo'].iloc[:-1].round(4))
-                    dfa_pdf.insert(dfa_pdf.columns.get_loc('Interes'), 'Saldo_Ini', saldos_ini_pdf)
-                    dfa_pdf.rename(columns={'Saldo':'Saldo_Fin'}, inplace=True)
-                    if mes_corte_ec is not None:
-                        dfa_pdf = dfa_pdf[dfa_pdf['Mes'] <= mes_corte_ec].copy()
-                    dfr_pdf = None
-                    if res > 0:
-                        vpr_pdf = vp_res(res, t, pl)
-                        dfr_pdf = calc_res_amort(round(vpr_pdf,4), t, pl).copy()
-                        dfr_pdf['Fecha'] = dfr_pdf['Mes'].apply(lambda m: (fa + relativedelta(months=m)).strftime('%Y-%m'))
-                        dfr_pdf['Residual_Pactado'] = res
-                        dfr_pdf['VP_Residual']      = round(vpr_pdf, 4)
-                        if mes_corte_ec is not None:
-                            dfr_pdf = dfr_pdf[dfr_pdf['Mes'] <= mes_corte_ec].copy()
-                    _avp_pdf = calcular_avance_pago(row) if str(row.get('Estatus','')).upper() != 'BAJA' else None
-                    pdf_buf = pdf_estado_cuenta(
-                        row, dfa_pdf, dfr=dfr_pdf, avance=_avp_pdf, mes_corte=mes_corte_ec,
-                        fecha_hoy_txt=fecha_larga(hoy_ref())
-                    )
-                    st.download_button(
-                        "Descargar PDF",
-                        pdf_buf,
-                        f"estado_cuenta_{sel_ec}.pdf",
-                        mime="application/pdf",
-                        key="ec_pdf_download"
-                    )
+                with st.expander("Exportar a PDF", expanded=False):
+                    pdf_key = f"pdf_buf_{sel_ec}"
+                    if st.button("Generar Documento PDF", width='stretch', key="ec_pdf_gen_btn"):
+                        with st.spinner("Creando PDF... (puede tomar un par de segundos)"):
+                            dfa_pdf, _, _, _, _ = calc_amort(round(inv,4), r_m, res, pl, t)
+                            dfa_pdf = dfa_pdf.copy()
+                            dfa_pdf['Fecha'] = dfa_pdf['Mes'].apply(lambda m: (fa + relativedelta(months=m)).strftime('%Y-%m'))
+                            saldos_ini_pdf = [round(inv,4)] + list(dfa_pdf['Saldo'].iloc[:-1].round(4))
+                            dfa_pdf.insert(dfa_pdf.columns.get_loc('Interes'), 'Saldo_Ini', saldos_ini_pdf)
+                            dfa_pdf.rename(columns={'Saldo':'Saldo_Fin'}, inplace=True)
+                            if mes_corte_ec is not None:
+                                dfa_pdf = dfa_pdf[dfa_pdf['Mes'] <= mes_corte_ec].copy()
+                            dfr_pdf = None
+                            if res > 0:
+                                vpr_pdf = vp_res(res, t, pl)
+                                dfr_pdf = calc_res_amort(round(vpr_pdf,4), t, pl).copy()
+                                dfr_pdf['Fecha'] = dfr_pdf['Mes'].apply(lambda m: (fa + relativedelta(months=m)).strftime('%Y-%m'))
+                                dfr_pdf['Residual_Pactado'] = res
+                                dfr_pdf['VP_Residual']      = round(vpr_pdf, 4)
+                                if mes_corte_ec is not None:
+                                    dfr_pdf = dfr_pdf[dfr_pdf['Mes'] <= mes_corte_ec].copy()
+                            _avp_pdf = calcular_avance_pago(row) if str(row.get('Estatus','')).upper() != 'BAJA' else None
+                            pdf_buf = pdf_estado_cuenta(
+                                row, dfa_pdf, dfr=dfr_pdf, avance=_avp_pdf, mes_corte=mes_corte_ec,
+                                fecha_hoy_txt=fecha_larga(hoy_ref())
+                            )
+                            st.session_state[pdf_key] = pdf_buf
+
+                    if pdf_key in st.session_state:
+                        st.download_button(
+                            "Descargar PDF Ahora",
+                            st.session_state[pdf_key],
+                            f"estado_cuenta_{sel_ec}.pdf",
+                            mime="application/pdf",
+                            key=f"ec_pdf_download_{sel_ec}"
+                        )
 
 
     elif menu=="Carga Masiva y Altas":
@@ -6504,10 +6548,6 @@ try:
                     st.plotly_chart(f2,width='stretch', key="pc_036")
                     explain("¿Cuánto valor está en riesgo?",
                         "Cuánto dinero de la cartera está en riesgo por mora.")
-                hm=df_act.pivot_table(index='Cliente',columns='Nivel_Morosidad',values='ID_Contrato',aggfunc='count',fill_value=0)
-                fhm=px.imshow(hm,color_continuous_scale=[[0,'#F3F4F6'],[.5,C['warning']],[1,C['accent']]],aspect='auto',title="Heatmap: Clientes × Nivel de Morosidad")
-                fhm=sfig(fhm,h=max(300,len(hm)*26))
-                st.plotly_chart(fhm,width='stretch', key="pc_037")
                 explain("¿Qué clientes tienen contratos en mora?",
                         "Qué clientes tienen contratos en mora y qué tan grave es.")
                 nf=st.selectbox("Filtrar detalle por nivel",[0,1,2,3,4])

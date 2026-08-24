@@ -16,20 +16,21 @@ echo   Tarda varios minutos la primera vez. NO cierres la ventana.
 echo ============================================================
 echo.
 
-if not exist ".venv\Scripts\activate.bat" (
-    echo [ERROR] No se encontro el entorno virtual ".venv".
+set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
+
+if not exist "%PYTHON_EXE%" (
+    echo [ERROR] No se encontro el entorno virtual en "%~dp0.venv".
     echo Ejecuta primero "instalar.bat".
     echo.
     pause
     exit /b 1
 )
-call ".venv\Scripts\activate.bat"
 
 echo Verificando herramientas de construccion...
-python -m pip show pyinstaller >nul 2>nul
+"%PYTHON_EXE%" -m pip show pyinstaller >nul 2>nul
 if %errorlevel% neq 0 (
     echo Instalando dependencias de escritorio faltantes...
-    python -m pip install pywebview streamlit-desktop-app pyinstaller
+    "%PYTHON_EXE%" -m pip install pywebview streamlit-desktop-app pyinstaller
 )
 
 echo.
@@ -43,7 +44,7 @@ echo.
 echo Preparando la copia de app.py que se entrega (sin comentarios ni
 echo notas internas de desarrollo)...
 mkdir "dist_src" >nul 2>nul
-python dev\preparar_release.py app.py dist_src\app.py
+"%PYTHON_EXE%" dev\preparar_release.py app.py dist_src\app.py
 if %errorlevel% neq 0 (
     echo.
     echo [ERROR] No se pudo preparar app.py para entrega. Revisa el mensaje
@@ -56,7 +57,7 @@ if %errorlevel% neq 0 (
 echo.
 echo Compilando el ejecutable (esto es lo que tarda varios minutos)...
 echo.
-python -m PyInstaller launcher.py ^
+"%PYTHON_EXE%" -m PyInstaller launcher.py ^
     --name "O-Leasing" ^
     --icon "assets\icono.ico" ^
     --onedir --windowed --noconfirm --clean ^

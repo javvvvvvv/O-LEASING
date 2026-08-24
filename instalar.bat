@@ -10,13 +10,11 @@ cd /d "%~dp0"
 
 where python >nul 2>nul
 if %errorlevel% neq 0 (
-    echo [ERROR] No se encontro Python instalado en este servidor.
+    echo [ERROR] No se encontro Python instalado en este servidor/equipo.
     echo.
     echo Instala Python 3.10 o superior desde https://www.python.org/downloads/
     echo IMPORTANTE: durante la instalacion marca la casilla
     echo             "Add python.exe to PATH"
-    echo.
-    echo Despues de instalar Python, vuelve a ejecutar este archivo.
     echo.
     pause
     exit /b 1
@@ -26,27 +24,25 @@ echo [OK] Python encontrado:
 python --version
 echo.
 
-echo Creando entorno virtual aislado en ".venv" ...
-echo (esto evita conflictos con otras versiones de Python o librerias
-echo  que ya existan en este servidor)
-python -m venv ".venv"
-if %errorlevel% neq 0 (
-    echo [ERROR] No se pudo crear el entorno virtual.
-    pause
-    exit /b 1
+if not exist "%~dp0.venv\Scripts\python.exe" (
+    echo Creando entorno virtual aislado en ".venv" ...
+    python -m venv "%~dp0.venv"
+    if %errorlevel% neq 0 (
+        echo [ERROR] No se pudo crear el entorno virtual.
+        pause
+        exit /b 1
+    )
 )
 
-echo.
-echo Activando entorno virtual...
-call ".venv\Scripts\activate.bat"
+set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
 
 echo.
 echo Actualizando pip...
-python -m pip install --upgrade pip >nul
+"%PYTHON_EXE%" -m pip install --upgrade pip
 
 echo.
-echo Instalando librerias necesarias (esto puede tardar varios minutos)...
-python -m pip install -r requirements.txt
+echo Instalando librerias necesarias desde requirements.txt...
+"%PYTHON_EXE%" -m pip install -r requirements.txt
 if %errorlevel% neq 0 (
     echo.
     echo [ERROR] Fallo la instalacion de una o mas librerias.

@@ -194,16 +194,13 @@ def pdf_estado_cuenta(row, dfa, dfr=None, avance=None, mes_corte=None, fecha_hoy
         elems.append(Spacer(1, 8))
 
         filas_tabla = [["Fecha","Mes","Saldo Inicial","Interés","Capital","Saldo Final"]]
-        _muestra = dfa if len(dfa) <= 24 else pd.concat([dfa.head(12), dfa.tail(12)])
-        for _, r in _muestra.iterrows():
+        for _, r in dfa.iterrows():
             filas_tabla.append([
                 str(r['Fecha']), str(int(r['Mes'])),
                 f"${r['Saldo_Ini']:,.2f}" if 'Saldo_Ini' in r else '',
                 f"${r['Interes']:,.2f}", f"${r['Capital']:,.2f}", f"${r['Saldo_Fin']:,.2f}",
             ])
-        if len(dfa) > 24:
-            filas_tabla.insert(13, ["…","…","…","…","…","…"])
-        t_amort = Table(filas_tabla, colWidths=[62,32,88,80,80,88])
+        t_amort = Table(filas_tabla, colWidths=[62,32,88,80,80,88], repeatRows=1)
         t_amort.setStyle(TableStyle([
             ('BACKGROUND',(0,0),(-1,0),rl_colors.HexColor("#1E5C4F")),('TEXTCOLOR',(0,0),(-1,0),rl_colors.whitesmoke),
             ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'), ('FONTSIZE',(0,0),(-1,-1),7),
@@ -217,8 +214,7 @@ def pdf_estado_cuenta(row, dfa, dfr=None, avance=None, mes_corte=None, fecha_hoy
         elems.append(Spacer(1, 14))
         elems.append(Paragraph("<b>Acumulación del Residual</b>", esub))
         filas_res = [["Fecha","Mes","VP Residual","Saldo Inicial","Interés","Saldo Final","Residual Pactado"]]
-        _muestra_r = dfr if len(dfr) <= 24 else pd.concat([dfr.head(12), dfr.tail(12)])
-        for _, r in _muestra_r.iterrows():
+        for _, r in dfr.iterrows():
             filas_res.append([
                 str(r['Fecha']), str(int(r['Mes'])),
                 f"${r['VP_Residual']:,.2f}" if 'VP_Residual' in r else '',
@@ -227,9 +223,7 @@ def pdf_estado_cuenta(row, dfa, dfr=None, avance=None, mes_corte=None, fecha_hoy
                 f"${r['Saldo_Fin']:,.2f}" if 'Saldo_Fin' in r else '',
                 f"${r['Residual_Pactado']:,.2f}" if 'Residual_Pactado' in r else '',
             ])
-        if len(dfr) > 24:
-            filas_res.insert(13, ["…"]*7)
-        t_res = Table(filas_res, colWidths=[52,26,72,72,64,72,80])
+        t_res = Table(filas_res, colWidths=[52,26,72,72,64,72,80], repeatRows=1)
         t_res.setStyle(TableStyle([
             ('BACKGROUND',(0,0),(-1,0),rl_colors.HexColor("#1E5C4F")),('TEXTCOLOR',(0,0),(-1,0),rl_colors.whitesmoke),
             ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'), ('FONTSIZE',(0,0),(-1,-1),6.5),
