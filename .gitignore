@@ -1,46 +1,4 @@
-```gitignore
-# Compiled Python files
-*.pyc
-__pycache__/
-
-# Virtual environments
-venv/
-.venv/
-env/
-
-# Logs
-*.log
-
-# Environment variables
-.env
-.env.local
-*.env.*
-
-# IDE specific
-.vscode/
-.idea/
-*.swp
-*.swo
-*.tmp
-
-# Build artifacts
-dist/
-build/
-target/
-
-# Dependencies cache
-node_modules/
-.mypy_cache/
-.pytest_cache/
-.coverage
-coverage/
-htmlcov/
-
-# System files
-.DS_Store
-Thumbs.db
 ```
-
-Wait, I need to reconsider. The only modified file is 'app.py', which is a source code file. There are no build artifacts, dependency directories, or temporary files in the changes. According to rule #6, if the changes contain only source files and no build artifacts, dependencies, or temp files, I should output an empty .gitignore.
-
-(empty)
+__pycache__/
+*.pyc
+```
