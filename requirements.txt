@@ -14,3 +14,4 @@ streamlit-desktop-app==0.3.4
 pyinstaller==6.11.1
 pyzipper==0.3.6
 cryptography>=42.0.0
+python-dotenv
