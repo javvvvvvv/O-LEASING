@@ -21,6 +21,11 @@ Base de datos propia (data/usuarios.db), separada de los .db de cada
 empresa, para que borrar/restaurar la base de una empresa nunca afecte
 las cuentas de acceso.
 
+NUEVO: Sistema de grupos de usuarios y empresas asignadas
+- Los usuarios pertenecen a grupos que definen qué empresas pueden ver
+- El super_usuario puede administrar todos los usuarios y grupos
+- Cada grupo tiene asignado un conjunto de empresas visibles
+
 Reglas de esta capa (igual que models/db.py):
 - Nada aquí lee `st.session_state`; todo recibe lo que necesita como
   parámetro. Las decisiones de "quién es el usuario en turno" viven en
@@ -35,9 +40,10 @@ import hashlib
 import secrets
 from datetime import datetime
 
-ROLES = ("admin", "captura", "lectura")
+ROLES = ("super_usuario", "admin", "captura", "lectura")
 ROL_LABELS = {
-    "admin": "Administrador (acceso total)",
+    "super_usuario": "Super Usuario (administración total de usuarios y grupos)",
+    "admin": "Administrador (acceso total a empresas asignadas)",
     "captura": "Captura (puede registrar y editar, no puede cambiar configuración)",
     "lectura": "Solo lectura (puede consultar, no puede guardar cambios)",
 }
@@ -63,6 +69,7 @@ def get_auth_db_path(data_dir: str) -> str:
 def init_auth_db(db_path: str) -> None:
     conn = sqlite3.connect(db_path)
     try:
+        # Tabla de usuarios con grupo_id
         conn.execute("""
             CREATE TABLE IF NOT EXISTS usuarios (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -70,10 +77,31 @@ def init_auth_db(db_path: str) -> None:
                 nombre_completo TEXT NOT NULL,
                 password_hash TEXT NOT NULL,
                 password_salt TEXT NOT NULL,
-                rol TEXT NOT NULL CHECK(rol IN ('admin','captura','lectura')),
+                rol TEXT NOT NULL CHECK(rol IN ('super_usuario','admin','captura','lectura')),
+                grupo_id INTEGER,
                 activo INTEGER NOT NULL DEFAULT 1,
                 creado_en TEXT NOT NULL,
-                ultimo_login TEXT
+                ultimo_login TEXT,
+                FOREIGN KEY (grupo_id) REFERENCES grupos(id)
+            )
+        """)
+        # Tabla de grupos de usuarios
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS grupos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nombre_grupo TEXT UNIQUE NOT NULL,
+                descripcion TEXT,
+                creado_en TEXT NOT NULL
+            )
+        """)
+        # Tabla intermedia grupo-empresas (qué empresas ve cada grupo)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS grupo_empresas (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                grupo_id INTEGER NOT NULL,
+                empresa_id TEXT NOT NULL,
+                UNIQUE(grupo_id, empresa_id),
+                FOREIGN KEY (grupo_id) REFERENCES grupos(id) ON DELETE CASCADE
             )
         """)
         conn.commit()
@@ -90,7 +118,7 @@ def hay_usuarios(db_path: str) -> bool:
         conn.close()
 
 
-def crear_usuario(db_path: str, username: str, nombre_completo: str, password: str, rol: str) -> tuple[bool, str]:
+def crear_usuario(db_path: str, username: str, nombre_completo: str, password: str, rol: str, grupo_id: int = None) -> tuple[bool, str]:
     username = (username or "").strip().lower()
     nombre_completo = (nombre_completo or "").strip()
     if not username or not nombre_completo:
@@ -104,9 +132,9 @@ def crear_usuario(db_path: str, username: str, nombre_completo: str, password: s
     try:
         try:
             conn.execute(
-                "INSERT INTO usuarios (username, nombre_completo, password_hash, password_salt, rol, activo, creado_en) "
-                "VALUES (?,?,?,?,?,1,?)",
-                (username, nombre_completo, hash_pw, salt_hex, rol, datetime.now().isoformat()),
+                "INSERT INTO usuarios (username, nombre_completo, password_hash, password_salt, rol, grupo_id, activo, creado_en) "
+                "VALUES (?,?,?,?,?,?,1,?)",
+                (username, nombre_completo, hash_pw, salt_hex, rol, grupo_id, datetime.now().isoformat()),
             )
             conn.commit()
             return True, "Usuario creado correctamente."
@@ -130,7 +158,13 @@ def verificar_login(db_path: str, username: str, password: str) -> dict | None:
             return None
         conn.execute("UPDATE usuarios SET ultimo_login=? WHERE id=?", (datetime.now().isoformat(), fila["id"]))
         conn.commit()
-        return {"id": fila["id"], "username": fila["username"], "nombre_completo": fila["nombre_completo"], "rol": fila["rol"]}
+        return {
+            "id": fila["id"], 
+            "username": fila["username"], 
+            "nombre_completo": fila["nombre_completo"], 
+            "rol": fila["rol"],
+            "grupo_id": fila["grupo_id"]
+        }
     finally:
         conn.close()
 
@@ -139,9 +173,12 @@ def listar_usuarios(db_path: str) -> list[dict]:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
-        filas = conn.execute(
-            "SELECT id, username, nombre_completo, rol, activo, ultimo_login FROM usuarios ORDER BY nombre_completo"
-        ).fetchall()
+        filas = conn.execute("""
+            SELECT u.id, u.username, u.nombre_completo, u.rol, u.activo, u.ultimo_login, u.grupo_id, g.nombre_grupo
+            FROM usuarios u
+            LEFT JOIN grupos g ON u.grupo_id = g.id
+            ORDER BY u.nombre_completo
+        """).fetchall()
         return [dict(f) for f in filas]
     finally:
         conn.close()
@@ -177,5 +214,113 @@ def resetear_password(db_path: str, user_id: int, password_nueva: str) -> tuple[
         conn.execute("UPDATE usuarios SET password_hash=?, password_salt=? WHERE id=?", (hash_pw, salt_hex, user_id))
         conn.commit()
         return True, "Contraseña actualizada."
+    finally:
+        conn.close()
+
+
+def actualizar_grupo_usuario(db_path: str, user_id: int, grupo_id: int | None) -> tuple[bool, str]:
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("UPDATE usuarios SET grupo_id=? WHERE id=?", (grupo_id, user_id))
+        conn.commit()
+        return True, "Grupo actualizado."
+    finally:
+        conn.close()
+
+
+# ==================== GESTIÓN DE GRUPOS ====================
+
+def crear_grupo(db_path: str, nombre_grupo: str, descripcion: str = "") -> tuple[bool, str]:
+    nombre_grupo = (nombre_grupo or "").strip()
+    if not nombre_grupo:
+        return False, "El nombre del grupo es obligatorio."
+    conn = sqlite3.connect(db_path)
+    try:
+        try:
+            conn.execute(
+                "INSERT INTO grupos (nombre_grupo, descripcion, creado_en) VALUES (?,?,?)",
+                (nombre_grupo, descripcion, datetime.now().isoformat()),
+            )
+            conn.commit()
+            return True, "Grupo creado correctamente."
+        except sqlite3.IntegrityError:
+            return False, f"El grupo '{nombre_grupo}' ya existe."
+    finally:
+        conn.close()
+
+
+def listar_grupos(db_path: str) -> list[dict]:
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        filas = conn.execute("SELECT * FROM grupos ORDER BY nombre_grupo").fetchall()
+        return [dict(f) for f in filas]
+    finally:
+        conn.close()
+
+
+def eliminar_grupo(db_path: str, grupo_id: int) -> tuple[bool, str]:
+    conn = sqlite3.connect(db_path)
+    try:
+        # Verificar si hay usuarios en este grupo
+        usuarios_en_grupo = conn.execute("SELECT COUNT(*) FROM usuarios WHERE grupo_id=?", (grupo_id,)).fetchone()[0]
+        if usuarios_en_grupo > 0:
+            return False, f"No se puede eliminar: hay {usuarios_en_grupo} usuario(s) en este grupo."
+        conn.execute("DELETE FROM grupo_empresas WHERE grupo_id=?", (grupo_id,))
+        conn.execute("DELETE FROM grupos WHERE id=?", (grupo_id,))
+        conn.commit()
+        return True, "Grupo eliminado."
+    finally:
+        conn.close()
+
+
+# ==================== GESTIÓN DE EMPRESAS POR GRUPO ====================
+
+def obtener_empresas_grupo(db_path: str, grupo_id: int) -> list[str]:
+    """Retorna lista de empresa_ids que puede ver un grupo."""
+    conn = sqlite3.connect(db_path)
+    try:
+        filas = conn.execute("SELECT empresa_id FROM grupo_empresas WHERE grupo_id=?", (grupo_id,)).fetchall()
+        return [f[0] for f in filas]
+    finally:
+        conn.close()
+
+
+def asignar_empresa_a_grupo(db_path: str, grupo_id: int, empresa_id: str) -> tuple[bool, str]:
+    conn = sqlite3.connect(db_path)
+    try:
+        try:
+            conn.execute("INSERT INTO grupo_empresas (grupo_id, empresa_id) VALUES (?,?)", (grupo_id, empresa_id))
+            conn.commit()
+            return True, "Empresa asignada al grupo."
+        except sqlite3.IntegrityError:
+            return False, "Esta empresa ya está asignada a este grupo."
+    finally:
+        conn.close()
+
+
+def remover_empresa_de_grupo(db_path: str, grupo_id: int, empresa_id: str) -> tuple[bool, str]:
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("DELETE FROM grupo_empresas WHERE grupo_id=? AND empresa_id=?", (grupo_id, empresa_id))
+        conn.commit()
+        return True, "Empresa removida del grupo."
+    finally:
+        conn.close()
+
+
+def obtener_grupos_con_empresas(db_path: str) -> list[dict]:
+    """Retorna todos los grupos con sus empresas asignadas."""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        grupos = conn.execute("SELECT * FROM grupos ORDER BY nombre_grupo").fetchall()
+        resultado = []
+        for g in grupos:
+            empresas = conn.execute("SELECT empresa_id FROM grupo_empresas WHERE grupo_id=?", (g["id"],)).fetchall()
+            grupo_dict = dict(g)
+            grupo_dict["empresas"] = [e["empresa_id"] for e in empresas]
+            resultado.append(grupo_dict)
+        return resultado
     finally:
         conn.close()

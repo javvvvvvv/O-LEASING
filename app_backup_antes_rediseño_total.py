@@ -45,11 +45,7 @@ except ImportError:
 from models.auth import (
     get_auth_db_path, init_auth_db, hay_usuarios, crear_usuario,
     verificar_login, listar_usuarios, cambiar_estado_usuario,
-    cambiar_rol_usuario, resetear_password, actualizar_grupo_usuario,
-    crear_grupo, listar_grupos, eliminar_grupo,
-    obtener_empresas_grupo, asignar_empresa_a_grupo, remover_empresa_de_grupo,
-    obtener_grupos_con_empresas,
-    ROLES, ROL_LABELS,
+    cambiar_rol_usuario, resetear_password, ROLES, ROL_LABELS,
 )
 from models.configuracion import (
     cargar_catalogo, guardar_catalogo, get_cfg, set_cfg,
@@ -751,33 +747,30 @@ if not st.session_state.get("auth_user"):
                 if os.path.exists(_logo_login_path):
                     st.image(_logo_login_path, width=190)
                 if not hay_usuarios(AUTH_DB):
-                    st.markdown('<h3 class="login-title">Crea el usuario super administrador</h3>', unsafe_allow_html=True)
-                    st.markdown('<div class="login-sub">Es la primera vez que se abre el sistema — este será el usuario con acceso total a todo.</div>', unsafe_allow_html=True)
+                    st.markdown('<h3>Crea el usuario administrador</h3>', unsafe_allow_html=True)
+                    st.markdown('<div class="login-sub">Es la primera vez que se abre el sistema — este será el usuario con acceso total.</div>', unsafe_allow_html=True)
                     with st.form("bootstrap_admin"):
-                        _bu = st.text_input("Usuario", placeholder="ej. admin")
-                        _bn = st.text_input("Nombre completo", placeholder="Nombre del administrador")
-                        _bp1 = st.text_input("Contraseña", type="password", placeholder="Mínimo 6 caracteres")
+                        _bu = st.text_input("Usuario")
+                        _bn = st.text_input("Nombre completo")
+                        _bp1 = st.text_input("Contraseña", type="password")
                         _bp2 = st.text_input("Confirmar contraseña", type="password")
-                        if st.form_submit_button("Crear super administrador", use_container_width=True):
+                        if st.form_submit_button("Crear administrador", width='stretch'):
                             if _bp1 != _bp2:
                                 st.error("Las contraseñas no coinciden.")
                             else:
-                                ok, msg = crear_usuario(AUTH_DB, _bu, _bn, _bp1, "super_usuario")
+                                ok, msg = crear_usuario(AUTH_DB, _bu, _bn, _bp1, "admin")
                                 if ok:
                                     st.success(msg + " Ahora inicia sesión.")
                                     st.rerun()
                                 else:
                                     st.error(msg)
                 else:
-                    st.markdown('<h3 class="login-title">Iniciar sesión</h3>', unsafe_allow_html=True)
+                    st.markdown('<h3>Iniciar sesión</h3>', unsafe_allow_html=True)
                     st.markdown('<div class="login-sub">Sistema de gestión de arrendamiento</div>', unsafe_allow_html=True)
                     with st.form("login_form"):
-                        _lu = st.text_input("Usuario", placeholder="Tu usuario")
-                        _lp = st.text_input("Contraseña", type="password", placeholder="Tu contraseña")
-                        col_btn1, col_btn2 = st.columns([3, 1])
-                        with col_btn1:
-                            submitted = st.form_submit_button("Entrar", use_container_width=True)
-                        if submitted:
+                        _lu = st.text_input("Usuario")
+                        _lp = st.text_input("Contraseña", type="password")
+                        if st.form_submit_button("Entrar", width='stretch'):
                             _user = verificar_login(AUTH_DB, _lu, _lp)
                             if _user:
                                 st.session_state["auth_user"] = _user
@@ -4060,34 +4053,19 @@ st.sidebar.markdown(f'<div class="saludo-sidebar">{_saludo}</div>', unsafe_allow
 # sección de contexto. Ahora comparten una sola tarjeta.
 with st.sidebar.container(key="contexto_wrap", border=True):
     st.markdown('<div class="emp-label">Empresa activa</div>', unsafe_allow_html=True)
-    _emp_lista_raw = load_empresas()
-    # Filtrar empresas según grupo del usuario
-    _emp_lista = obtener_empresas_visibles(AUTH_USER, _emp_lista_raw)
-    if not _emp_lista:
-        st.warning("No tienes empresas asignadas. Contacta al administrador.")
-        _emp_nombres = ["Sin empresas"]
-        _emp_idx_actual = 0
-    else:
-        _emp_nombres = [e['nombre'] for e in _emp_lista]
-        _emp_idx_actual = next((i for i, e in enumerate(_emp_lista) if e['id'] == emp['id']), 0)
-        # Si la empresa actual no está en la lista filtrada, usar la primera disponible
-        if _emp_idx_actual >= len(_emp_lista):
-            _emp_idx_actual = 0
-            st.session_state['empresa_id'] = _emp_lista[0]['id']
-            limpiar_seleccion_contrato()
-            st.session_state['_refresh'] = True
-    
-    if _emp_lista and len(_emp_lista) > 0:
-        _emp_sel = st.selectbox(
-            "Cambiar de empresa", _emp_nombres, index=_emp_idx_actual,
-            key="sidebar_empresa_switch", label_visibility="collapsed",
-            help="Cambia de empresa sin salir de la pantalla en la que estás."
-        )
-        if _emp_sel != _emp_lista[_emp_idx_actual]['nombre']:
-            _emp_destino = next(e for e in _emp_lista if e['nombre'] == _emp_sel)
-            st.session_state['empresa_id'] = _emp_destino['id']
-            limpiar_seleccion_contrato()
-            st.session_state['_refresh'] = True
+    _emp_lista = load_empresas()
+    _emp_nombres = [e['nombre'] for e in _emp_lista]
+    _emp_idx_actual = next((i for i, e in enumerate(_emp_lista) if e['id'] == emp['id']), 0)
+    _emp_sel = st.selectbox(
+        "Cambiar de empresa", _emp_nombres, index=_emp_idx_actual,
+        key="sidebar_empresa_switch", label_visibility="collapsed",
+        help="Cambia de empresa sin salir de la pantalla en la que estás."
+    )
+    if _emp_sel != _emp_lista[_emp_idx_actual]['nombre']:
+        _emp_destino = next(e for e in _emp_lista if e['nombre'] == _emp_sel)
+        st.session_state['empresa_id'] = _emp_destino['id']
+        limpiar_seleccion_contrato()
+        st.session_state['_refresh'] = True
 
     with st.expander(f"Fecha de análisis — {hoy_ref().strftime('%d/%b/%Y')}" + (" (cierre pasado)" if viendo_fecha_pasada() else " (hoy)")):
         _fa = st.date_input(
@@ -4189,26 +4167,12 @@ DESCRIPCIONES = {
 # respaldos, altas/bajas de empresas) — solo el rol admin los ve en el menú.
 AUTH_USER = st.session_state.get("auth_user", {"username": "—", "nombre_completo": "—", "rol": "admin"})
 ROL_ACTUAL = AUTH_USER.get("rol", "admin")
-if ROL_ACTUAL not in ("admin", "super_usuario"):
+if ROL_ACTUAL != "admin":
     GRUPOS = {g: its for g, its in GRUPOS.items() if g != "Configuración"}
 
 # El rol lectura puede consultar todo pero no capturar/editar/borrar — se
 # bloquean aquí las pantallas cuyo propósito central es escribir datos.
 PANTALLAS_SOLO_ESCRITURA = {"Carga Masiva y Altas", "Editar / Eliminar", "Gestor de Bajas"}
-
-# Filtrar empresas visibles según grupo del usuario (si no es super_usuario)
-def obtener_empresas_visibles(usuario: dict, todas_empresas: list) -> list:
-    """Retorna lista de empresas que el usuario puede ver según su grupo."""
-    if usuario.get("rol") == "super_usuario":
-        return todas_empresas  # Super usuario ve todas
-    grupo_id = usuario.get("grupo_id")
-    if not grupo_id:
-        return todas_empresas  # Sin grupo = ve todas (compatibilidad)
-    auth_db = get_auth_db_path(DATA_DIR)
-    empresas_grupo = obtener_empresas_grupo(auth_db, grupo_id)
-    if not empresas_grupo:
-        return []  # Grupo sin empresas asignadas
-    return [e for e in todas_empresas if e["id"] in empresas_grupo]
 
 if 'menu_grupo' not in st.session_state:
     st.session_state['menu_grupo'] = "Cartera"
@@ -6795,198 +6759,61 @@ try:
         ec1.metric("ID",emp_act['id']); ec2.metric("DB",emp_act['db_path'])
         ec3.metric("Total contratos",len(df_info)); ec4.metric("Activos",len(df_info[df_info['Estatus']=='ACTIVO']) if not df_info.empty else 0)
 
-        elif menu=="Usuarios y Roles":
-        st.title("👥 Usuarios, Grupos y Permisos")
-        
-        # Solo super_usuario puede gestionar usuarios y grupos
-        if ROL_ACTUAL != "super_usuario":
-            st.warning("⚠️ Solo el super usuario puede administrar usuarios y grupos.")
-            st.stop()
-        
-        st.markdown("""
-        **Gestión completa de accesos:**
-        - Crea grupos de usuarios para organizar quién ve qué empresas
-        - Asigna empresas a cada grupo
-        - Los usuarios heredan los permisos de su grupo
-        
-        _Roles disponibles: **super_usuario** (acceso total), **admin**, **captura**, **lectura**_
-        """)
-        
-        # Pestañas para organización
-        tab1, tab2, tab3, tab4 = st.tabs(["📋 Usuarios", "👥 Grupos", "🏢 Empresas por Grupo", "➕ Nuevo Usuario"])
-        
-        with tab1:
-            st.subheader("Usuarios Registrados")
-            _usrs = listar_usuarios(AUTH_DB)
-            for _u in _usrs:
-                grupo_nombre = _u.get('nombre_grupo', 'Sin grupo')
-                with st.expander(
-                    f"**{_u['nombre_completo']}**  ·  @{_u['username']}  ·  {ROL_LABELS.get(_u['rol'], _u['rol'])}  ·  📁 {grupo_nombre}"
-                    + ("" if _u['activo'] else "  —  🔴 DESACTIVADO"),
-                    expanded=False,
-                ):
-                    _uc1, _uc2, _uc3, _uc4 = st.columns([2, 1, 1, 1])
-                    
-                    # Rol
-                    _nuevo_rol = _uc1.selectbox(
-                        "Rol", ROLES, index=ROLES.index(_u['rol']), key=f"rol_{_u['id']}",
-                        format_func=lambda r: ROL_LABELS.get(r, r),
-                    )
-                    if _nuevo_rol != _u['rol']:
-                        if _uc1.button("Guardar rol", key=f"guardar_rol_{_u['id']}"):
-                            ok, msg = cambiar_rol_usuario(AUTH_DB, _u['id'], _nuevo_rol)
-                            (st.success if ok else st.error)(msg)
-                            st.session_state['_refresh'] = True
-                    
-                    # Grupo
-                    grupos = listar_grupos(AUTH_DB)
-                    grupo_options = ["Sin grupo"] + [g['nombre_grupo'] for g in grupos]
-                    grupo_actual = _u.get('nombre_grupo', 'Sin grupo') or 'Sin grupo'
-                    _nuevo_grupo = _uc2.selectbox(
-                        "Grupo", grupo_options, 
-                        index=grupo_options.index(grupo_actual) if grupo_actual in grupo_options else 0,
-                        key=f"grupo_{_u['id']}"
-                    )
-                    if _nuevo_grupo != grupo_actual:
-                        if _uc2.button("Guardar grupo", key=f"guardar_grupo_{_u['id']}"):
-                            grupo_id = None if _nuevo_grupo == "Sin grupo" else next((g['id'] for g in grupos if g['nombre_grupo'] == _nuevo_grupo), None)
-                            ok, msg = actualizar_grupo_usuario(AUTH_DB, _u['id'], grupo_id)
-                            (st.success if ok else st.error)(msg)
-                            st.session_state['_refresh'] = True
-                    
-                    # Activar/Desactivar
-                    if _u['activo']:
-                        if _uc3.button("🔒 Desactivar", key=f"desact_{_u['id']}",
-                                        disabled=(_u['username'] == AUTH_USER.get('username'))):
-                            cambiar_estado_usuario(AUTH_DB, _u['id'], False)
-                            st.session_state['_refresh'] = True
-                    else:
-                        if _uc3.button("✅ Reactivar", key=f"react_{_u['id']}"):
-                            cambiar_estado_usuario(AUTH_DB, _u['id'], True)
-                            st.session_state['_refresh'] = True
-                    
-                    # Reset password
-                    with _uc4.popover("🔑 Contraseña"):
-                        _npw = st.text_input("Nueva contraseña", type="password", key=f"npw_{_u['id']}")
-                        if st.button("Guardar", key=f"npw_btn_{_u['id']}"):
-                            ok, msg = resetear_password(AUTH_DB, _u['id'], _npw)
-                            (st.success if ok else st.error)(msg)
-                    
-                    st.caption(f"Último acceso: {_u['ultimo_login'] or 'Nunca'}")
+    elif menu=="Usuarios y Roles":
+        st.title("Usuarios y Roles")
+        st.markdown(
+            "Cada persona debe entrar con su propio usuario. El rol define qué puede hacer una vez adentro: "
+            "**admin** ve y cambia todo, **captura** da de alta y edita contratos pero no toca la configuración, "
+            "**lectura** solo consulta."
+        )
+        _usrs = listar_usuarios(AUTH_DB)
+        for _u in _usrs:
+            with st.expander(
+                f"{_u['nombre_completo']}  ·  @{_u['username']}  ·  {ROL_LABELS.get(_u['rol'], _u['rol'])}"
+                + ("" if _u['activo'] else "  —  DESACTIVADO"),
+                expanded=False,
+            ):
+                _uc1, _uc2, _uc3 = st.columns([2, 1, 1])
+                _nuevo_rol = _uc1.selectbox(
+                    "Rol", ROLES, index=ROLES.index(_u['rol']), key=f"rol_{_u['id']}",
+                    format_func=lambda r: ROL_LABELS.get(r, r),
+                )
+                if _nuevo_rol != _u['rol']:
+                    if _uc1.button("Guardar rol", key=f"guardar_rol_{_u['id']}"):
+                        ok, msg = cambiar_rol_usuario(AUTH_DB, _u['id'], _nuevo_rol)
+                        (st.success if ok else st.error)(msg)
+                        st.session_state['_refresh'] = True
+                if _u['activo']:
+                    if _uc2.button("Desactivar", key=f"desact_{_u['id']}",
+                                    disabled=(_u['username'] == AUTH_USER.get('username'))):
+                        cambiar_estado_usuario(AUTH_DB, _u['id'], False)
+                        st.session_state['_refresh'] = True
+                else:
+                    if _uc2.button("Reactivar", key=f"react_{_u['id']}"):
+                        cambiar_estado_usuario(AUTH_DB, _u['id'], True)
+                        st.session_state['_refresh'] = True
+                with _uc3.popover("Restablecer contraseña"):
+                    _npw = st.text_input("Nueva contraseña", type="password", key=f"npw_{_u['id']}")
+                    if st.button("Guardar", key=f"npw_btn_{_u['id']}"):
+                        ok, msg = resetear_password(AUTH_DB, _u['id'], _npw)
+                        (st.success if ok else st.error)(msg)
+                st.caption(f"Último acceso: {_u['ultimo_login'] or 'nunca'}")
 
-        with tab2:
-            st.subheader("Gestión de Grupos")
-            st.info("Los grupos permiten organizar usuarios y controlar qué empresas pueden ver.")
-            
-            grupos = listar_grupos(AUTH_DB)
-            
-            # Crear nuevo grupo
-            with st.expander("➕ Crear Nuevo Grupo"):
-                with st.form("nuevo_grupo"):
-                    ng_nombre = st.text_input("Nombre del grupo", placeholder="ej. Equipo Ventas, Sucursal Norte")
-                    ng_desc = st.text_area("Descripción (opcional)", placeholder="Propósito del grupo...")
-                    if st.form_submit_button("Crear grupo", use_container_width=True):
-                        ok, msg = crear_grupo(AUTH_DB, ng_nombre, ng_desc)
-                        if ok:
-                            st.success(msg)
-                            st.session_state['_refresh'] = True
-                        else:
-                            st.error(msg)
-            
-            st.divider()
-            
-            # Listar grupos existentes
-            if not grupos:
-                st.write("No hay grupos creados aún.")
-            else:
-                for g in grupos:
-                    with st.expander(f"**{g['nombre_grupo']}** — {g['descripcion'] or 'Sin descripción'}", expanded=False):
-                        gc1, gc2 = st.columns([3, 1])
-                        
-                        # Mostrar empresas asignadas
-                        empresas_asignadas = obtener_empresas_grupo(AUTH_DB, g['id'])
-                        todas_emp = load_empresas()
-                        emp_nombres = {e['id']: e['nombre'] for e in todas_emp}
-                        
-                        gc1.write(f"**Empresas asignadas:** {len(empresas_asignadas)}")
-                        if empresas_asignadas:
-                            for eid in empresas_asignadas:
-                                gc1.caption(f"• {emp_nombres.get(eid, eid)}")
-                        else:
-                            gc1.caption("_Sin empresas asignadas_")
-                        
-                        # Eliminar grupo
-                        if gc2.button("🗑️ Eliminar", key=f"del_grp_{g['id']}", help="Solo si no tiene usuarios"):
-                            ok, msg = eliminar_grupo(AUTH_DB, g['id'])
-                            if ok:
-                                st.success(msg)
-                                st.session_state['_refresh'] = True
-                            else:
-                                st.error(msg)
-
-        with tab3:
-            st.subheader("Asignar Empresas a Grupos")
-            
-            grupos = listar_grupos(AUTH_DB)
-            todas_empresas = load_empresas()
-            
-            if not grupos:
-                st.warning("Crea un grupo primero en la pestaña 'Grupos'.")
-            else:
-                grupo_sel = st.selectbox("Selecciona un grupo", [g['nombre_grupo'] for g in grupos])
-                grupo_obj = next((g for g in grupos if g['nombre_grupo'] == grupo_sel), None)
-                
-                if grupo_obj:
-                    empresas_asignadas = obtener_empresas_grupo(AUTH_DB, grupo_obj['id'])
-                    
-                    st.write(f"**Empresas disponibles para asignar:**")
-                    cols = st.columns(2)
-                    for i, emp in enumerate(todas_empresas):
-                        col_idx = i % 2
-                        asignada = emp['id'] in empresas_asignadas
-                        btn_label = f"✅ {emp['nombre']}" if asignada else f"⬜ {emp['nombre']}"
-                        if cols[col_idx].button(btn_label, key=f"assign_{emp['id']}_{grupo_obj['id']}", use_container_width=True):
-                            if asignada:
-                                ok, msg = remover_empresa_de_grupo(AUTH_DB, grupo_obj['id'], emp['id'])
-                            else:
-                                ok, msg = asignar_empresa_a_grupo(AUTH_DB, grupo_obj['id'], emp['id'])
-                            if ok:
-                                st.success(msg)
-                                st.session_state['_refresh'] = True
-                            else:
-                                st.error(msg)
-
-        with tab4:
-            st.subheader("Crear Nuevo Usuario")
-            st.info("El usuario será creado y podrás asignarlo a un grupo después.")
-            
-            grupos = listar_grupos(AUTH_DB)
-            
-            with st.form("nuevo_usuario"):
-                _nu_user = st.text_input("Usuario (para iniciar sesión)", placeholder="ej. juan.perez")
-                _nu_nombre = st.text_input("Nombre completo", placeholder="Nombre del usuario")
-                _nu_rol = st.selectbox("Rol", ROLES, format_func=lambda r: ROL_LABELS.get(r, r))
-                
-                # Selector de grupo opcional
-                grupo_options = ["Sin grupo"] + [g['nombre_grupo'] for g in grupos]
-                _nu_grupo = st.selectbox("Grupo (opcional)", grupo_options)
-                
-                _nu_pw1 = st.text_input("Contraseña", type="password", placeholder="Mínimo 6 caracteres")
-                _nu_pw2 = st.text_input("Confirmar contraseña", type="password")
-                
-                if st.form_submit_button("Crear usuario", use_container_width=True):
-                    if _nu_pw1 != _nu_pw2:
-                        st.error("Las contraseñas no coinciden.")
-                    elif len(_nu_pw1) < 6:
-                        st.error("La contraseña debe tener al menos 6 caracteres.")
-                    else:
-                        grupo_id = None if _nu_grupo == "Sin grupo" else next((g['id'] for g in grupos if g['nombre_grupo'] == _nu_grupo), None)
-                        ok, msg = crear_usuario(AUTH_DB, _nu_user, _nu_nombre, _nu_pw1, _nu_rol, grupo_id)
-                        if ok:
-                            st.success(msg)
-                            st.session_state['_refresh'] = True
-                        else:
-                            st.error(msg)
+        st.divider(); st.subheader("Agregar Nuevo Usuario")
+        with st.form("nuevo_usuario"):
+            _nu_user = st.text_input("Usuario (para iniciar sesión)")
+            _nu_nombre = st.text_input("Nombre completo")
+            _nu_rol = st.selectbox("Rol", ROLES, format_func=lambda r: ROL_LABELS.get(r, r))
+            _nu_pw1 = st.text_input("Contraseña", type="password")
+            _nu_pw2 = st.text_input("Confirmar contraseña", type="password")
+            if st.form_submit_button("Crear usuario"):
+                if _nu_pw1 != _nu_pw2:
+                    st.error("Las contraseñas no coinciden.")
+                else:
+                    ok, msg = crear_usuario(AUTH_DB, _nu_user, _nu_nombre, _nu_pw1, _nu_rol)
+                    (st.success if ok else st.error)(msg)
+                    if ok:
+                        st.session_state['_refresh'] = True
 
     # FACTURACIÓN DE INTERESES (RANGO DE FECHAS)
     elif menu=="Facturación de Intereses":
