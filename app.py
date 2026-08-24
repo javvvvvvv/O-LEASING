@@ -31,6 +31,7 @@
 # Autor: Javier Illán
 # Contacto para dudas de esta app: illanjavier9@gmail.com
 import streamlit as st
+from ui.components import sfig, explain, estado_vacio, sz, titled_chart, titled_table
 import pandas as pd
 import numpy as np
 import numpy_financial as npf
@@ -670,38 +671,59 @@ if not st.session_state.get('auth_user'):
                 .st-key-login_wrap {
                     position: relative;
                     z-index: 10;
-                    background: rgba(255, 255, 255, 0.1) !important;
+                    background: rgba(15, 15, 15, 0.4) !important;
                     backdrop-filter: blur(15px) !important;
                     -webkit-backdrop-filter: blur(15px) !important;
                     padding: 40px;
                     border-radius: 12px;
-                    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
+                    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
                     border: 1px solid rgba(255, 255, 255, 0.2);
                 }
                 .st-key-login_wrap h3, .st-key-login_wrap p, .st-key-login_wrap label, .st-key-login_wrap div {
                     text-align: center;
                     color: white !important;
                 }
+                /* Remove Streamlit form border inside login */
+                .st-key-login_wrap [data-testid="stForm"] {
+                    border: none !important;
+                    background: transparent !important;
+                    padding: 0 !important;
+                }
                 /* Inputs with readable background */
                 .st-key-login_wrap input {
-                    background: rgba(255, 255, 255, 0.9) !important;
+                    background: rgba(255, 255, 255, 0.95) !important;
                     color: black !important;
-                    border-radius: 6px !important;
+                    border-radius: 8px !important;
+                    padding: 10px 15px !important;
+                }
+                /* Login button styling */
+                .st-key-login_wrap [data-testid="stFormSubmitButton"] button {
+                    background: linear-gradient(90deg, #ff8c00, #ff4500) !important;
+                    color: white !important;
+                    border: none !important;
+                    font-weight: bold !important;
+                    border-radius: 8px !important;
+                    transition: transform 0.2s ease !important;
+                }
+                .st-key-login_wrap [data-testid="stFormSubmitButton"] button:hover {
+                    transform: scale(1.02) !important;
                 }
                 </style>""", unsafe_allow_html=True
             )
             with st.container(key='login_wrap'):
-                _logo_login_path = __import__('os').path.join(BASE_DIR, 'assets', 'o-leasing-logo.png')
-                if __import__('os').path.exists(_logo_login_path):
-                    col_logo1, col_logo2, col_logo3 = st.columns([1, 2, 1])
-                    with col_logo2:
-                        st.image(_logo_login_path, use_container_width=True)
+                _logo_b64 = _svg_b64(_LOGO_WORDMARK_CLARO_PATH)
+                if _logo_b64:
+                    st.markdown(
+                        f'<div style="text-align:center; margin-bottom: 20px;"><img src="data:image/svg+xml;base64,{_logo_b64}" style="width: 60%; max-width: 200px;"></div>',
+                        unsafe_allow_html=True
+                    )
+                
                 if not hay_usuarios(AUTH_DB):
-                    st.markdown('<h3 style="text-align:center;">Crea el usuario administrador</h3>', unsafe_allow_html=True)
-                    st.markdown('<p style="text-align:center;">Es la primera vez que se abre el sistema.</p>', unsafe_allow_html=True)
-                    with st.form('bootstrap_admin'):
-                        _bu = st.text_input('Usuario')
-                        _bn = st.text_input('Nombre completo')
+                    st.markdown('<h3 style="text-align:center; margin-bottom: 5px;">Bienvenido a O-Leasing</h3>', unsafe_allow_html=True)
+                    st.markdown('<p style="text-align:center; color: #ccc!important; margin-bottom: 20px;">Crea tu usuario administrador para comenzar.</p>', unsafe_allow_html=True)
+                    with st.form('bootstrap_admin', border=False):
+                        _bu = st.text_input('Usuario', placeholder='ej. admin')
+                        _bn = st.text_input('Nombre completo', placeholder='Tu nombre')
                         _bp1 = st.text_input('Contraseña', type='password')
                         _bp2 = st.text_input('Confirmar contraseña', type='password')
                         if st.form_submit_button('Crear administrador', use_container_width=True):
@@ -715,11 +737,11 @@ if not st.session_state.get('auth_user'):
                                 else:
                                     st.error(msg)
                 else:
-                    st.markdown('<h3 style="text-align:center;">Iniciar sesión</h3>', unsafe_allow_html=True)
-                    st.markdown('<p style="text-align:center;">Sistema de gestión de arrendamiento</p>', unsafe_allow_html=True)
-                    with st.form('login_form'):
-                        _lu = st.text_input('Usuario')
-                        _lp = st.text_input('Contraseña', type='password')
+                    st.markdown('<h3 style="text-align:center; margin-bottom: 5px;">Iniciar sesión</h3>', unsafe_allow_html=True)
+                    st.markdown('<p style="text-align:center; color: #ccc!important; margin-bottom: 20px;">Sistema de gestión de arrendamiento</p>', unsafe_allow_html=True)
+                    with st.form('login_form', border=False):
+                        _lu = st.text_input('Usuario', placeholder='Ingresa tu usuario')
+                        _lp = st.text_input('Contraseña', type='password', placeholder='Ingresa tu contraseña')
                         if st.form_submit_button('Entrar', use_container_width=True):
                             _user = verificar_login(AUTH_DB, _lu, _lp)
                             if _user:
@@ -732,86 +754,6 @@ if not st.session_state.get('auth_user'):
 
 
 
-def sfig(fig, title=None, h=300):
-    layout = dict(
-        font=dict(family="Segoe UI, Helvetica Neue, Arial, sans-serif", color="#565E68", size=12),
-        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        margin=dict(t=56, r=18, b=42, l=18),
-        hoverlabel=dict(bgcolor="#1E5C4F", font_color="#fff", bordercolor="#1E5C4F",
-                        font_size=13, font_family="Segoe UI, Helvetica Neue, Arial, sans-serif",
-                        align="left", namelength=-1),
-        xaxis=dict(gridcolor="rgba(32,36,43,.07)", linecolor="rgba(32,36,43,.16)",
-                   showspikes=True, spikethickness=1,
-                   spikecolor="rgba(30,92,79,.35)", spikedash="dot"),
-        yaxis=dict(gridcolor="rgba(32,36,43,.07)", linecolor="rgba(32,36,43,.16)"),
-        height=h,
-        bargap=0.22, bargroupgap=0.09,
-        colorway=PAL_PASTEL,
-        legend=dict(bgcolor="rgba(255,255,255,0)", bordercolor="rgba(32,36,43,.1)",
-                    borderwidth=0, font=dict(size=11)),
-    )
-    _title = title
-    if not _title:
-        _title = fig.layout.title.text if fig.layout.title and fig.layout.title.text else None
-    if _title:
-        layout['title'] = dict(
-            text=f"<span style='color:#1E5C4F;'>●</span>&nbsp; <b>{_title}</b>",
-            font=dict(size=14.5, color="#20242B"),
-            x=0.012, xanchor='left', y=0.97, yanchor='top'
-        )
-    fig.update_layout(**layout)
-    # Barras: esquinas rectas, sin relleno decorativo. Las líneas van rectas
-    # de un dato al siguiente (nada de curvas spline) — en un reporte
-    # financiero, suavizar la línea puede sugerir una tendencia que los
-    # datos reales no tienen.
-    fig.update_traces(
-        selector=dict(type='bar'),
-        marker_cornerradius=2,
-    )
-    fig.update_traces(
-        selector=dict(type='scatter'),
-        line_shape='linear',
-        marker=dict(line=dict(width=1, color="#FFFFFF"), size=6),
-    )
-    fig.update_traces(
-        selector=dict(type='pie'),
-        marker=dict(line=dict(color="#F3F4F6", width=2)),
-        textfont=dict(size=12, family="Segoe UI, Helvetica Neue, Arial, sans-serif"),
-        rotation=30,
-    )
-    return fig
-
-def explain(titulo, texto):
-    st.markdown(f"""<div class="chart-explain">
-      <span class="ce-title">{titulo}</span><br>
-      <span class="ce-body">{texto}</span>
-    </div>""", unsafe_allow_html=True)
-
-def estado_vacio(titulo, mensaje):
-    """Tarjeta centrada para pantallas sin datos — en vez de un st.info plano
-    que se siente como un error a medias, deja claro que la pantalla cargó
-    bien y solo no hay nada que mostrar todavía."""
-    st.markdown(f"""<div class="empty-state">
-      <span class="es-title">{titulo}</span>
-      <span class="es-msg">{mensaje}</span>
-    </div>""", unsafe_allow_html=True)
-
-def sz(series):
-    return pd.to_numeric(series, errors='coerce').fillna(1).replace([np.inf,-np.inf],1).clip(lower=0.1)
-
-def titled_chart(title, fig, use_container_width=True):
-    st.markdown(f'<span class="section-label">{title}</span>', unsafe_allow_html=True)
-    st.plotly_chart(fig, width=('stretch' if use_container_width else 'content'), key="pc_001")
-
-def titled_table(title, df_show, fmt_dict=None, cmap_col=None, key=None):
-    st.markdown(f'<span class="section-label">{title}</span>', unsafe_allow_html=True)
-    styled = df_show.style
-    if fmt_dict:
-        safe_fmt = {k:v for k,v in fmt_dict.items() if k in df_show.columns}
-        if safe_fmt: styled = styled.format(safe_fmt, na_rep="-")
-    if cmap_col and cmap_col in df_show.columns:
-        styled = styled.background_gradient(subset=[cmap_col], cmap=CMAP_INDIGO)
-    st.dataframe(styled, width='stretch', key="df_001")
 
 def facturacion_intereses_rango(fecha_ini: date, fecha_fin: date):
     df = obtener('ACTIVO')
