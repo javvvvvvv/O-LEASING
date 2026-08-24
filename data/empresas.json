@@ -1,0 +1,7 @@
+[
+  {
+    "id": "default",
+    "nombre": "Orange Leasing",
+    "db_path": "/workspace/leasing.db"
+  }
+]

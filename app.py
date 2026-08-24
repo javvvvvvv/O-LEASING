@@ -4057,12 +4057,28 @@ st.sidebar.markdown(f'<div class="saludo-sidebar">{_saludo}</div>', unsafe_allow
 # "Empresa activa" y "Fecha de análisis" son controles relacionados (ambos
 # cambian DESDE dónde estás viendo el sistema) — antes flotaban como dos
 # widgets sueltos, sin nada que los agrupara visualmente como una sola
+
+# Filtrar empresas visibles según grupo del usuario (si no es super_usuario)
+def obtener_empresas_visibles(usuario: dict, todas_empresas: list) -> list:
+    """Retorna lista de empresas que el usuario puede ver según su grupo."""
+    if usuario.get("rol") == "super_usuario":
+        return todas_empresas  # Super usuario ve todas
+    grupo_id = usuario.get("grupo_id")
+    if not grupo_id:
+        return todas_empresas  # Sin grupo = ve todas (compatibilidad)
+    auth_db = get_auth_db_path(DATA_DIR)
+    empresas_grupo = obtener_empresas_grupo(auth_db, grupo_id)
+    if not empresas_grupo:
+        return []  # Grupo sin empresas asignadas
+    return [e for e in todas_empresas if e["id"] in empresas_grupo]
+
 # sección de contexto. Ahora comparten una sola tarjeta.
 with st.sidebar.container(key="contexto_wrap", border=True):
     st.markdown('<div class="emp-label">Empresa activa</div>', unsafe_allow_html=True)
     _emp_lista_raw = load_empresas()
     # Filtrar empresas según grupo del usuario
-    _emp_lista = obtener_empresas_visibles(AUTH_USER, _emp_lista_raw)
+    AUTH_USER_LOCAL = st.session_state.get("auth_user", {"username": "—", "nombre_completo": "—", "rol": "admin"})
+    _emp_lista = obtener_empresas_visibles(AUTH_USER_LOCAL, _emp_lista_raw)
     if not _emp_lista:
         st.warning("No tienes empresas asignadas. Contacta al administrador.")
         _emp_nombres = ["Sin empresas"]
@@ -4189,20 +4205,6 @@ DESCRIPCIONES = {
 # respaldos, altas/bajas de empresas) — solo el rol admin los ve en el menú.
 AUTH_USER = st.session_state.get("auth_user", {"username": "—", "nombre_completo": "—", "rol": "admin"})
 ROL_ACTUAL = AUTH_USER.get("rol", "admin")
-
-# Filtrar empresas visibles según grupo del usuario (si no es super_usuario)
-def obtener_empresas_visibles(usuario: dict, todas_empresas: list) -> list:
-    """Retorna lista de empresas que el usuario puede ver según su grupo."""
-    if usuario.get("rol") == "super_usuario":
-        return todas_empresas  # Super usuario ve todas
-    grupo_id = usuario.get("grupo_id")
-    if not grupo_id:
-        return todas_empresas  # Sin grupo = ve todas (compatibilidad)
-    auth_db = get_auth_db_path(DATA_DIR)
-    empresas_grupo = obtener_empresas_grupo(auth_db, grupo_id)
-    if not empresas_grupo:
-        return []  # Grupo sin empresas asignadas
-    return [e for e in todas_empresas if e["id"] in empresas_grupo]
 
 if ROL_ACTUAL not in ("admin", "super_usuario"):
     GRUPOS = {g: its for g, its in GRUPOS.items() if g != "Configuración"}
