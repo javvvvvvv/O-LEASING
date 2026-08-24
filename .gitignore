@@ -1,11 +1,13 @@
 ```
-# Compiled Python files
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 
-# Database backup files
-respaldos_auto/
+# Database
+data/*.db
 
-# SQLite database files (if they are temporary/build artifacts)
-*.db
+# Logs
+*.log
 ```
