@@ -4192,10 +4192,6 @@ ROL_ACTUAL = AUTH_USER.get("rol", "admin")
 if ROL_ACTUAL not in ("admin", "super_usuario"):
     GRUPOS = {g: its for g, its in GRUPOS.items() if g != "Configuración"}
 
-# El rol lectura puede consultar todo pero no capturar/editar/borrar — se
-# bloquean aquí las pantallas cuyo propósito central es escribir datos.
-PANTALLAS_SOLO_ESCRITURA = {"Carga Masiva y Altas", "Editar / Eliminar", "Gestor de Bajas"}
-
 # Filtrar empresas visibles según grupo del usuario (si no es super_usuario)
 def obtener_empresas_visibles(usuario: dict, todas_empresas: list) -> list:
     """Retorna lista de empresas que el usuario puede ver según su grupo."""
@@ -4336,6 +4332,10 @@ st.markdown(f"""
     {'Viendo cierre al' if viendo_fecha_pasada() else 'Cálculos al'} {_hoy_ref_txt}
   </div>
 </div>
+# El rol lectura puede consultar todo pero no capturar/editar/borrar — se
+# bloquean aquí las pantallas cuyo propósito central es escribir datos.
+PANTALLAS_SOLO_ESCRITURA = {"Carga Masiva y Altas", "Editar / Eliminar", "Gestor de Bajas"}
+
 """, unsafe_allow_html=True)
 
 if ROL_ACTUAL == "lectura" and menu in PANTALLAS_SOLO_ESCRITURA:
@@ -6795,7 +6795,7 @@ try:
         ec1.metric("ID",emp_act['id']); ec2.metric("DB",emp_act['db_path'])
         ec3.metric("Total contratos",len(df_info)); ec4.metric("Activos",len(df_info[df_info['Estatus']=='ACTIVO']) if not df_info.empty else 0)
 
-        elif menu=="Usuarios y Roles":
+    elif menu=="Usuarios y Roles":
         st.title("👥 Usuarios, Grupos y Permisos")
         
         # Solo super_usuario puede gestionar usuarios y grupos
