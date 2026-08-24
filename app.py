@@ -478,11 +478,15 @@ if not st.session_state.get('auth_user'):
                     padding: 0 !important;
                 }
                 /* Inputs with readable background */
-                .st-key-login_wrap input {
+                .st-key-login_wrap div[data-testid="stTextInput"] input {
                     background: rgba(255, 255, 255, 0.95) !important;
                     color: black !important;
                     border-radius: 8px !important;
                     padding: 10px 15px !important;
+                    caret-color: black !important;
+                }
+                .st-key-login_wrap div[data-testid="stTextInput"] {
+                    margin-bottom: 15px;
                 }
                 /* Login button styling */
                 .st-key-login_wrap [data-testid="stFormSubmitButton"] button {
@@ -4919,8 +4923,7 @@ try:
                             saldos_ini_pdf = [round(inv,4)] + list(dfa_pdf['Saldo'].iloc[:-1].round(4))
                             dfa_pdf.insert(dfa_pdf.columns.get_loc('Interes'), 'Saldo_Ini', saldos_ini_pdf)
                             dfa_pdf.rename(columns={'Saldo':'Saldo_Fin'}, inplace=True)
-                            if mes_corte_ec is not None:
-                                dfa_pdf = dfa_pdf[dfa_pdf['Mes'] <= mes_corte_ec].copy()
+                            # Se genera el PDF completo siempre a peticion del usuario
                             dfr_pdf = None
                             if res > 0:
                                 vpr_pdf = vp_res(res, t, pl)
@@ -4928,8 +4931,7 @@ try:
                                 dfr_pdf['Fecha'] = dfr_pdf['Mes'].apply(lambda m: (fa + relativedelta(months=m)).strftime('%Y-%m'))
                                 dfr_pdf['Residual_Pactado'] = res
                                 dfr_pdf['VP_Residual']      = round(vpr_pdf, 4)
-                                if mes_corte_ec is not None:
-                                    dfr_pdf = dfr_pdf[dfr_pdf['Mes'] <= mes_corte_ec].copy()
+                                # Se genera el PDF completo siempre a peticion del usuario
                             _avp_pdf = calcular_avance_pago(row) if str(row.get('Estatus','')).upper() != 'BAJA' else None
                             pdf_buf = pdf_estado_cuenta(
                                 row, dfa_pdf, dfr=dfr_pdf, avance=_avp_pdf, mes_corte=mes_corte_ec,
