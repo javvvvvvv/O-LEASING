@@ -3728,7 +3728,13 @@ if not st.session_state.get(ikey):
         init_db()
         st.session_state[ikey]=True
     except sqlite3.DatabaseError as _e:
-        _pantalla_bd_danada(_db_path_actual, str(_e))
+        import time
+        time.sleep(1.0) # Wait 1s for Antivirus to release the lock
+        try:
+            init_db() # Retry
+            st.session_state[ikey]=True
+        except sqlite3.DatabaseError as _e2:
+            _pantalla_bd_danada(_db_path_actual, str(_e2))
 CAT=cargar_catalogo()
 precargar_ejemplo()
 
