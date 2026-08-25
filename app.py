@@ -105,8 +105,25 @@ def save_empresas(lst):
     with open(MASTER_FILE,"w",encoding="utf-8") as f:
         json.dump(lst, f, ensure_ascii=False, indent=2)
 
+def get_empresas_permitidas(auth_user=None):
+    if auth_user is None:
+        auth_user = st.session_state.get('auth_user')
+    todas = load_empresas()
+    if not auth_user: return todas
+    rol = auth_user.get('rol', 'lectura')
+    if rol in ('admin', 'super_usuario'): return todas
+    grupo_id = auth_user.get('grupo_id')
+    if not grupo_id: return []
+    try:
+        from models.auth import obtener_empresas_de_grupo
+        permitidas_ids = obtener_empresas_de_grupo(AUTH_DB, grupo_id)
+        return [e for e in todas if e['id'] in permitidas_ids]
+    except Exception:
+        return []
+
 def get_empresa_actual():
-    emps = load_empresas()
+    emps = get_empresas_permitidas()
+    if not emps: return {"id":"none", "nombre":"Sin acceso (contacte al admin)", "db_path":":memory:"}
     eid  = st.session_state.get("empresa_id", emps[0]["id"])
     for e in emps:
         if e["id"] == eid: return e
@@ -239,10 +256,38 @@ st.markdown("""
   --side-line: rgba(255, 255, 255, 0.08);
 }
 @keyframes fadeIn{from{opacity:0; transform: translateY(10px);} to{opacity:1; transform: translateY(0);}}
-* { font-family: var(--app-font) !important; color: var(--text-primary); }
+
+/* Font global pero sin romper iconos */
+.stApp {
+  font-family: var(--app-font);
+  color: var(--text-primary);
+}
+
 
 [data-testid="stMetricValue"], [data-testid="stMetricDelta"], .stDataFrame, table { font-variant-numeric: tabular-nums; }
 [data-testid="stExpanderIconChevron"], [data-testid="stExpanderToggleIcon"], .streamlit-expanderHeader svg, [data-testid="stIconMaterial"] { color: var(--text-secondary) !important; }
+
+
+/* Prevent button text wrapping */
+[data-testid="stSidebar"] button, [data-testid="stSidebar"] [data-testid="stBaseButton-secondary"] {
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  padding-left: 0.5rem !important;
+  padding-right: 0.5rem !important;
+}
+
+
+/* Inputs Polish */
+.stTextInput input, .stDateInput input, .stNumberInput input {
+  border-radius: 6px !important;
+  border: 1px solid rgba(255,255,255,0.1) !important;
+  transition: all 0.2s ease !important;
+}
+.stTextInput input:focus, .stDateInput input:focus, .stNumberInput input:focus {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 2px var(--accent-glow) !important;
+}
 
 /* Fondo general */
 .stApp {
@@ -3779,7 +3824,7 @@ st.sidebar.markdown(f'<div class="saludo-sidebar">{_saludo}</div>', unsafe_allow
 # sección de contexto. Ahora comparten una sola tarjeta.
 with st.sidebar.container(key="contexto_wrap", border=True):
     st.markdown('<div class="emp-label">Empresa activa</div>', unsafe_allow_html=True)
-    _emp_lista = load_empresas()
+    _emp_lista = get_empresas_permitidas()
     _emp_nombres = [e['nombre'] for e in _emp_lista]
     _emp_idx_actual = next((i for i, e in enumerate(_emp_lista) if e['id'] == emp['id']), 0)
     _emp_sel = st.selectbox(
@@ -3893,7 +3938,7 @@ DESCRIPCIONES = {
 # respaldos, altas/bajas de empresas) — solo el rol admin los ve en el menú.
 AUTH_USER = st.session_state.get("auth_user", {"username": "—", "nombre_completo": "—", "rol": "admin"})
 ROL_ACTUAL = AUTH_USER.get("rol", "admin")
-if ROL_ACTUAL != "admin":
+if ROL_ACTUAL not in ("admin", "super_usuario"):
     GRUPOS = {g: its for g, its in GRUPOS.items() if g != "Configuración"}
 
 # El rol lectura puede consultar todo pero no capturar/editar/borrar — se
@@ -3915,9 +3960,11 @@ _QUICKNAV = [
     ("Pto. equilibrio", "Punto de Equilibrio", "Análisis", "Ir a Punto de Equilibrio"),
 ]
 st.sidebar.markdown('<div class="nav-hint" style="padding-bottom:4px;">ACCESOS RÁPIDOS</div>', unsafe_allow_html=True)
-_qn_cols = st.sidebar.columns(len(_QUICKNAV))
+_qn_cols_1 = st.sidebar.columns(2)
+_qn_cols_2 = st.sidebar.columns(2)
 for _qi, (_label, _target, _grupo_t, _tip) in enumerate(_QUICKNAV):
-    if _qn_cols[_qi].button(_label, key=f"qn_{_qi}", help=_tip):
+    col = _qn_cols_1[_qi] if _qi < 2 else _qn_cols_2[_qi - 2]
+    if col.button(_label, key=f"qn_{_qi}", help=_tip, use_container_width=True):
         st.session_state['menu_item'] = _target
         st.session_state['menu_grupo'] = _grupo_t
         st.rerun()
@@ -3952,6 +3999,30 @@ st.sidebar.markdown(f"""<div class="empresa-badge">
   <span class="emp-name">{AUTH_USER.get('nombre_completo','—')}</span>
   <span class="emp-label" style="margin-top:2px;display:block;">{ROL_LABELS.get(ROL_ACTUAL, ROL_ACTUAL)}</span>
 </div>""", unsafe_allow_html=True)
+
+if st.sidebar.button("Cambiar mi contraseña", key="btn_cambiar_pwd"):
+    st.session_state['mostrar_perfil'] = True
+
+if st.session_state.get('mostrar_perfil'):
+    @st.dialog("Mi Perfil - Cambiar Contraseña")
+    def dialog_perfil():
+        st.write("Cambia la contraseña de tu cuenta:")
+        _pwd_act = st.text_input("Contraseña actual", type="password")
+        _pwd_new = st.text_input("Nueva contraseña", type="password")
+        _pwd_new2 = st.text_input("Confirmar nueva contraseña", type="password")
+        if st.button("Guardar contraseña"):
+            if _pwd_new != _pwd_new2:
+                st.error("Las contraseñas nuevas no coinciden.")
+            else:
+                ok, msg = resetear_password(AUTH_DB, AUTH_USER['id'], _pwd_new, password_actual=_pwd_act, require_actual=True)
+                if ok:
+                    st.success(msg)
+                    st.session_state['mostrar_perfil'] = False
+                    st.rerun()
+                else:
+                    st.error(msg)
+    dialog_perfil()
+
 if st.sidebar.button("Cerrar sesión", key="btn_logout", width='stretch'):
     st.session_state.pop("auth_user", None)
     st.rerun()
@@ -6486,183 +6557,106 @@ try:
         ec3.metric("Total contratos",len(df_info)); ec4.metric("Activos",len(df_info[df_info['Estatus']=='ACTIVO']) if not df_info.empty else 0)
 
     elif menu=="Usuarios y Roles":
-        st.title("Usuarios y Roles")
+        from models.auth import listar_grupos, crear_grupo, eliminar_grupo, obtener_empresas_de_grupo
+        st.title("Usuarios, Grupos y Roles")
         st.markdown(
+            "Administra los grupos de acceso y las cuentas de usuario. "
             "Cada persona debe entrar con su propio usuario. El rol define qué puede hacer una vez adentro: "
             "**admin** ve y cambia todo, **captura** da de alta y edita contratos pero no toca la configuración, "
             "**lectura** solo consulta."
         )
-        _usrs = listar_usuarios(AUTH_DB)
-        for _u in _usrs:
-            with st.expander(
-                f"{_u['nombre_completo']}  ·  @{_u['username']}  ·  {ROL_LABELS.get(_u['rol'], _u['rol'])}"
-                + ("" if _u['activo'] else "  —  DESACTIVADO"),
-                expanded=False,
-            ):
-                _uc1, _uc2, _uc3 = st.columns([2, 1, 1])
-                _nuevo_rol = _uc1.selectbox(
-                    "Rol", ROLES, index=ROLES.index(_u['rol']), key=f"rol_{_u['id']}",
-                    format_func=lambda r: ROL_LABELS.get(r, r),
-                )
-                if _nuevo_rol != _u['rol']:
-                    if _uc1.button("Guardar rol", key=f"guardar_rol_{_u['id']}"):
-                        ok, msg = cambiar_rol_usuario(AUTH_DB, _u['id'], _nuevo_rol)
+        
+        tab_usrs, tab_grps = st.tabs(["Usuarios", "Grupos de Acceso"])
+        
+        with tab_grps:
+            st.subheader("Grupos Existentes")
+            _grupos = listar_grupos(AUTH_DB)
+            if not _grupos:
+                st.info("No hay grupos definidos.")
+            for _g in _grupos:
+                with st.expander(f"Grupo: {_g['nombre_grupo']}"):
+                    st.write(f"**Descripción:** {_g['descripcion']}")
+                    st.write(f"**Empresas asignadas:** {', '.join(_g['empresas']) if _g['empresas'] else 'Ninguna'}")
+                    if st.button("Eliminar Grupo", key=f"del_grp_{_g['id']}", type="primary"):
+                        ok, msg = eliminar_grupo(AUTH_DB, _g['id'])
                         (st.success if ok else st.error)(msg)
-                        st.session_state['_refresh'] = True
-                if _u['activo']:
-                    if _uc2.button("Desactivar", key=f"desact_{_u['id']}",
-                                    disabled=(_u['username'] == AUTH_USER.get('username'))):
-                        cambiar_estado_usuario(AUTH_DB, _u['id'], False)
-                        st.session_state['_refresh'] = True
-                else:
-                    if _uc2.button("Reactivar", key=f"react_{_u['id']}"):
-                        cambiar_estado_usuario(AUTH_DB, _u['id'], True)
-                        st.session_state['_refresh'] = True
-                with _uc3.popover("Restablecer contraseña"):
-                    _npw = st.text_input("Nueva contraseña", type="password", key=f"npw_{_u['id']}")
-                    if st.button("Guardar", key=f"npw_btn_{_u['id']}"):
-                        ok, msg = resetear_password(AUTH_DB, _u['id'], _npw)
-                        (st.success if ok else st.error)(msg)
-                st.caption(f"Último acceso: {_u['ultimo_login'] or 'nunca'}")
-
-        st.divider(); st.subheader("Agregar Nuevo Usuario")
-        with st.form("nuevo_usuario"):
-            _nu_user = st.text_input("Usuario (para iniciar sesión)")
-            _nu_nombre = st.text_input("Nombre completo")
-            _nu_rol = st.selectbox("Rol", ROLES, format_func=lambda r: ROL_LABELS.get(r, r))
-            _nu_pw1 = st.text_input("Contraseña", type="password")
-            _nu_pw2 = st.text_input("Confirmar contraseña", type="password")
-            if st.form_submit_button("Crear usuario"):
-                if _nu_pw1 != _nu_pw2:
-                    st.error("Las contraseñas no coinciden.")
-                else:
-                    ok, msg = crear_usuario(AUTH_DB, _nu_user, _nu_nombre, _nu_pw1, _nu_rol)
+                        if ok: st.session_state['_refresh'] = True
+            
+            st.divider()
+            st.subheader("Crear Nuevo Grupo")
+            with st.form("nuevo_grupo"):
+                _ng_nombre = st.text_input("Nombre del grupo")
+                _ng_desc = st.text_input("Descripción")
+                _todas_emps = load_empresas()
+                _ng_emps = st.multiselect("Empresas a las que tendrá acceso", options=[e['id'] for e in _todas_emps], format_func=lambda x: next((e['nombre'] for e in _todas_emps if e['id']==x), x))
+                if st.form_submit_button("Crear grupo"):
+                    ok, msg = crear_grupo(AUTH_DB, _ng_nombre, _ng_desc, _ng_emps)
                     (st.success if ok else st.error)(msg)
-                    if ok:
-                        st.session_state['_refresh'] = True
+                    if ok: st.session_state['_refresh'] = True
+                    
+        with tab_usrs:
+            st.subheader("Usuarios Registrados")
+            _usrs = listar_usuarios(AUTH_DB)
+            _grupos_lista = listar_grupos(AUTH_DB)
+            _grupo_opts = [0] + [g['id'] for g in _grupos_lista]
+            _grupo_fmt = lambda x: "Ninguno (Solo Admins)" if x == 0 else next((g['nombre_grupo'] for g in _grupos_lista if g['id'] == x), str(x))
+            
+            for _u in _usrs:
+                with st.expander(
+                    f"{_u['nombre_completo']}  —  @{_u['username']}  —  {ROL_LABELS.get(_u['rol'], _u['rol'])}"
+                    + ("" if _u['activo'] else "  —  DESACTIVADO"),
+                    expanded=False,
+                ):
+                    _uc1, _uc2, _uc3 = st.columns([2, 1, 1])
+                    _nuevo_rol = _uc1.selectbox(
+                        "Rol", ROLES, index=ROLES.index(_u['rol']), key=f"rol_{_u['id']}",
+                        format_func=lambda r: ROL_LABELS.get(r, r),
+                    )
+                    _nuevo_grp = _uc1.selectbox(
+                        "Grupo de acceso", _grupo_opts, index=_grupo_opts.index(_u['grupo_id'] if _u['grupo_id'] else 0),
+                        key=f"grp_{_u['id']}", format_func=_grupo_fmt, disabled=(_nuevo_rol in ("admin", "super_usuario"))
+                    )
+                    if _nuevo_rol != _u['rol'] or _nuevo_grp != (_u['grupo_id'] if _u['grupo_id'] else 0):
+                        if _uc1.button("Guardar cambios", key=f"guardar_rol_{_u['id']}"):
+                            grp_val = _nuevo_grp if _nuevo_grp != 0 else None
+                            ok, msg = cambiar_rol_usuario(AUTH_DB, _u['id'], _nuevo_rol, grp_val)
+                            (st.success if ok else st.error)(msg)
+                            if ok: st.session_state['_refresh'] = True
+                    
+                    if _u['activo']:
+                        if _uc2.button("Desactivar", key=f"desact_{_u['id']}",
+                                        disabled=(_u['username'] == AUTH_USER.get('username'))):
+                            cambiar_estado_usuario(AUTH_DB, _u['id'], False)
+                            st.session_state['_refresh'] = True
+                    else:
+                        if _uc2.button("Reactivar", key=f"react_{_u['id']}"):
+                            cambiar_estado_usuario(AUTH_DB, _u['id'], True)
+                            st.session_state['_refresh'] = True
+                    with _uc3.popover("Restablecer contraseña"):
+                        _npw = st.text_input("Nueva contraseña", type="password", key=f"npw_{_u['id']}")
+                        if st.button("Guardar", key=f"npw_btn_{_u['id']}"):
+                            ok, msg = resetear_password(AUTH_DB, _u['id'], _npw)
+                            (st.success if ok else st.error)(msg)
+                    st.caption(f"Último acceso: {_u['ultimo_login'] or 'nunca'}")
 
-    # FACTURACIÓN DE INTERESES (RANGO DE FECHAS)
-    elif menu=="Facturación de Intereses":
-        st.title("Facturación de Intereses por Rango de Fechas")
-        st.markdown("Calcula todos los intereses facturables (leasing + residual + amortización de comisión) desde una fecha hasta otra. Máximo **5 años (60 meses)**.")
+            st.divider(); st.subheader("Agregar Nuevo Usuario")
+            with st.form("nuevo_usuario"):
+                _nu_user = st.text_input("Usuario (para iniciar sesión)")
+                _nu_nombre = st.text_input("Nombre completo")
+                _nu_rol = st.selectbox("Rol", ROLES, format_func=lambda r: ROL_LABELS.get(r, r))
+                _nu_grp = st.selectbox("Grupo de acceso (Obligatorio si no es admin)", _grupo_opts, format_func=_grupo_fmt)
+                _nu_pw1 = st.text_input("Contraseña", type="password")
+                _nu_pw2 = st.text_input("Confirmar contraseña", type="password")
+                if st.form_submit_button("Crear usuario"):
+                    if _nu_pw1 != _nu_pw2:
+                        st.error("Las contraseñas no coinciden.")
+                    else:
+                        grp_val = _nu_grp if _nu_grp != 0 else None
+                        ok, msg = crear_usuario(AUTH_DB, _nu_user, _nu_nombre, _nu_pw1, _nu_rol, grp_val)
+                        (st.success if ok else st.error)(msg)
+                        if ok:
+                            st.session_state['_refresh'] = True
 
-        hoy=date.today()
-        cc1,cc2,cc3=st.columns(3)
-        fi=cc1.date_input("Fecha inicio",value=date(hoy.year,hoy.month,1))
-        ff=cc2.date_input("Fecha fin",   value=date(hoy.year,min(hoy.month+11,12),1) if hoy.month<=1 else (hoy+relativedelta(months=11)).replace(day=1))
-        btn=cc3.button("Calcular Facturación",width='stretch')
-
-        if btn:
-            if fi>ff:
-                st.error("La fecha de inicio debe ser anterior a la fecha fin.")
-            else:
-                meses_total=(ff.year-fi.year)*12+(ff.month-fi.month)+1
-                if meses_total>60:
-                    st.warning(f"El rango es de {meses_total} meses. Se calcularán solo los primeros 60 meses.")
-                with st.spinner("Calculando…"):
-                    df_fac,m=facturacion_intereses_rango(fi,ff)
-                if df_fac.empty:
-                    st.info("Sin contratos activos en ese período.")
-                else:
-                    k1,k2,k3,k4,k5=st.columns(5)
-                    k1.metric("Total Facturable",f"${m['total']:,.2f}")
-                    k2.metric("Solo Intereses",  f"${m['int_total']:,.2f}")
-                    k3.metric("Promedio Mensual",f"${m['prom']:,.2f}")
-                    k4.metric("Mes Máximo",      m['max_mes'])
-                    k5.metric("Meses Calculados",str(m['meses']))
-                    st.markdown("---")
-
-                    tab_g,tab_a,tab_d,tab_e=st.tabs(["Gráficas","Análisis Anual","Tabla Detalle","Exportar"])
-
-                    with tab_g:
-                        r1c1,r1c2=st.columns(2)
-                        with r1c1:
-                            dm=df_fac.melt(id_vars=['Mes','Mes_Label'],value_vars=['Int_Leasing','Int_Residual','Amort_Com'],
-                                            var_name='Concepto',value_name='Monto')
-                            dm['Concepto']=dm['Concepto'].map({'Int_Leasing':'Interés Leasing (208)',
-                                                               'Int_Residual':'Interés Residual (126)','Amort_Com':'Amort. Comisión'})
-                            fa=px.area(dm,x='Mes',y='Monto',color='Concepto',
-                                        title="Intereses Mensuales Facturables — Desglose por Concepto",
-                                        color_discrete_map={'Interés Leasing (208)':C['primary'],
-                                                            'Interés Residual (126)':C['info'],'Amort. Comisión':C['warning']})
-                            fa=sfig(fa,h=300); fa.update_traces(line_width=2)
-                            st.plotly_chart(fa,width='stretch', key="pc_039")
-                            explain("Composición mensual de los intereses facturables",
-                        "De qué se compone el monto a facturar cada mes.")
-
-                        with r1c2:
-                            fb2=px.bar(df_fac,x='Mes',y='Total_Facturable',color='Total_Facturable',text_auto='.2s',
-                                        color_continuous_scale=[[0,C['light']],[1,C['primary']]],
-                                        title="Total Facturable por Mes",labels={'Total_Facturable':'Monto (MXN)'})
-                            fb2=sfig(fb2,h=300); fb2.update_layout(coloraxis_showscale=False)
-                            fb2.update_traces(hovertemplate='%{x}<br>$%{y:,.2f}')
-                            st.plotly_chart(fb2,width='stretch', key="pc_040")
-                            explain("Monto total a facturar por mes",
-                        "Total que se debe facturar cada mes.")
-
-                        r2c1,r2c2=st.columns(2)
-                        with r2c1:
-                            fc2=px.line(df_fac,x='Mes',y='Acumulado',markers=True,
-                                         title="Intereses Acumulados en el Período",
-                                         color_discrete_sequence=[C['gold']],labels={'Acumulado':'Acumulado (MXN)'})
-                            fc2=sfig(fc2,h=290)
-                            fc2.update_traces(line_width=3,marker_size=7,hovertemplate='%{x}<br>Acumulado: $%{y:,.2f}')
-                            fc2.add_annotation(x=df_fac['Mes'].iloc[-1],y=df_fac['Acumulado'].iloc[-1],
-                                                text=f"<b>${df_fac['Acumulado'].iloc[-1]/1e6:.2f}M</b>",
-                                                showarrow=True,arrowhead=2,bgcolor="white",bordercolor=C['gold'],
-                                                font=dict(color=C['primary'],size=13))
-                            st.plotly_chart(fc2,width='stretch', key="pc_041")
-                            explain("Total acumulado en el período seleccionado",
-                        "Suma total a facturar en el periodo elegido.")
-
-                        with r2c2:
-                            fn=px.line(df_fac,x='Mes',y='Contratos',markers=True,
-                                        title="Número de Contratos Activos por Mes",
-                                        color_discrete_sequence=[C['success']],labels={'Contratos':'Contratos activos'})
-                            fn=sfig(fn,h=290); fn.update_traces(line_width=2.5,marker_size=8)
-                            fn.update_traces(hovertemplate='%{x}<br>%{y} contratos activos')
-                            st.plotly_chart(fn,width='stretch', key="pc_042")
-                            explain("Evolución del número de contratos activos",
-                        "Cuántos contratos están activos en cada mes del periodo.")
-
-                    with tab_a:
-                        st.subheader("Resumen Anual")
-                        df_fac['Año']=df_fac['Mes'].str[:4]
-                        df_anual=df_fac.groupby('Año').agg(
-                            Int_Leasing=('Int_Leasing','sum'), Int_Residual=('Int_Residual','sum'),
-                            Amort_Com=('Amort_Com','sum'), Total=('Total_Facturable','sum'),
-                            Promedio_Mensual=('Total_Facturable','mean'), Meses=('Mes','count')
-                        ).reset_index()
-                        df_anual['Acumulado']=df_anual['Total'].cumsum()
-                        dm2=df_anual.melt(id_vars='Año',value_vars=['Int_Leasing','Int_Residual','Amort_Com'],var_name='Concepto',value_name='Monto')
-                        dm2['Concepto']=dm2['Concepto'].map({'Int_Leasing':'Leasing','Int_Residual':'Residual','Amort_Com':'Comisión'})
-                        fa2=px.bar(dm2,x='Año',y='Monto',color='Concepto',barmode='group',text_auto='.2s',
-                                    title="Facturación Anual por Concepto",
-                                    color_discrete_map={'Leasing':C['primary'],'Residual':C['info'],'Comisión':C['warning']})
-                        fa2=sfig(fa2,h=290); st.plotly_chart(fa2,width='stretch', key="pc_043")
-                        explain("Comparativa anual por tipo de ingreso",
-                        "Compara cada tipo de ingreso, año con año.")
-                        titled_table("Facturación Anual Consolidada",df_anual,
-                            fmt_dict={'Int_Leasing':'${:,.2f}','Int_Residual':'${:,.2f}','Amort_Com':'${:,.2f}',
-                                      'Total':'${:,.2f}','Promedio_Mensual':'${:,.2f}','Acumulado':'${:,.2f}'},
-                            cmap_col='Total')
-
-                    with tab_d:
-                        titled_table("Facturación Mensual Detallada — Todos los Conceptos",df_fac,
-                            fmt_dict={'Int_Leasing':'${:,.2f}','Int_Residual':'${:,.2f}','Amort_Com':'${:,.2f}',
-                                      'Solo_Intereses':'${:,.2f}','Total_Facturable':'${:,.2f}','Acumulado':'${:,.2f}'},
-                            cmap_col='Total_Facturable')
-
-                    with tab_e:
-                        _hojas_fac = {'Mensual': df_fac}
-                        if 'df_anual' in dir(): _hojas_fac['Anual'] = df_anual
-                        buf = excel_con_formato(_hojas_fac,
-                            currency_cols=['Int_Leasing','Int_Residual','Amort_Com','Solo_Intereses','Total_Facturable','Acumulado','Total'])
-                        st.download_button("Descargar Excel Completo",buf,
-                            f"facturacion_{fi.strftime('%Y%m')}_al_{ff.strftime('%Y%m')}.xlsx")
-                        st.info(f"Período: **{fi.strftime('%d/%m/%Y')}** al **{ff.strftime('%d/%m/%Y')}** · {m['meses']} meses · Total: **${m['total']:,.2f}**")
-
-    # Punto de equilibrio
     elif menu=="Punto de Equilibrio":
         st.title("Análisis de Punto de Equilibrio")
         st.markdown("¿En qué mes recupera la empresa su inversión en cada contrato? ¿Cuántos meses tarda la cartera en ser rentable?")

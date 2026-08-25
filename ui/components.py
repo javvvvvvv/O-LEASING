@@ -1,3 +1,8 @@
+from matplotlib.colors import LinearSegmentedColormap
+CMAP_INDIGO = LinearSegmentedColormap.from_list("ledger_indigo", ["#161B2200", "#2F81F766", "#2f81f7"])
+CMAP_CORAL  = LinearSegmentedColormap.from_list("ledger_coral",  ["#161B2200", "#DA363366", "#da3633"])
+CMAP_TEAL   = LinearSegmentedColormap.from_list("ledger_teal",   ["#161B2200", "#23863666", "#238636"])
+
 # ============================================================================
 # PROPIEDAD INTELECTUAL Y LICENCIA COMERCIAL CERRADA
 # ============================================================================
@@ -19,6 +24,16 @@ import numpy as np
 PAL_PASTEL = ["#5E9587","#7C93AD","#D9A75C","#C4796C","#7FA8C9","#9C8AA5","#B49A5E","#C79AAA","#84AD79","#6E86AE"]
 
 def sfig(fig, title=None, h=300):
+
+    if fig is None:
+        import plotly.graph_objects as go
+        fig = go.Figure()
+        fig.add_annotation(text="Sin datos para graficar", showarrow=False, font=dict(size=14, color="#8b949e"))
+        fig.update_xaxes(visible=False)
+        fig.update_yaxes(visible=False)
+    if not hasattr(fig, 'update_layout'):
+        return fig
+
     layout = dict(
         font=dict(family="Segoe UI, Helvetica Neue, Arial, sans-serif", color="#8b949e", size=12),
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
