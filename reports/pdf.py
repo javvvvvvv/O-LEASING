@@ -42,14 +42,9 @@ else:
 LOGO_OLEASING_PNG_DEFAULT = os.path.join(_BASE_DIR, "assets", "o-leasing-logo.png")
 LOGO_ORANGE_PNG_DEFAULT   = os.path.join(_BASE_DIR, "assets", "orange-crew-logo.png")
 
-_resolver_titulo_empresa = None
-
-
-def set_resolver_titulo_empresa(fn) -> None:
-    """Igual que en reports/excel.py: app.py registra aquí, una sola vez,
-    cómo obtener el nombre de la empresa activa."""
-    global _resolver_titulo_empresa
-    _resolver_titulo_empresa = fn
+def _resolver_titulo_empresa():
+    import streamlit as st
+    return st.session_state.get('_nombre_empresa', 'Mi Empresa')
 
 
 def _nombre_empresa_actual() -> str:

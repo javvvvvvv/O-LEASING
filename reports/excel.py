@@ -39,15 +39,9 @@ else:
 
 LOGO_OLEASING_PNG_DEFAULT = os.path.join(_BASE_DIR, "assets", "o-leasing-logo.png")
 
-_resolver_titulo_empresa = None
-
-
-def set_resolver_titulo_empresa(fn) -> None:
-    """app.py llama esto una sola vez al arrancar, pasándole una función
-    que regrese el nombre de la empresa activa (por ejemplo:
-    ``lambda: get_cfg('nombre_empresa', get_empresa_actual()['nombre'])``)."""
-    global _resolver_titulo_empresa
-    _resolver_titulo_empresa = fn
+def _resolver_titulo_empresa():
+    import streamlit as st
+    return st.session_state.get('_nombre_empresa', 'Mi Empresa')
 
 
 def formatear_hoja_excel(ws, df, currency_cols=None, pct_cols=None, int_cols=None,

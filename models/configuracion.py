@@ -38,16 +38,19 @@ def set_resolver_conexion(fn) -> None:
 
 
 def _conn():
-    if _get_conn is None:
-        raise RuntimeError(
-            "models.configuracion no tiene conexión registrada — "
-            "llama primero a set_resolver_conexion(get_db) desde app.py."
-        )
-    return _get_conn()
+    import streamlit as st
+    from models.db import _engine
+    db_path = st.session_state.get('_active_db_path')
+    if not db_path:
+        # Fallback if not yet initialized
+        return None
+    return _engine(db_path)
 
 
 def cargar_catalogo() -> dict:
-    rows = _conn().execute("SELECT clave,cuenta,nombre,activa FROM catalogo_cuentas").fetchall()
+    conn = _conn()
+    if not conn: return {}
+    rows = conn.execute("SELECT clave,cuenta,nombre,activa FROM catalogo_cuentas").fetchall()
     return {
         r['clave']: {
             'cuenta': r['cuenta'], 'nombre': r['nombre'],

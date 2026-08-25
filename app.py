@@ -93,6 +93,14 @@ else:
 DATA_DIR    = os.path.join(BASE_DIR, "data")
 MASTER_FILE = os.path.join(DATA_DIR, "empresas.json")
 DEFAULT_DB  = os.path.join(BASE_DIR, "leasing.db")
+
+# Populate session state early
+try:
+    get_db_path()
+    st.session_state['_nombre_empresa'] = get_cfg('nombre_empresa', get_empresa_actual().get('nombre', 'Mi Empresa'))
+except:
+    pass
+
 os.makedirs(DATA_DIR, exist_ok=True)
 
 def load_empresas():
@@ -136,7 +144,10 @@ def get_db_path():
     # Ojo: empresas.json puede guardar rutas relativas (ej. "data/empresa2.db").
     # Las anclamos a BASE_DIR para que jalen igual sin importar desde dónde
     # se abra el programa.
-    return p if os.path.isabs(p) else os.path.join(BASE_DIR, p)
+    p = p if os.path.isabs(p) else os.path.join(BASE_DIR, p)
+    import streamlit as st
+    st.session_state["_active_db_path"] = p
+    return p
 
 # Estas claves de session_state NO deben sobrevivir un cambio de empresa.
 # Cada empresa numera sus contratos por su cuenta (ej. "0635-0003"), así que
