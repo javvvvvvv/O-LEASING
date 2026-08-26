@@ -64,19 +64,12 @@ from models.configuracion import (
     get_config_codificacion_cuentas, set_config_codificacion_cuentas, cta_sg,
     set_resolver_conexion as _set_resolver_cfg,
 )
-from reports.excel import (
-    formatear_hoja_excel, excel_con_formato, set_resolver_titulo_empresa as _set_resolver_excel,
-)
-from reports.pdf import (
-    _grafica_amort_para_pdf, _pie_pdf_marca, pdf_estado_cuenta, pdf_poliza,
-    set_resolver_titulo_empresa as _set_resolver_pdf,
-)
+from reports.excel import formatear_hoja_excel, excel_con_formato
+from reports.pdf import _grafica_amort_para_pdf, _pie_pdf_marca, pdf_estado_cuenta, pdf_poliza
 
 # reports/excel.py y reports/pdf.py no saben qué es "la empresa activa" —
 # se les inyecta aquí, una sola vez, cómo resolver el nombre para el
 # título de sus documentos (ver docstring de cada módulo).
-_set_resolver_excel(lambda: get_cfg('nombre_empresa', get_empresa_actual().get('nombre', 'Mi Empresa')))
-_set_resolver_pdf(lambda: get_cfg('nombre_empresa', get_empresa_actual().get('nombre', 'Mi Empresa')))
 # Igual que reports/: models/configuracion.py no sabe conectarse a la BD
 # de la empresa activa (eso depende de st.session_state) — se le inyecta
 # aquí get_db, que ya sabe resolver la empresa activa.
