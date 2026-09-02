@@ -33,6 +33,7 @@
 import streamlit as st
 from ui.components import sfig, explain, estado_vacio, sz, titled_chart, titled_table
 import pandas as pd
+from core.cfdi import clasificar_concepto
 import numpy as np
 import numpy_financial as npf
 from datetime import datetime, date
@@ -2682,8 +2683,6 @@ def _render_conciliacion():
                             raw = arch.read()
                             facts = [parse_cfdi(raw, reglas)]
                         elif name_lower.endswith(('.xlsx', '.csv')):
-                            import pandas as pd
-                            from core.cfdi import clasificar_concepto
                             df_arch = pd.read_excel(arch) if name_lower.endswith('.xlsx') else pd.read_csv(arch)
                             df_arch.columns = [str(col).strip().upper() for col in df_arch.columns]
                             for idx, row in df_arch.iterrows():
