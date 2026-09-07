@@ -6399,7 +6399,7 @@ try:
         st.title("Reporte Maestro: Capital e Intereses")
         st.markdown("Genera las tablas completas de amortización de toda la cartera activa: **Capital**, **Intereses**, **Renta Neta** y anexos (Residual/Comisiones).")
         anio_m=st.number_input("Año del reporte maestro",min_value=2020,max_value=2050,value=datetime.now().year,step=1,key="ym")
-        if st.button("Generar Reporte Maestro", kind="primary"):
+        if st.button("Generar Reporte Maestro", type="primary"):
             di, dcap, drenta, dr, dc, ds, err = reporte_maestro_mensual(anio_m)
             if err: st.error(err)
             else:
