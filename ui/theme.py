@@ -88,9 +88,18 @@ h3 { color: var(--text-primary) !important; font-weight: 600 !important; font-si
 .main p, .main .stMarkdown p { color: var(--text-secondary) !important; font-size: 14px; line-height: 20px; }
 a { color: var(--text-link) !important; }
 
-/* Tabular Nums para datos financieros */
+/* Tabular Nums para datos financieros y Ajuste de Tamaños */
 [data-testid="stMetricValue"], [data-testid="stMetricDelta"], .stDataFrame, table, .tabular-nums { 
     font-variant-numeric: tabular-nums; 
+}
+[data-testid="stMetricValue"] {
+    font-size: 1.4rem !important; /* Reducir el tamaño para que no se corten */
+    word-wrap: break-word !important;
+}
+[data-testid="stMetricLabel"] {
+    font-size: 0.85rem !important;
+    white-space: normal !important; /* Permitir que los títulos largos usen 2 líneas */
+    overflow: visible !important;
 }
 
 /* =========================================================

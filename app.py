@@ -1486,20 +1486,20 @@ def tabla_rentas_mensuales(anio):
 
 def tabla_mensual_conceptos(anio):
     df=obtener()
-    if df.empty: return None,None,None,None,"Sin contratos registrados"
+    if df.empty: return None,None,None,None,None,None,"Sin contratos registrados"
     MN=['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
     ids=df['ID_Contrato'].tolist()
-    di=pd.DataFrame(index=ids,columns=range(1,13),dtype=float); dr=di.copy(); dc=di.copy(); ds=di.copy()
-    bar=st.progress(0,"Calculando…"); tot=len(df)
+    di=pd.DataFrame(index=ids,columns=range(1,13),dtype=float)
+    dr=di.copy(); dc=di.copy(); ds=di.copy(); dcap=di.copy(); drenta=di.copy()
+    bar=st.progress(0,"Calculando...")
+    tot=len(df)
     for i,(_,row) in enumerate(df.iterrows()):
         id_c=row['ID_Contrato']; fa=row['Fecha_Alta']; pl=int(row['Plazo'])
         t=round(row['Tasa_Calculada'],8); inv=row['Valor_Sin_IVA']-row['Anticipo_Monto']
-        dfa,_,_,_,_=calc_amort(round(inv,4),round(row['Mensualidad_Sin_IVA'],4),round(row['Residual_Monto'],4),pl,t)
-        dfr=calc_res_amort(round(float(row['VP_Residual']),4),t,pl)
-        # Si el contrato ya se dio de baja, no se le sigue calculando nada
-        # después de esa fecha — un contrato dado de baja en marzo no debe
-        # traer cifras de abril en adelante, aunque su plazo original
-        # llegara hasta después.
+        try:
+            dfa,_,_,_,_=calc_amort(round(inv,4),round(row['Mensualidad_Sin_IVA'],4),round(row['Residual_Monto'],4),pl,t)
+            dfr=calc_res_amort(round(float(row['VP_Residual']),4),t,pl)
+        except: continue
         es_baja = str(row.get('Estatus','')).upper() == 'BAJA'
         fecha_baja = pd.to_datetime(row['Fecha_Baja']) if es_baja and pd.notna(row.get('Fecha_Baja')) else None
         for mes in range(1,13):
@@ -1508,14 +1508,22 @@ def tabla_mensual_conceptos(anio):
             if fecha_baja is not None and fm>pd.Timestamp(fecha_baja.year,fecha_baja.month,1): continue
             mc=(anio-fa.year)*12+(mes-fa.month)+1
             if mc<1 or mc>pl: continue
-            di.at[id_c,mes]=round(dfa.iloc[mc-1]['Interes'],2)
-            dr.at[id_c,mes]=round(dfr.iloc[mc-1]['Interes'],2)
-            dc.at[id_c,mes]=round(row['Comision_Monto']/pl,2)
-            ds.at[id_c,mes]=round(dfr.iloc[mc-1]['Saldo_Fin'],2)
-        bar.progress((i+1)/tot,text=f"Procesando {i+1}/{tot}…")
+            
+            interes_leasing = round(dfa.iloc[mc-1]['Interes'],2)
+            capital_leasing = round(dfa.iloc[mc-1]['Capital'],2)
+            
+            di.at[id_c,mes] = interes_leasing
+            dcap.at[id_c,mes] = capital_leasing
+            drenta.at[id_c,mes] = interes_leasing + capital_leasing
+            dr.at[id_c,mes] = round(dfr.iloc[mc-1]['Interes'],2)
+            dc.at[id_c,mes] = round(row['Comision_Monto']/pl,2)
+            ds.at[id_c,mes] = round(dfr.iloc[mc-1]['Saldo_Fin'],2)
+        bar.progress((i+1)/tot,text=f"Procesando {i+1}/{tot}...")
     bar.empty()
-    for d in [di,dr,dc,ds]: d.columns=MN; d.dropna(how='all',inplace=True)
-    return di,dr,dc,ds,None
+    for d in [di,dcap,drenta,dr,dc,ds]: 
+        d.columns=MN
+        d.dropna(how='all',inplace=True)
+    return di, dcap, drenta, dr, dc, ds, None
 
 def perdidas_cesion(df_b,cat):
     rows=[]
@@ -4424,13 +4432,11 @@ try:
                 except Exception:
                     mes_pe = None
 
-                km1,km2,km3,km4,km5 = st.columns(5)
-                km1.metric("Inversión neta",   f"${inv_neta:,.2f}")
-                km2.metric("Ganancia proy.",   f"${g:,.2f}")
-                km3.metric("Margen",           f"{m:.2f}%")
-                km4.metric("TIR Anual",        f"{t_ec:.2f}%" if t_ec else "N/A")
-                km5.metric("Mes punto equil.", f"Mes {mes_pe}" if mes_pe else "N/A",
-                           help="Mes en que el capital recuperado (vía la tabla de amortización) iguala la inversión neta.")
+                km1,km2,km3,km4 = st.columns(4)
+                km1.metric("Inversión neta", f"${inv_neta:,.2f}")
+                km2.metric("Ganancia proy.", f"${g:,.2f}")
+                km3.metric("Margen total",   f"{m:.1f}%")
+                km4.metric("Punto Equil.",   f"Mes {mes_pe}" if mes_pe else "N/A", help="Mes en que se recupera la inversión")
 
                 # Segunda fila: lectura "de contador" — cobranza y saldo
                 fa_hdr = pd.to_datetime(row.get('Fecha_Alta'))
@@ -4575,33 +4581,37 @@ try:
                         pa3.metric("Capital pendiente",   f"${capital_pend:,.2f}")
 
                         fig_a = go.Figure()
-                        fig_a.add_trace(go.Bar(x=dfa['Fecha'], y=dfa['Capital'],
-                            name='Capital', marker_color=C_PASTEL['primary']))
-                        fig_a.add_trace(go.Bar(x=dfa['Fecha'], y=dfa['Interes'],
-                            name='Interés', marker_color=C_PASTEL['accent']))
-                        fig_a.add_trace(go.Scatter(x=dfa['Fecha'], y=dfa['Saldo_Fin'],
-                            name='Saldo', mode='lines+markers',
+                        fig_a.add_trace(go.Bar(x=dfa['Fecha'], y=dfa['Capital'], name='Capital', marker_color=C_PASTEL['primary']))
+                        fig_a.add_trace(go.Bar(x=dfa['Fecha'], y=dfa['Interes'], name='Interés', marker_color=C_PASTEL['accent']))
+                        fig_a.add_trace(go.Scatter(x=dfa['Fecha'], y=dfa['Saldo_Fin'], name='Saldo', mode='lines+markers',
                             line=dict(color=C_PASTEL['success'], width=2.5), yaxis='y2'))
+                        
                         if mes_hoy in list(dfa['Fecha'].values):
                             idx_hoy = list(dfa['Fecha'].values).index(mes_hoy)
-                            fig_a.add_shape(type='line', x0=idx_hoy-0.5, x1=idx_hoy-0.5,
-                                y0=0, y1=1, xref='x', yref='paper',
+                            fig_a.add_shape(type='line', x0=idx_hoy-0.5, x1=idx_hoy-0.5, y0=0, y1=1, xref='x', yref='paper',
                                 line=dict(color=C['gold'], width=2, dash='dash'))
-                            fig_a.add_annotation(x=idx_hoy, y=1.04, xref='x', yref='paper',
-                                text='Hoy', showarrow=False, font=dict(color=C['gold'], size=11))
+                            fig_a.add_annotation(x=idx_hoy, y=1.04, xref='x', yref='paper', text='Hoy', showarrow=False, font=dict(color=C['gold'], size=11))
+                        
                         if mes_corte_ec is not None and not dfa.empty:
                             idx_baja = len(dfa) - 1
-                            fig_a.add_shape(type='line', x0=idx_baja+0.5, x1=idx_baja+0.5,
-                                y0=0, y1=1, xref='x', yref='paper',
+                            fig_a.add_shape(type='line', x0=idx_baja+0.5, x1=idx_baja+0.5, y0=0, y1=1, xref='x', yref='paper',
                                 line=dict(color=C['accent'], width=2, dash='dash'))
-                            fig_a.add_annotation(x=idx_baja, y=1.04, xref='x', yref='paper',
-                                text='Baja', showarrow=False, font=dict(color=C['accent'], size=11))
+                            fig_a.add_annotation(x=idx_baja, y=1.04, xref='x', yref='paper', text='Baja', showarrow=False, font=dict(color=C['accent'], size=11))
+                        
+                        # Fix X-axis to display months cleanly without omitting ticks if possible, and adjust bar width
                         fig_a.update_layout(
-                            barmode='stack', yaxis2=dict(overlaying='y',side='right',showgrid=False),
-                            legend=dict(orientation='h',y=1.06)
+                            barmode='stack', 
+                            yaxis2=dict(overlaying='y', side='right', showgrid=False),
+                            legend=dict(orientation='h', y=1.06, x=0),
+                            xaxis=dict(
+                                type='category', 
+                                tickangle=-45,
+                                dtick=1 if len(dfa) <= 36 else 2 # Adapt to plazo
+                            ),
+                            margin=dict(l=10, r=10, t=30, b=10)
                         )
-                        fig_a = sfig(fig_a, h=300)
-                        st.plotly_chart(fig_a, width='stretch', key=f"pc_007_{sel_ec}")
+                        fig_a = sfig(fig_a, h=350) # Make slightly taller to fit labels
+                        st.plotly_chart(fig_a, width='stretch', key=f"pc_007_{sel_ec}", use_container_width=True)
 
                         cols_a = ['Fecha','Mes','Saldo_Ini','Interes','Capital','Saldo_Fin']
                         fmt_a  = {c:'${:,.4f}' for c in ['Saldo_Ini','Interes','Capital','Saldo_Fin']}
@@ -6327,18 +6337,20 @@ try:
                         st.session_state['_refresh'] = True
 
     elif menu=="Tabla Mensual por Contrato":
-        st.title("Tabla Mensual de Conceptos Financieros")
-        st.markdown("Genera 4 tablas: **Intereses leasing** · **Intereses residual** · **Amort. comisión** · **Saldo residual activo**")
-        anio_t=st.number_input("Año",min_value=2020,max_value=2050,value=datetime.now().year,step=1,key="yt")
-        if st.button("Generar Tablas"):
-            di,dr,dc,ds,err=tabla_mensual_conceptos(anio_t)
+        st.title("Reporte Global: Capital e Intereses")
+        st.markdown("Genera las tablas completas de amortización de toda la cartera activa: **Capital**, **Intereses**, **Renta Neta** y anexos (Residual/Comisiones).")
+        anio_t=st.number_input("Año del reporte",min_value=2020,max_value=2050,value=datetime.now().year,step=1,key="yt")
+        if st.button("Generar Reporte Maestro", kind="primary"):
+            di, dcap, drenta, dr, dc, ds, err = tabla_mensual_conceptos(anio_t)
             if err: st.error(err)
             else:
                 for titulo,dft,fname in [
-                    ("1. Intereses Leasing — cta 208",di,f"int_208_{anio_t}.xlsx"),
-                    ("2. Intereses Residual — cta 126/114",dr,f"int_residual_{anio_t}.xlsx"),
-                    ("3. Amortización Comisión por Apertura",dc,f"amort_comision_{anio_t}.xlsx"),
-                    ("4. Saldo del Valor Residual Activo",ds,f"saldo_residual_{anio_t}.xlsx"),
+                    ("1. Capital Leasing (Amortización Principal)", dcap, f"capital_leasing_{anio_t}.xlsx"),
+                    ("2. Intereses Leasing (Devengados)", di, f"intereses_leasing_{anio_t}.xlsx"),
+                    ("3. Renta Neta (Capital + Interés)", drenta, f"renta_neta_{anio_t}.xlsx"),
+                    ("4. Intereses Residual (Acumulación)", dr, f"int_residual_{anio_t}.xlsx"),
+                    ("5. Amortización Comisión por Apertura", dc, f"amort_comision_{anio_t}.xlsx"),
+                    ("6. Saldo del Valor Residual Activo", ds, f"saldo_residual_{anio_t}.xlsx"),
                 ]:
                     st.subheader(titulo)
                     if dft is None or dft.empty: st.info("Sin datos.")
