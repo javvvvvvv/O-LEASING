@@ -235,162 +235,8 @@ CMAP_INDIGO = LinearSegmentedColormap.from_list("ledger_indigo", ["#161B2200", "
 CMAP_CORAL  = LinearSegmentedColormap.from_list("ledger_coral",  ["#161B2200", "#DA363366", "#da3633"])
 CMAP_TEAL   = LinearSegmentedColormap.from_list("ledger_teal",   ["#161B2200", "#23863666", "#238636"])
 
-st.markdown("""
-<style>
-/* Tema visual: Premium Glassmorphism (Dark) 
-   Superficies oscuras con paneles translúcidos, acentos brillantes
-   y tipografía moderna. Consistente con el login. */
-:root {
-  --app-font: "Inter", "Segoe UI", -apple-system, sans-serif;
-  --bg-color: #0d1117; 
-  --panel-bg: rgba(22, 27, 34, 0.6);
-  --panel-border: rgba(255, 255, 255, 0.1);
-  --text-primary: #e6edf3;
-  --text-secondary: #8b949e;
-  --accent: #2f81f7;
-  --accent-glow: rgba(47, 129, 247, 0.2);
-  --accent-line: rgba(47, 129, 247, 0.5);
-  --ok: #238636; 
-  --ok-soft: rgba(35, 134, 54, 0.15);
-  --warn: #d29922; 
-  --warn-soft: rgba(210, 153, 34, 0.15);
-  --bad: #da3633; 
-  --bad-soft: rgba(218, 54, 51, 0.15);
-  
-  --side-bg: rgba(13, 17, 23, 0.95);
-  --side-line: rgba(255, 255, 255, 0.08);
-}
-@keyframes fadeIn{from{opacity:0; transform: translateY(10px);} to{opacity:1; transform: translateY(0);}}
-
-/* Font global pero sin romper iconos */
-.stApp {
-  font-family: var(--app-font);
-  color: var(--text-primary);
-}
-
-
-[data-testid="stMetricValue"], [data-testid="stMetricDelta"], .stDataFrame, table { font-variant-numeric: tabular-nums; }
-[data-testid="stExpanderIconChevron"], [data-testid="stExpanderToggleIcon"], .streamlit-expanderHeader svg, [data-testid="stIconMaterial"] { color: var(--text-secondary) !important; }
-
-
-/* Prevent button text wrapping */
-[data-testid="stSidebar"] button, [data-testid="stSidebar"] [data-testid="stBaseButton-secondary"] {
-  white-space: nowrap !important;
-  overflow: hidden !important;
-  text-overflow: ellipsis !important;
-  padding-left: 0.5rem !important;
-  padding-right: 0.5rem !important;
-}
-
-
-/* Inputs Polish */
-.stTextInput input, .stDateInput input, .stNumberInput input {
-  border-radius: 6px !important;
-  border: 1px solid rgba(255,255,255,0.1) !important;
-  transition: all 0.2s ease !important;
-}
-.stTextInput input:focus, .stDateInput input:focus, .stNumberInput input:focus {
-  border-color: var(--accent) !important;
-  box-shadow: 0 0 0 2px var(--accent-glow) !important;
-}
-
-/* Fondo general */
-.stApp {
-  background-color: var(--bg-color) !important;
-  background-image: radial-gradient(circle at 50% 0%, rgba(47,129,247,0.1) 0%, transparent 50%);
-  background-attachment: fixed;
-}
-.main .block-container { padding: 2rem !important; max-width: 100% !important; overflow-x: hidden !important; animation: fadeIn 0.4s ease-out; }
-
-/* Sidebar */
-[data-testid="stSidebar"] {
-  background: var(--side-bg) !important;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border-right: 1px solid var(--side-line) !important;
-}
-[data-testid="stSidebar"] > div { padding-bottom: 1rem !important; }
-[data-testid="stSidebar"] h1 { font-size: 1.1rem !important; font-weight: 700 !important; margin-bottom: 0 !important; color: #fff !important; }
-[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] div,
-[data-testid="stSidebar"] [data-testid="stDateInput"] input,
-[data-testid="stSidebar"] [data-testid="stExpander"] { background: rgba(255,255,255,.05) !important; color: #fff !important; border-color: var(--side-line) !important; }
-
-/* Barra superior fija */
-.top-header-bar {
-  position: sticky; top: 0; z-index: 999;
-  background: rgba(22, 27, 34, 0.75);
-  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
-  border: 1px solid var(--panel-border); border-radius: 8px;
-  padding: .6rem 1rem; margin-bottom: 1rem;
-  display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
-  box-shadow: 0 4px 15px rgba(0,0,0,0.3);
-}
-.top-header-bar .thb-brand img { height: 26px; }
-.top-header-bar .thb-empresa { font-size: .85rem; font-weight: 700; color: #fff !important; }
-.top-header-bar .thb-empresa .thb-tag { display: block; font-size: .65rem; color: var(--text-secondary) !important; text-transform: uppercase; letter-spacing: 1px; }
-
-/* Cabeceras */
-.section-header { background: var(--panel-bg); border: 1px solid var(--panel-border); border-left: 3px solid var(--accent); border-radius: 6px; padding: 10px 16px; margin: 12px 0 16px 0; backdrop-filter: blur(5px); }
-.section-header h3 { color: var(--accent) !important; font-size: 1.05rem !important; font-weight: 700 !important; margin: 0 !important; }
-h1 { color: #fff !important; font-weight: 800 !important; font-size: 1.8rem !important; margin-bottom: .2rem !important; }
-h2 { color: #fff !important; font-weight: 700 !important; font-size: 1.4rem !important; }
-h3 { color: var(--text-primary) !important; font-weight: 600 !important; font-size: 1.1rem !important; }
-.main p, .main .stMarkdown p { color: var(--text-secondary) !important; }
-label { color: var(--text-secondary) !important; font-weight: 500 !important; }
-
-/* Campos de formulario */
-div[data-baseweb="select"]>div, div[data-baseweb="input"]>div, div[data-baseweb="textarea"]>div {
-  background: rgba(0,0,0,0.2) !important; color: #fff !important; border: 1px solid var(--panel-border) !important;
-  border-radius: 8px !important; box-shadow: none !important; transition: all 0.2s; }
-div[data-baseweb="input"]>div:focus-within, div[data-baseweb="textarea"]>div:focus-within {
-  border-color: var(--accent) !important; box-shadow: 0 0 0 3px var(--accent-glow) !important; }
-input, select, textarea { color: #fff !important; background: transparent !important; }
-
-/* Botones */
-.stButton>button {
-  background: var(--panel-bg) !important;
-  color: var(--text-primary) !important; border: 1px solid var(--panel-border) !important; border-radius: 8px !important; font-weight: 600 !important;
-  padding: .6rem 1.2rem !important; transition: all .2s ease !important;
-}
-.stButton>button:hover { background: rgba(255,255,255,0.1) !important; border-color: var(--accent) !important; transform: translateY(-1px); box-shadow: 0 4px 10px rgba(0,0,0,0.2); }
-.stButton>button:active { transform: translateY(1px); }
-.main .stButton>button[kind="primary"] {
-  background: linear-gradient(135deg, var(--accent) 0%, #1f6af7 100%) !important; color: #fff !important; border: none !important; box-shadow: 0 4px 15px var(--accent-glow) !important;
-}
-.main .stButton>button[kind="primary"]:hover { filter: brightness(1.1); }
-
-/* Métricas */
-[data-testid="stMetric"] {
-  background: var(--panel-bg) !important; border: 1px solid var(--panel-border) !important; border-radius: 12px !important; padding: 1.2rem !important;
-  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
-  box-shadow: 0 8px 24px rgba(0,0,0,0.2) !important;
-  transition: all .2s ease; position: relative; overflow: hidden;
-}
-[data-testid="stMetric"]:hover { border-color: var(--accent-line) !important; transform: translateY(-2px); box-shadow: 0 12px 30px rgba(0,0,0,0.3) !important; }
-[data-testid="stMetricLabel"] p { color: var(--text-secondary) !important; font-size: .7rem !important; font-weight: 600 !important; text-transform: uppercase !important; letter-spacing: 1px !important; }
-[data-testid="stMetricValue"] { color: #fff !important; font-weight: 800 !important; font-size: 1.8rem !important; letter-spacing: -0.5px !important; margin: 4px 0 !important; }
-[data-testid="stMetricDelta"] { font-weight: 600 !important; font-size: .8rem !important; }
-
-/* Tablas, expanders y formularios */
-.stDataFrame { border-radius: 10px !important; overflow: hidden !important; border: 1px solid var(--panel-border) !important; box-shadow: 0 4px 12px rgba(0,0,0,0.15) !important; }
-.streamlit-expanderHeader { background: transparent !important; border-radius: 8px !important; font-weight: 600 !important; color: #fff !important; border: 1px solid var(--panel-border) !important; }
-[data-testid="stExpander"] { border-radius: 8px !important; border: 1px solid var(--panel-border) !important; background: var(--panel-bg) !important; backdrop-filter: blur(5px); }
-[data-testid="stForm"] { background: var(--panel-bg) !important; border: 1px solid var(--panel-border); border-radius: 12px; padding: 1.5rem; backdrop-filter: blur(10px); }
-hr { border-top: 1px solid var(--panel-border) !important; margin: 1.5rem 0 !important; }
-
-/* Gráficas */
-.stPlotlyChart { border-radius: 12px !important; overflow: hidden !important; border: 1px solid var(--panel-border) !important; background: rgba(0,0,0,0.2) !important; padding: 8px; }
-
-/* Alertas */
-.stSuccess, .stInfo, .stWarning, .stError {
-  border-radius: 8px !important; border: 1px solid var(--panel-border) !important; backdrop-filter: blur(4px);
-}
-.stSuccess { background: var(--ok-soft) !important; border-left: 4px solid var(--ok) !important; }
-.stInfo   { background: var(--accent-glow) !important; border-left: 4px solid var(--accent) !important; }
-.stWarning{ background: var(--warn-soft) !important; border-left: 4px solid var(--warn) !important; }
-.stError  { background: var(--bad-soft) !important; border-left: 4px solid var(--bad) !important; }
-</style>
-""", unsafe_allow_html=True)
+from ui.theme import inyectar_css
+inyectar_css()
 
 # ============================================================================
 # BIENVENIDA (video de arranque) Y LOGIN — pantallas independientes
@@ -1759,16 +1605,7 @@ def gen_contpaqi():
         msg += f" ({len(omitidas)} claves del catálogo se omitieron por estar en blanco/desactivadas: {', '.join(omitidas)})"
     return out.getvalue().encode('utf-8-sig'), msg
 
-def precargar_ejemplo():
-    conn=get_db()
-    if conn.execute("SELECT 1 FROM contratos WHERE ID_Contrato='0472-0003'").fetchone(): return
-    fa=datetime(2026,2,1); pl=36; v=1217433.62; r=35031.5; res=v*.10; ant=v*.30; com=v*.02
-    c=dict(ID_Contrato='0472-0003',Cliente='Miguel Zazueta Beltrán',Vehiculo='Grand Cherokee',
-           Fecha_Alta=fa,Fecha_Vencimiento=fa+relativedelta(months=pl),Valor_Sin_IVA=v,Mensualidad_Sin_IVA=r,Plazo=pl,
-           Comision_Apertura_Pct=2.0,Comision_Monto=com,Anticipo_Pct=30.0,Anticipo_Monto=ant,
-           Residual_Pct=10.0,Residual_Monto=res,Tasa_Calculada=0.0,Estatus='ACTIVO',Fecha_Baja=None,
-           residual_transferred=0,Nivel_Morosidad=0)
-    guardar(c); st.success("Contrato de ejemplo precargado.")
+
 
 # --- Conciliación de facturas CFDI: funciones de apoyo ---
 # El parseo/clasificación puro del XML vive en core/cfdi.py (sin Streamlit,
@@ -3739,7 +3576,6 @@ if not st.session_state.get(ikey):
         except sqlite3.DatabaseError as _e2:
             _pantalla_bd_danada(_db_path_actual, str(_e2))
 CAT=cargar_catalogo()
-precargar_ejemplo()
 
 def _pantalla_error_amigable(e: Exception, contexto: str = ""):
     """Se dispara cuando algo truena dentro de una pantalla. Antes esto se
@@ -4274,17 +4110,42 @@ try:
                     None))
 
         if alertas:
-            st.markdown("#### Alertas del sistema")
+            # Reorganizar visualmente como "Centro de Atención" (D.1)
+            # Priorizamos 'error' (datos imposibles), luego 'warning', luego 'info'
+            orden_severidad = {'error': 0, 'warning': 1, 'info': 2}
+            alertas.sort(key=lambda x: orden_severidad.get(x[0], 99))
+            
+            st.markdown(f'''
+                <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:10px;">
+                    <h3 style="margin:0; color:var(--text-primary) !important;">Centro de Atención</h3>
+                    <span style="color:var(--text-secondary); font-size:14px; font-weight:600;">{len(alertas)} pendientes</span>
+                </div>
+            ''', unsafe_allow_html=True)
+            
             for _idx_alerta, (tipo, msg, detalle) in enumerate(alertas):
                 if tipo == 'error':
-                    st.error(msg)
+                    icono = "🔴"
+                    bg = "var(--danger-soft)"
+                    color = "var(--danger)"
                 elif tipo == 'warning':
-                    st.warning(msg)
+                    icono = "🟡"
+                    bg = "var(--warning-soft)"
+                    color = "var(--warning)"
                 else:
-                    st.info(msg)
-                if detalle is not None:
-                    with st.expander("Ver detalle", key=f"exp_alerta_{_idx_alerta}"):
-                        st.dataframe(detalle, width='stretch', key=f"df_006_{_idx_alerta}")
+                    icono = "🔵"
+                    bg = "var(--info-soft)"
+                    color = "var(--info)"
+                
+                with st.container(key=f"ca_{_idx_alerta}"):
+                    st.markdown(f'''
+                        <div style="background:{bg}; border-left:4px solid {color}; border-radius:4px; padding:12px; margin-bottom:10px;">
+                            <span style="font-size:16px; margin-right:8px;">{icono}</span>
+                            <span style="font-weight:500; color:var(--text-primary);">{msg}</span>
+                        </div>
+                    ''', unsafe_allow_html=True)
+                    if detalle is not None:
+                        with st.expander("Ver detalle", key=f"exp_alerta_{_idx_alerta}"):
+                            st.dataframe(detalle, width='stretch', key=f"df_006_{_idx_alerta}")
             st.markdown("---")
 
         # El resto va en pestañas: antes estas cuatro secciones (morosidad,
