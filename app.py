@@ -2704,7 +2704,7 @@ def _render_conciliacion():
                     'UUID':         (f['uuid'] or '')[:8] + '…',
                     'Contrato':     f['id_contrato'] or '—',
                     'Tipo':         f['tipo'] or '-',
-                    'Mes':          f['mes_contrato'] if f['mes_contrato'] is not None else '-',
+                    'Mes':          str(int(f['mes_contrato'])) if f['mes_contrato'] is not None else '-',
                     'Facturado $':  f['facturado'] or 0,
                     'Esperado $':   f['esperado'] or 0,
                     'Diferencia $': f['diferencia'] or 0,
@@ -3287,7 +3287,7 @@ def _render_conciliacion():
                             'Subtotal', 'Total', 'Estatus', 'Observación', 'Fecha Emisión', 'Fecha Registro', 'Cancelada'
                         ])
                         df_rep['UUID'] = df_rep['UUID'].str[:8] + '…'
-                        df_rep['Mes'] = df_rep['Mes'].fillna('-')
+                        df_rep['Mes'] = df_rep['Mes'].astype(str).replace(['nan', 'None', '<NA>', 'NaN'], '-').fillna('-')
                         df_rep['Cancelada'] = df_rep['Cancelada'].fillna(0).astype(int).map({1:'Sí', 0:'No'})
 
                         total_fact = len(df_rep)
