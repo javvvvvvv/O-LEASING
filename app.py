@@ -1553,10 +1553,26 @@ def reporte_maestro_mensual(anio):
             ds.at[id_c,mes] = round(dfr.iloc[mc-1]['Saldo_Fin'],2)
         bar.progress((i+1)/tot,text=f"Procesando {i+1}/{tot}...")
     bar.empty()
+    
+    # Agregar metadatos descriptivos a cada dataframe
+    df_meta = df.set_index('ID_Contrato')[['Cliente', 'Vehiculo', 'Estatus', 'Fecha_Alta', 'Plazo', 'Fecha_Baja', 'Valor_Sin_IVA', 'Tasa_Calculada']].copy()
+    # Formatear algunos metadatos para que se vean bien en excel
+    df_meta['Fecha_Alta'] = df_meta['Fecha_Alta'].dt.strftime('%Y-%m-%d')
+    df_meta['Fecha_Baja'] = df_meta['Fecha_Baja'].dt.strftime('%Y-%m-%d').fillna('')
+    df_meta['Tasa_Anual_%'] = (df_meta['Tasa_Calculada'] * 1200).round(2)
+    df_meta.drop(columns=['Tasa_Calculada'], inplace=True)
+    df_meta['Valor_Sin_IVA'] = df_meta['Valor_Sin_IVA'].round(2)
+    
+    out = []
     for d in [di,dcap,drenta,dr,dc,ds]: 
         d.columns=MN
         d.dropna(how='all',inplace=True)
-    return di, dcap, drenta, dr, dc, ds, None
+        # Unir metadatos y reordenar para que queden al principio
+        d_merged = df_meta.join(d, how='right')
+        # Limpiar NaNs de los meses por ceros (opcional, o dejar nulo)
+        out.append(d_merged)
+        
+    return out[0], out[1], out[2], out[3], out[4], out[5], None
 
 
 def perdidas_cesion(df_b,cat):
@@ -6397,7 +6413,7 @@ try:
 
     elif menu=="Reporte Maestro":
         st.title("Reporte Maestro: Capital e Intereses")
-        st.markdown("Genera las tablas completas de amortización de toda la cartera activa: **Capital**, **Intereses**, **Renta Neta** y anexos (Residual/Comisiones).")
+        st.markdown("Genera las tablas completas de amortización de toda la cartera activa, incluyendo metadatos de los contratos.")
         anio_m=st.number_input("Año del reporte maestro",min_value=2020,max_value=2050,value=datetime.now().year,step=1,key="ym")
         if st.button("Generar Reporte Maestro", type="primary"):
             di, dcap, drenta, dr, dc, ds, err = reporte_maestro_mensual(anio_m)
@@ -6414,11 +6430,19 @@ try:
                     st.subheader(titulo)
                     if dft is None or dft.empty: st.info("Sin datos.")
                     else:
-                        st.dataframe(dft.style.format("{:,.2f}").highlight_null("lightgray"),width='stretch', key=f"df_026_m_{fname}")
+                        MN = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
+                        fmt_dict = {m: "{:,.2f}" for m in MN}
+                        fmt_dict['Valor_Sin_IVA'] = "{:,.2f}"
+                        
+                        st.dataframe(dft.style.format(fmt_dict).highlight_null("lightgray"), width='stretch', key=f"df_026_m_{fname}")
                         _dft_export = dft.reset_index().rename(columns={'index': 'ID_Contrato'})
-                        buf = excel_con_formato({titulo[:31]: _dft_export},
-                            currency_cols=[c for c in _dft_export.columns if c != 'ID_Contrato'])
-                        st.download_button(f"{titulo[:25]}",buf,fname,key=f"dl_m_{fname}")
+                        
+                        # No formatear como moneda los campos de texto
+                        skip_currency = ['ID_Contrato', 'Cliente', 'Vehiculo', 'Estatus', 'Fecha_Alta', 'Plazo', 'Fecha_Baja', 'Tasa_Anual_%']
+                        curr_cols = [c for c in _dft_export.columns if c not in skip_currency]
+                        
+                        buf = excel_con_formato({titulo[:31]: _dft_export}, currency_cols=curr_cols, pct_cols=['Tasa_Anual_%'])
+                        st.download_button(f"{titulo[:25]}", buf, fname, key=f"dl_m_{fname}")
 
     elif menu=="Multiempresa":
         st.title("Gestión Multiempresa")
