@@ -1593,30 +1593,25 @@ def exportar_maestro_completo(anio, di, dcap, drenta, dr, dc, ds, total_cap, tot
     ws = wb['Resumen Ejecutivo']
     
     # Crear gráfica apilada (Capital + Intereses)
-    chart1 = BarChart()
-    chart1.type = "col"
-    chart1.style = 2
-    chart1.grouping = "stacked"
-    chart1.overlap = 100
-    chart1.title = "Proyección de Ingresos: Capital vs Intereses"
-    chart1.y_axis.title = "Flujo de Efectivo ($)"
-    chart1.x_axis.title = "Mes"
+    from openpyxl.chart import BarChart, Reference
+    chart = BarChart()
+    chart.type = "col"
+    chart.style = 10
+    chart.title = "Proyección de Flujo por Mes"
+    chart.y_axis.title = "Ingresos ($)"
+    chart.x_axis.title = "Mes"
+    chart.grouping = "clustered"
+    chart.gapWidth = 150
+    chart.overlap = 0
     
-    chart2 = LineChart()
-    
-    data1 = Reference(ws, min_col=2, min_row=3, max_col=3, max_row=15)
+    data = Reference(ws, min_col=2, min_row=3, max_col=4, max_row=15)
     cats = Reference(ws, min_col=1, min_row=4, max_row=15)
-    chart1.add_data(data1, titles_from_data=True)
-    chart1.set_categories(cats)
+    chart.add_data(data, titles_from_data=True)
+    chart.set_categories(cats)
     
-    data2 = Reference(ws, min_col=4, min_row=3, max_col=4, max_row=15)
-    chart2.add_data(data2, titles_from_data=True)
-    
-    chart1 += chart2
-    
-    ws.add_chart(chart1, "F4")
-    chart1.width = 24
-    chart1.height = 14
+    ws.add_chart(chart, "F4")
+    chart.width = 25
+    chart.height = 14
     
     # Guardar en un nuevo buffer
     out_buf = io.BytesIO()
@@ -1753,27 +1748,27 @@ def exportar_saldos_completo(anio, dcap, dint, dtot, dres, avg_cap, avg_int, avg
     wb = openpyxl.load_workbook(buf)
     ws = wb['Resumen Saldos']
     
-    chart = AreaChart()
-    chart.title = "Análisis de Abatimiento de Deuda (Saldos)"
-    chart.style = 42
-    chart.grouping = "stacked"
+    from openpyxl.chart import BarChart, Reference
+    chart = BarChart()
+    chart.type = "col"
+    chart.style = 10
+    chart.title = "Saldos Pendientes por Mes"
+    chart.y_axis.title = "Monto ($)"
     chart.x_axis.title = "Mes"
-    chart.y_axis.title = "Saldo Pendiente ($)"
+    chart.grouping = "clustered"
+    chart.gapWidth = 150
+    chart.overlap = 0
     
-    data_area = Reference(ws, min_col=2, min_row=3, max_col=3, max_row=15)
+    data = Reference(ws, min_col=2, min_row=3, max_col=4, max_row=15)
     cats = Reference(ws, min_col=1, min_row=4, max_row=15)
-    chart.add_data(data_area, titles_from_data=True)
+    chart.add_data(data, titles_from_data=True)
     chart.set_categories(cats)
     
-    from openpyxl.chart import LineChart
-    line = LineChart()
-    data_line = Reference(ws, min_col=4, min_row=3, max_col=4, max_row=15)
-    line.add_data(data_line, titles_from_data=True)
-    
-    chart += line
+    # Opcional: Para mostrar las etiquetas de datos encima de las barras de Total (serie 3)
+    # En openpyxl es complejo, as que dejaremos la grfica super limpia.
     
     ws.add_chart(chart, "F4")
-    chart.width = 24
+    chart.width = 25
     chart.height = 14
     
     out_buf = io.BytesIO()
