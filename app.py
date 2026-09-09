@@ -1595,36 +1595,28 @@ def exportar_maestro_completo(anio, di, dcap, drenta, dr, dc, ds, total_cap, tot
     # Crear gráfica apilada (Capital + Intereses)
     chart1 = BarChart()
     chart1.type = "col"
-    chart1.style = 10
+    chart1.style = 2
     chart1.grouping = "stacked"
     chart1.overlap = 100
-    chart1.title = "Composición Mensual (Capital vs Intereses)"
-    chart1.y_axis.title = "Monto ($)"
+    chart1.title = "Proyección de Ingresos: Capital vs Intereses"
+    chart1.y_axis.title = "Flujo de Efectivo ($)"
     chart1.x_axis.title = "Mes"
     
-    # Crear gráfica de linea (Flujo Total)
     chart2 = LineChart()
     
-    # Datos para chart1 (Columnas B y C -> Categ/X es A)
-    # StartRow depende de si excel_con_formato metió el título en fila 1. Sí lo mete.
-    # Los datos empiezan en A3 si hay titulo. Busquemos la celda A3 o A4 para ver dónde empieza la tabla.
-    # En excel_con_formato usa startrow=2 si _titulo_emp, lo que significa fila 3 en excel (1-indexed).
-    data1 = Reference(ws, min_col=2, min_row=3, max_col=3, max_row=15) # Fila 3 es cabecera, hasta la 15
+    data1 = Reference(ws, min_col=2, min_row=3, max_col=3, max_row=15)
     cats = Reference(ws, min_col=1, min_row=4, max_row=15)
     chart1.add_data(data1, titles_from_data=True)
     chart1.set_categories(cats)
     
-    # Datos para chart2 (Columna D)
-    data2 = Reference(ws, min_col=4, min_row=3, max_row=15)
+    data2 = Reference(ws, min_col=4, min_row=3, max_col=4, max_row=15)
     chart2.add_data(data2, titles_from_data=True)
     
-    # Combinar graficas
     chart1 += chart2
     
-    # Posicionar la gráfica
     ws.add_chart(chart1, "F4")
-    chart1.width = 18
-    chart1.height = 10
+    chart1.width = 24
+    chart1.height = 14
     
     # Guardar en un nuevo buffer
     out_buf = io.BytesIO()
@@ -1762,19 +1754,27 @@ def exportar_saldos_completo(anio, dcap, dint, dtot, dres, avg_cap, avg_int, avg
     ws = wb['Resumen Saldos']
     
     chart = AreaChart()
-    chart.title = "Evolución de Saldos de la Cartera"
-    chart.style = 13
+    chart.title = "Análisis de Abatimiento de Deuda (Saldos)"
+    chart.style = 42
+    chart.grouping = "stacked"
     chart.x_axis.title = "Mes"
     chart.y_axis.title = "Saldo Pendiente ($)"
     
-    data = Reference(ws, min_col=2, min_row=3, max_col=3, max_row=15)
+    data_area = Reference(ws, min_col=2, min_row=3, max_col=3, max_row=15)
     cats = Reference(ws, min_col=1, min_row=4, max_row=15)
-    chart.add_data(data, titles_from_data=True)
+    chart.add_data(data_area, titles_from_data=True)
     chart.set_categories(cats)
     
+    from openpyxl.chart import LineChart
+    line = LineChart()
+    data_line = Reference(ws, min_col=4, min_row=3, max_col=4, max_row=15)
+    line.add_data(data_line, titles_from_data=True)
+    
+    chart += line
+    
     ws.add_chart(chart, "F4")
-    chart.width = 18
-    chart.height = 10
+    chart.width = 24
+    chart.height = 14
     
     out_buf = io.BytesIO()
     wb.save(out_buf)
