@@ -1636,12 +1636,13 @@ def exportar_maestro_completo(anio, di, dcap, drenta, dr, dc, ds, total_cap, tot
 def reporte_maestro_saldos(anio):
     import numpy as np
     df=obtener()
-    if df.empty: return None,None,None,"Sin contratos registrados"
+    if df.empty: return None,None,None,None,"Sin contratos registrados"
     MN=['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
     ids=df['ID_Contrato'].tolist()
     d_cap = pd.DataFrame(index=ids,columns=range(1,13),dtype=float)
     d_int = d_cap.copy()
     d_tot = d_cap.copy()
+    d_res = d_cap.copy()
     bar=st.progress(0,"Calculando Reporte de Saldos...")
     tot=len(df)
     for i,(_,row) in enumerate(df.iterrows()):
@@ -1649,45 +1650,38 @@ def reporte_maestro_saldos(anio):
         t=round(row['Tasa_Calculada'],8); inv=row['Valor_Sin_IVA']-row['Anticipo_Monto']
         try:
             dfa,_,_,_,_=calc_amort(round(inv,4),round(row['Mensualidad_Sin_IVA'],4),round(row['Residual_Monto'],4),pl,t)
+            dfr=calc_res_amort(round(float(row['VP_Residual']),4),t,pl)
         except: continue
         es_baja = str(row.get('Estatus','')).upper() == 'BAJA'
         fecha_baja = pd.to_datetime(row['Fecha_Baja']) if es_baja and pd.notna(row.get('Fecha_Baja')) else None
         
-        # Precalcular intereses remanentes
         interes_array = dfa['Interes'].values
         rem_int = np.zeros(pl)
-        # rem_int[idx] es la suma de intereses desde idx+1 hasta el final
-        # es decir, despues de pagar el mes idx, cuanto interes falta por pagar
         for idx in range(pl):
             rem_int[idx] = np.sum(interes_array[idx+1:])
             
         for mes in range(1,13):
             fm=pd.Timestamp(anio,mes,1)
-            
-            if fm < pd.Timestamp(fa.year,fa.month,1): 
-                continue # Aún no inicia el contrato
+            if fm < pd.Timestamp(fa.year,fa.month,1): continue
                 
             if fecha_baja is not None and fm > pd.Timestamp(fecha_baja.year,fecha_baja.month,1):
-                d_cap.at[id_c,mes] = 0
-                d_int.at[id_c,mes] = 0
-                d_tot.at[id_c,mes] = 0
+                d_cap.at[id_c,mes] = 0; d_int.at[id_c,mes] = 0; d_tot.at[id_c,mes] = 0; d_res.at[id_c,mes] = 0
                 continue
                 
             mc = (anio-fa.year)*12 + (mes-fa.month) + 1
-            
             if mc > pl:
-                d_cap.at[id_c,mes] = 0
-                d_int.at[id_c,mes] = 0
-                d_tot.at[id_c,mes] = 0
+                d_cap.at[id_c,mes] = 0; d_int.at[id_c,mes] = 0; d_tot.at[id_c,mes] = 0; d_res.at[id_c,mes] = 0
                 continue
                 
             idx = mc - 1
             saldo_cap = dfa.iloc[idx]['Saldo']
             saldo_int = rem_int[idx]
+            saldo_res = dfr.iloc[idx]['Saldo_Fin']
             
             d_cap.at[id_c,mes] = round(saldo_cap, 2)
             d_int.at[id_c,mes] = round(saldo_int, 2)
             d_tot.at[id_c,mes] = round(saldo_cap + saldo_int, 2)
+            d_res.at[id_c,mes] = round(saldo_res, 2)
             
         bar.progress((i+1)/tot,text=f"Procesando {i+1}/{tot}...")
     bar.empty()
@@ -1700,16 +1694,25 @@ def reporte_maestro_saldos(anio):
     df_meta['Valor_Sin_IVA'] = df_meta['Valor_Sin_IVA'].round(2)
     
     out = []
-    for d in [d_cap, d_int, d_tot]: 
+    for d in [d_cap, d_int, d_tot, d_res]: 
         d.columns=MN
         d.dropna(how='all',inplace=True)
         d_merged = df_meta.join(d, how='right')
+        
+        # Agregar Columna TOTAL AÑO
+        d_merged['Total Año'] = d_merged[MN].sum(axis=1)
+        
+        # Agregar Fila TOTAL CARTERA
+        total_row = d_merged[MN + ['Valor_Sin_IVA', 'Total Año']].sum()
+        total_row['Cliente'] = 'TOTAL CARTERA'
+        d_merged.loc['TOTAL_000'] = total_row  # Use TOTAL_000 so it can sort or be distinct
+        
         out.append(d_merged)
         
-    return out[0], out[1], out[2], None
+    return out[0], out[1], out[2], out[3], None
 
 
-def exportar_saldos_completo(anio, dcap, dint, dtot, avg_cap, avg_int, avg_tot):
+def exportar_saldos_completo(anio, dcap, dint, dtot, dres, avg_cap, avg_int, avg_tot):
     import io
     import pandas as pd
     from reports.excel import excel_con_formato
@@ -1727,29 +1730,30 @@ def exportar_saldos_completo(anio, dcap, dint, dtot, avg_cap, avg_int, avg_tot):
     skip_currency = ['ID_Contrato', 'Cliente', 'Vehiculo', 'Estatus', 'Fecha_Alta', 'Plazo', 'Fecha_Baja', 'Tasa_Anual_%']
     def pre(df): return df.reset_index().rename(columns={'index': 'ID_Contrato'})
         
-    d1 = pre(dcap)
-    d2 = pre(dint)
-    d3 = pre(dtot)
+    d1 = pre(dcap); d2 = pre(dint); d3 = pre(dtot); d4 = pre(dres)
     curr_cols_1 = [c for c in d1.columns if c not in skip_currency]
     
     hojas = {
         'Resumen Saldos': df_resumen,
         'Saldo Capital': d1,
         'Saldo Intereses': d2,
-        'Saldo Total': d3
+        'Saldo Total': d3,
+        'Saldo Residual': d4
     }
     
     c_cols = {
         'Resumen Saldos': ['Saldo Capital', 'Saldo Intereses', 'Saldo Total'],
         'Saldo Capital': curr_cols_1,
         'Saldo Intereses': curr_cols_1,
-        'Saldo Total': curr_cols_1
+        'Saldo Total': curr_cols_1,
+        'Saldo Residual': curr_cols_1
     }
     
     p_cols = {
         'Saldo Capital': ['Tasa_Anual_%'],
         'Saldo Intereses': ['Tasa_Anual_%'],
-        'Saldo Total': ['Tasa_Anual_%']
+        'Saldo Total': ['Tasa_Anual_%'],
+        'Saldo Residual': ['Tasa_Anual_%']
     }
     
     buf = excel_con_formato(hojas, currency_cols=c_cols, pct_cols=p_cols)
@@ -1776,6 +1780,7 @@ def exportar_saldos_completo(anio, dcap, dint, dtot, avg_cap, avg_int, avg_tot):
     wb.save(out_buf)
     out_buf.seek(0)
     return out_buf
+
 
 def reporte_maestro_mensual(anio):
     df=obtener()
@@ -1823,13 +1828,20 @@ def reporte_maestro_mensual(anio):
     df_meta.drop(columns=['Tasa_Calculada'], inplace=True)
     df_meta['Valor_Sin_IVA'] = df_meta['Valor_Sin_IVA'].round(2)
     
+
     out = []
     for d in [di,dcap,drenta,dr,dc,ds]: 
         d.columns=MN
         d.dropna(how='all',inplace=True)
-        # Unir metadatos y reordenar para que queden al principio
         d_merged = df_meta.join(d, how='right')
-        # Limpiar NaNs de los meses por ceros (opcional, o dejar nulo)
+        
+        # Columna Total
+        d_merged['Total Año'] = d_merged[MN].sum(axis=1)
+        # Fila Total
+        total_row = d_merged[MN + ['Valor_Sin_IVA', 'Total Año']].sum()
+        total_row['Cliente'] = 'TOTAL CARTERA'
+        d_merged.loc['TOTAL_000'] = total_row
+        
         out.append(d_merged)
         
     return out[0], out[1], out[2], out[3], out[4], out[5], None
@@ -6684,9 +6696,13 @@ try:
                 MN = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
                 
                 # Calcular totales globales para KPIs y gráficas (limitado a 2 decimales)
-                total_cap = dcap[MN].sum().round(2)
-                total_int = di[MN].sum().round(2)
-                total_renta = drenta[MN].sum().round(2)
+                dcap_g = dcap[dcap.index != 'TOTAL_000']
+                di_g = di[di.index != 'TOTAL_000']
+                drenta_g = drenta[drenta.index != 'TOTAL_000']
+                
+                total_cap = dcap_g[MN].sum().round(2)
+                total_int = di_g[MN].sum().round(2)
+                total_renta = drenta_g[MN].sum().round(2)
                 
                 st.markdown("---")
                 st.subheader(f"📊 Resumen Ejecutivo {anio_m}")
@@ -6739,10 +6755,11 @@ try:
                     else:
                         fmt_dict = {m: "{:,.2f}" for m in MN}
                         fmt_dict['Valor_Sin_IVA'] = "{:,.2f}"
+                        fmt_dict['Total Año'] = "{:,.2f}"
                         
                         # Limitar a 2 decimales explícitamente en el dataframe visual
                         dft_vis = dft.copy()
-                        for col in MN + ['Valor_Sin_IVA', 'Tasa_Anual_%']:
+                        for col in MN + ['Valor_Sin_IVA', 'Tasa_Anual_%', 'Total Año']:
                             if col in dft_vis.columns:
                                 dft_vis[col] = dft_vis[col].round(2)
                                 
@@ -6760,17 +6777,19 @@ try:
         st.markdown("Genera las tablas de **saldos pendientes** (lo que los clientes aún deben al final de cada mes) de toda la cartera activa.")
         anio_s=st.number_input("Año del reporte de saldos",min_value=2020,max_value=2050,value=datetime.now().year,step=1,key="ys")
         if st.button("Generar Reporte de Saldos", type="primary"):
-            dcap, dint, dtot, err = reporte_maestro_saldos(anio_s)
+            dcap, dint, dtot, dres, err = reporte_maestro_saldos(anio_s)
             if err: st.error(err)
             else:
                 MN = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
                 
-                # Para la gráfica global, tomaremos los saldos al final de cada mes.
-                # Como son saldos (fotografías a fin de mes), no se suman todos los contratos a lo loco,
-                # BUENO SÍ se suman todos los contratos para tener el SALDO TOTAL DE LA CARTERA en ese mes.
-                total_cap = dcap[MN].sum().round(2)
-                total_int = dint[MN].sum().round(2)
-                total_tot = dtot[MN].sum().round(2)
+                # Omitimos la fila TOTAL_000 para calcular totales de gráfica
+                dcap_g = dcap[dcap.index != 'TOTAL_000']
+                dint_g = dint[dint.index != 'TOTAL_000']
+                dtot_g = dtot[dtot.index != 'TOTAL_000']
+                
+                total_cap = dcap_g[MN].sum().round(2)
+                total_int = dint_g[MN].sum().round(2)
+                total_tot = dtot_g[MN].sum().round(2)
                 
                 st.markdown("---")
                 st.subheader(f"📊 Resumen de Cartera (Saldos a fin de mes) - {anio_s}")
@@ -6802,7 +6821,7 @@ try:
                 fig_exec = sfig(fig_exec, h=380)
                 st.plotly_chart(fig_exec, width='stretch', key="pc_maestro_saldos")
                 
-                buf_completo = exportar_saldos_completo(anio_s, dcap, dint, dtot, total_cap, total_int, total_tot)
+                buf_completo = exportar_saldos_completo(anio_s, dcap, dint, dtot, dres, total_cap, total_int, total_tot)
                 st.download_button("📥 Descargar Todo en un Solo Excel (con Gráficas)", buf_completo, f"reporte_saldos_completo_{anio_s}.xlsx", type="primary", use_container_width=True)
                 
                 st.markdown("---")
@@ -6811,25 +6830,26 @@ try:
                     ("1. Saldo Capital (Insoluto al fin de mes)", dcap, f"saldo_capital_{anio_s}.xlsx"),
                     ("2. Saldo Intereses (Por devengar al fin de mes)", dint, f"saldo_intereses_{anio_s}.xlsx"),
                     ("3. Saldo Total (Lo que debe en total)", dtot, f"saldo_total_{anio_s}.xlsx"),
+                    ("4. Saldo Residual", dres, f"saldo_residual_{anio_s}.xlsx"),
                 ]:
                     st.subheader(titulo)
                     if dft is None or dft.empty: st.info("Sin datos.")
                     else:
                         fmt_dict = {m: "{:,.2f}" for m in MN}
                         fmt_dict['Valor_Sin_IVA'] = "{:,.2f}"
+                        fmt_dict['Total Año'] = "{:,.2f}"
                         
                         dft_vis = dft.copy()
-                        for col in MN + ['Valor_Sin_IVA', 'Tasa_Anual_%']:
+                        for col in MN + ['Valor_Sin_IVA', 'Tasa_Anual_%', 'Total Año']:
                             if col in dft_vis.columns:
-                                dft_vis[col] = dft_vis[col].round(2)
+                                dft_vis[col] = pd.to_numeric(dft_vis[col], errors='ignore').round(2)
                                 
                         st.dataframe(dft_vis.style.format(fmt_dict).highlight_null("lightgray"), width='stretch', key=f"df_026_s_{fname}")
                         _dft_export = dft_vis.reset_index().rename(columns={'index': 'ID_Contrato'})
                         
                         skip_currency = ['ID_Contrato', 'Cliente', 'Vehiculo', 'Estatus', 'Fecha_Alta', 'Plazo', 'Fecha_Baja', 'Tasa_Anual_%']
-                        curr_cols = [c for c in _dft_export.columns if c not in skip_currency]
-                        
                         from reports.excel import excel_con_formato
+                        curr_cols = [c for c in _dft_export.columns if c not in skip_currency]
                         buf = excel_con_formato({titulo[:31]: _dft_export}, currency_cols=curr_cols, pct_cols=['Tasa_Anual_%'])
                         st.download_button(f"{titulo[:25]}", buf, fname, key=f"dl_s_{fname}")
 
