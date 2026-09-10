@@ -5261,12 +5261,16 @@ try:
                             if not any('CONTRATO' in str(c).upper() for c in df_temp.columns):
                                 df_temp = pd.read_excel(xls, sheet_name=h, header=1) # Usar fila 2 como headers (formato legacy)
                             # Limpiar filas vacias (donde contrato sea NaN)
-                            df_temp = df_temp.dropna(subset=[c for c in df_temp.columns if 'CONTRATO' in str(c).upper()])
+                            col_contrato = next((c for c in df_temp.columns if str(c).upper().strip() == 'CONTRATO'), None)
+                            if col_contrato:
+                                df_temp = df_temp.dropna(subset=[col_contrato])
                             dfs.append(df_temp)
                         dfu = pd.concat(dfs, ignore_index=True)
                     else:
                         dfu = pd.read_csv(arch)
-                        dfu = dfu.dropna(subset=[c for c in dfu.columns if 'CONTRATO' in str(c).upper()])
+                        col_c_dfu = next((c for c in dfu.columns if str(c).upper().strip() == 'CONTRATO'), None)
+                        if col_c_dfu:
+                            dfu = dfu.dropna(subset=[col_c_dfu])
                         
                     # Forzar nombres a mayúsculas y quitar espacios
                     dfu.columns = [str(c).strip().upper() for c in dfu.columns]
