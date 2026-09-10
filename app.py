@@ -1884,26 +1884,26 @@ def export_excel():
 
 def plantilla():
     df_plantilla = pd.DataFrame({
-        'CONTRATO': ['551-01'],
-        'CLIENTE': ['Ejemplo S.A. de C.V.'],
-        'MARCA': ['RAM'],
-        'VERSION': ['LIMITED'],
-        'MODELO': ['1500'],
-        'SERIE': ['1C6SRFHT2NN305890'],
-        'PLAZO': [36],
-        'VALOR COTIZACION': [1600800],
-        'RENTA': [44483],
-        'RESIDUAL %': [10.0],
-        'ANTICIPO %': [20.0],
-        'COMISION %': [2.0],
-        'FECHA DE APERTURA': [datetime.today().strftime('%Y-%m-%d')],
-        'STATUS': ['ACTIVO'],
-        'EMISOR': ['MOTORMEXA']
+        'Contrato': ['0554'],
+        'Anexo': ['0002'],
+        'Cliente': ['Ejemplo S.A. de C.V.'],
+        'Fecha De Apertura': [datetime.today().strftime('%Y-%m-%d')],
+        'Plazo': [48],
+        'Marca': ['RAM'],
+        'Versión': ['LIMITED'],
+        'Modelo': ['1500'],
+        'Valor Cotización': [1600800],
+        'Renta': [44483],
+        '% Anticipo': [20.0],
+        '% Comisión': [2.0],
+        'Valor Residual (%)': [10.0],
+        'Agencia': ['MOTORMEXA'],
+        'Status': ['ACTIVO']
     })
     return excel_con_formato(
         {'Carga': df_plantilla},
-        currency_cols=['VALOR COTIZACION','RENTA'],
-        pct_cols=['RESIDUAL %','ANTICIPO %','COMISION %'],
+        currency_cols=['Valor Cotización','Renta'],
+        pct_cols=['% Anticipo','% Comisión','Valor Residual (%)'],
         incluir_titulo=False,
     )
 
@@ -5248,7 +5248,7 @@ try:
                 xls = pd.ExcelFile(arch)
                 opciones = xls.sheet_names
                 # Preseleccionar julio y agosto 2026 si existen, por requerimiento directo
-                defs = [h for h in opciones if "JULIO 2026" in h.upper() or "AGOSTO 2026" in h.upper()]
+                defs = [h for h in opciones if "JULIO 2026" in h.upper() or "AGOSTO 2026" in h.upper() or h.upper().strip() == "CARTERA"]
                 hojas_sel = st.multiselect("Selecciona las hojas a procesar (dejalo vacio para procesar la primera):", opciones, default=defs)
             
             if arch and st.button("Procesar y Cargar"):
