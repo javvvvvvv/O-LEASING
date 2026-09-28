@@ -35,6 +35,11 @@ NS = {
     'cfdi': 'http://www.sat.gob.mx/cfd/4',
     'tfd':  'http://www.sat.gob.mx/TimbreFiscalDigital',
 }
+# CFDI 3.3 usa otro namespace; se prueba si el 4.0 no encuentra nodos.
+NS_V3 = {
+    'cfdi': 'http://www.sat.gob.mx/cfd/3',
+    'tfd':  'http://www.sat.gob.mx/TimbreFiscalDigital',
+}
 
 MAX_XML_BYTES = 2 * 1024 * 1024  # un CFDI real pesa unos cuantos KB; 2MB ya es sospechoso
 
@@ -106,8 +111,14 @@ def parse_cfdi(xml_bytes: bytes, reglas: dict) -> dict:
     tipo_comprobante = comp.get('TipoDeComprobante', 'I')
     moneda            = comp.get('Moneda', 'MXN')
 
-    emisor   = root.find('.//cfdi:Emisor', NS)
-    receptor = root.find('.//cfdi:Receptor', NS)
+    def _find_ns(path):
+        node = root.find(path, NS)
+        if node is None:
+            node = root.find(path, NS_V3)
+        return node
+
+    emisor   = _find_ns('.//cfdi:Emisor')
+    receptor = _find_ns('.//cfdi:Receptor')
     rfc_emisor   = emisor.get('Rfc') if emisor is not None else None
     rfc_receptor = receptor.get('Rfc') if receptor is not None else None
 
@@ -117,13 +128,16 @@ def parse_cfdi(xml_bytes: bytes, reglas: dict) -> dict:
     if rfc_receptor and not _PAT_RFC.match(rfc_receptor.upper()):
         avisos_xml.append(f"El RFC receptor ('{rfc_receptor}') no tiene un formato de RFC válido — revisa que el XML no esté corrupto.")
 
-    timbre = root.find('.//tfd:TimbreFiscalDigital', NS)
+    timbre = _find_ns('.//tfd:TimbreFiscalDigital')
     uuid   = timbre.get('UUID') if timbre is not None else None
     if uuid and not _PAT_UUID.match(uuid):
         raise ValueError(f"El UUID del timbre fiscal ('{uuid}') no tiene el formato esperado — revisa que sea un CFDI timbrado y no un borrador.")
 
     conceptos_raw = []
-    for c in root.findall('.//cfdi:Concepto', NS):
+    _conceptos = root.findall('.//cfdi:Concepto', NS)
+    if not _conceptos:
+        _conceptos = root.findall('.//cfdi:Concepto', NS_V3)
+    for c in _conceptos:
         desc      = c.get('Descripcion', '')
         importe   = float(c.get('Importe', 0))
         descuento = float(c.get('Descuento', 0) or 0)

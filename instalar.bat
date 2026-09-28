@@ -1,61 +1,42 @@
 @echo off
 chcp 65001 >nul
-title Instalando O-Leasing - Dependencias
-color 0A
-echo ============================================================
-echo   INSTALADOR - O-LEASING
-echo ============================================================
+title Parche O-Leasing
 echo.
-cd /d "%~dp0"
+echo === PARCHE O-LEASING ===
+echo.
+echo Este script copia app.py y core\cartera_contable.py
+echo a la carpeta donde esta este INSTALAR.bat
+echo.
+echo IMPORTANTE: pon este ZIP extraido DENTRO de:
+echo   C:\O-Leasing\punto y aparte\V10.01\o-leasing\
+echo o copia a mano los archivos a esa ruta.
+echo.
 
-where python >nul 2>nul
-if %errorlevel% neq 0 (
-    echo [ERROR] No se encontro Python instalado en este servidor/equipo.
-    echo.
-    echo Instala Python 3.10 o superior desde https://www.python.org/downloads/
-    echo IMPORTANTE: durante la instalacion marca la casilla
-    echo             "Add python.exe to PATH"
-    echo.
-    pause
-    exit /b 1
+set "DEST=%~dp0"
+if not exist "%DEST%app.py" (
+  echo ERROR: no encuentro app.py junto a este bat.
+  pause
+  exit /b 1
 )
 
-echo [OK] Python encontrado:
-python --version
-echo.
+if not exist "%DEST%core" mkdir "%DEST%core"
 
-if not exist "%~dp0.venv\Scripts\python.exe" (
-    echo Creando entorno virtual aislado en ".venv" ...
-    python -m venv "%~dp0.venv"
-    if %errorlevel% neq 0 (
-        echo [ERROR] No se pudo crear el entorno virtual.
-        pause
-        exit /b 1
-    )
+echo Copiando app.py ...
+copy /Y "%DEST%app.py" "%DEST%app.py" >nul
+
+if exist "%DEST%core\cartera_contable.py" (
+  echo core\cartera_contable.py ya esta en destino.
+) else (
+  if exist "%~dp0core\cartera_contable.py" (
+    copy /Y "%~dp0core\cartera_contable.py" "%DEST%core\cartera_contable.py"
+  )
 )
 
-set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
+echo Borrando __pycache__ ...
+if exist "%DEST%core\__pycache__" rd /s /q "%DEST%core\__pycache__"
+if exist "%DEST%__pycache__" rd /s /q "%DEST%__pycache__"
 
 echo.
-echo Actualizando pip...
-"%PYTHON_EXE%" -m pip install --upgrade pip
-
-echo.
-echo Instalando librerias necesarias desde requirements.txt...
-"%PYTHON_EXE%" -m pip install -r requirements.txt
-if %errorlevel% neq 0 (
-    echo.
-    echo [ERROR] Fallo la instalacion de una o mas librerias.
-    echo Revisa tu conexion a internet e intenta de nuevo.
-    pause
-    exit /b 1
-)
-
-echo.
-echo ============================================================
-echo   INSTALACION COMPLETADA CORRECTAMENTE
-echo ============================================================
-echo   Ahora ejecuta "ejecutar.bat" para iniciar el sistema.
-echo ============================================================
+echo Listo. Cierra O-Leasing y vuelve a abrirlo.
 echo.
 pause

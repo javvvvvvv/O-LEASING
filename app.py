@@ -1485,38 +1485,117 @@ def tabla_rentas_mensuales(anio):
     return pd.DataFrame(data).set_index('ID_Contrato')
 
 def tabla_mensual_conceptos(anio):
-    df=obtener()
-    if df.empty: return None,None,None,None,"Sin contratos registrados"
-    MN=['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
-    ids=df['ID_Contrato'].tolist()
-    di=pd.DataFrame(index=ids,columns=range(1,13),dtype=float); dr=di.copy(); dc=di.copy(); ds=di.copy()
-    bar=st.progress(0,"Calculando...")
-    tot=len(df)
-    for i,(_,row) in enumerate(df.iterrows()):
-        id_c=row['ID_Contrato']; fa=row['Fecha_Alta']; pl=int(row['Plazo'])
-        t=round(row['Tasa_Calculada'],8); inv=row['Valor_Sin_IVA']-row['Anticipo_Monto']
+    """Fuente de verdad: tablas mensuales (igual Excel int_208 / residual / comision)."""
+    df = obtener()
+    if df.empty:
+        return None, None, None, None, "Sin contratos registrados"
+    MN = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
+    ids = df['ID_Contrato'].tolist()
+    di = pd.DataFrame(index=ids, columns=range(1, 13), dtype=float)
+    dr = di.copy()
+    dc = di.copy()
+    ds = di.copy()
+    bar = st.progress(0, "Calculando...")
+    tot = len(df)
+    for i, (_, row) in enumerate(df.iterrows()):
+        id_c = row['ID_Contrato']
+        fa = row['Fecha_Alta']
+        pl = int(row['Plazo'])
+        t = round(row['Tasa_Calculada'], 8)
+        inv = row['Valor_Sin_IVA'] - row['Anticipo_Monto']
         try:
-            dfa,_,_,_,_=calc_amort(round(inv,4),round(row['Mensualidad_Sin_IVA'],4),round(row['Residual_Monto'],4),pl,t)
-            dfr=calc_res_amort(round(float(row['VP_Residual']),4),t,pl)
-        except: continue
-        es_baja = str(row.get('Estatus','')).upper() == 'BAJA'
+            dfa, _, _, _, _ = calc_amort(
+                round(inv, 4),
+                round(row['Mensualidad_Sin_IVA'], 4),
+                round(row['Residual_Monto'], 4),
+                pl, t,
+            )
+            dfr = calc_res_amort(round(float(row['VP_Residual']), 4), t, pl)
+        except Exception:
+            bar.progress((i + 1) / tot, text=f"Procesando {i+1}/{tot}...")
+            continue
+        es_baja = str(row.get('Estatus', '')).upper() == 'BAJA'
         fecha_baja = pd.to_datetime(row['Fecha_Baja']) if es_baja and pd.notna(row.get('Fecha_Baja')) else None
-        for mes in range(1,13):
-            fm=pd.Timestamp(anio,mes,1)
-            if fm<pd.Timestamp(fa.year,fa.month,1) or fm>row['Fecha_Vencimiento']: continue
-            if fecha_baja is not None and fm>pd.Timestamp(fecha_baja.year,fecha_baja.month,1): continue
-            mc=(anio-fa.year)*12+(mes-fa.month)+1
-            if mc<1 or mc>pl: continue
-            di.at[id_c,mes]=round(dfa.iloc[mc-1]['Interes'],2)
-            dr.at[id_c,mes]=round(dfr.iloc[mc-1]['Interes'],2)
-            dc.at[id_c,mes]=round(row['Comision_Monto']/pl,2)
-            ds.at[id_c,mes]=round(dfr.iloc[mc-1]['Saldo_Fin'],2)
-        bar.progress((i+1)/tot,text=f"Procesando {i+1}/{tot}...")
+        for mes in range(1, 13):
+            fm = pd.Timestamp(anio, mes, 1)
+            if fm < pd.Timestamp(fa.year, fa.month, 1) or fm > row['Fecha_Vencimiento']:
+                continue
+            if fecha_baja is not None and fm > pd.Timestamp(fecha_baja.year, fecha_baja.month, 1):
+                continue
+            mc = (anio - fa.year) * 12 + (mes - fa.month) + 1
+            if mc < 1 or mc > pl:
+                continue
+            di.at[id_c, mes] = round(dfa.iloc[mc - 1]['Interes'], 2)
+            dr.at[id_c, mes] = round(dfr.iloc[mc - 1]['Interes'], 2)
+            dc.at[id_c, mes] = round(row['Comision_Monto'] / pl, 2)
+            ds.at[id_c, mes] = round(dfr.iloc[mc - 1]['Saldo_Fin'], 2)
+        bar.progress((i + 1) / tot, text=f"Procesando {i+1}/{tot}...")
     bar.empty()
-    for d in [di,dr,dc,ds]: 
-        d.columns=MN
-        d.dropna(how='all',inplace=True)
-    return di,dr,dc,ds,None
+    for d in [di, dr, dc, ds]:
+        d.columns = MN
+        d.dropna(how='all', inplace=True)
+    return di, dr, dc, ds, None
+
+
+def totales_intereses_desde_tabla_mensual(anio, mes):
+    """Suma columnas de tabla_mensual_conceptos (verdad = Excel Tabla Mensual).
+
+    Incluye:
+      - Intereses leasing (di) — Excel int_208
+      - Intereses residual (dr)
+      - Amort. comision por apertura (dc) — Excel amort_comision
+      - Saldo residual activo (ds)
+
+    Del mes = columna del mes. Acumulado = suma enero..mes.
+    """
+    MN = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
+    mes = int(mes)
+    anio = int(anio)
+    out = {
+        'interes_leasing_mes': 0.0,
+        'interes_residual_mes': 0.0,
+        'comision_mes': 0.0,
+        'saldo_residual_mes': 0.0,
+        'interes_leasing_ytd': 0.0,
+        'interes_residual_ytd': 0.0,
+        'comision_ytd': 0.0,
+        'por_mes_leasing': {},
+        'por_mes_residual': {},
+        'por_mes_comision': {},
+        'n_contratos_mes': 0,
+        'anio': anio,
+        'mes': mes,
+        'error': None,
+    }
+    di, dr, dc, ds, err = tabla_mensual_conceptos(anio)
+    if err:
+        out['error'] = err
+        return out
+    if di is None or di.empty:
+        out['error'] = 'Sin datos en tabla mensual'
+        return out
+    for m_idx, nombre in enumerate(MN, start=1):
+        if nombre in di.columns:
+            out['por_mes_leasing'][m_idx] = round(float(di[nombre].sum(skipna=True)), 2)
+        if dr is not None and not dr.empty and nombre in dr.columns:
+            out['por_mes_residual'][m_idx] = round(float(dr[nombre].sum(skipna=True)), 2)
+        if dc is not None and not dc.empty and nombre in dc.columns:
+            out['por_mes_comision'][m_idx] = round(float(dc[nombre].sum(skipna=True)), 2)
+    nombre_mes = MN[mes - 1]
+    if nombre_mes in di.columns:
+        out['interes_leasing_mes'] = round(float(di[nombre_mes].sum(skipna=True)), 2)
+        out['n_contratos_mes'] = int(di[nombre_mes].notna().sum())
+    if dr is not None and not dr.empty and nombre_mes in dr.columns:
+        out['interes_residual_mes'] = round(float(dr[nombre_mes].sum(skipna=True)), 2)
+    if dc is not None and not dc.empty and nombre_mes in dc.columns:
+        out['comision_mes'] = round(float(dc[nombre_mes].sum(skipna=True)), 2)
+    if ds is not None and not ds.empty and nombre_mes in ds.columns:
+        out['saldo_residual_mes'] = round(float(ds[nombre_mes].sum(skipna=True)), 2)
+    out['interes_leasing_ytd'] = round(sum(out['por_mes_leasing'].get(m, 0.0) for m in range(1, mes + 1)), 2)
+    out['interes_residual_ytd'] = round(sum(out['por_mes_residual'].get(m, 0.0) for m in range(1, mes + 1)), 2)
+    out['comision_ytd'] = round(sum(out['por_mes_comision'].get(m, 0.0) for m in range(1, mes + 1)), 2)
+    return out
+
 
 def exportar_maestro_completo(anio, di, dcap, drenta, dr, dc, ds, total_cap, total_int, total_renta):
     import io
@@ -1953,6 +2032,175 @@ from core.cfdi import (
     REGLAS_CONCEPTO_DEFAULT, MAX_XML_BYTES, NS,
 )
 from core.alias import resolver_numero_contrato, decidir_accion_alias, sugerir_contrato_similar
+# --- Cartera contable: import tolerante (no tumba la app si el core esta viejo) ---
+def _fallback_comparar_auxiliar(df_aux, totales_sistema, mapa_columnas=None):
+    return pd.DataFrame(
+        [{"Concepto_sistema": k, "Monto_sistema": v, "Monto_auxiliar": None, "Diferencia": None}
+         for k, v in (totales_sistema or {}).items() if isinstance(v, (int, float))]
+    )
+
+def _fallback_cobertura(esperado, facturado):
+    esp = float(esperado or 0); fac = float(facturado or 0)
+    dif = round(fac - esp, 2)
+    pct = round((fac / esp * 100) if esp else 0.0, 2)
+    return {"esperado": esp, "facturado": fac, "diferencia": dif, "cobertura_pct": pct}
+
+def _fallback_acumulado_facturacion(df_fact, anio=None, hasta_periodo=None):
+    out = {"n_facturas": 0, "total": 0.0, "subtotal": 0.0, "mensual": 0.0, "comision": 0.0, "otros": 0.0}
+    if df_fact is None or getattr(df_fact, "empty", True):
+        return out
+    df = df_fact.copy()
+    if "cancelada" in df.columns:
+        df = df[df["cancelada"].fillna(0).astype(int) == 0]
+    if anio is not None and "periodo" in df.columns:
+        df = df[df["periodo"].astype(str).str.startswith(str(anio))]
+    if hasta_periodo and "periodo" in df.columns:
+        df = df[df["periodo"].astype(str) <= str(hasta_periodo)]
+    if df.empty:
+        return out
+    tipo = df["tipo"].astype(str).str.upper() if "tipo" in df.columns else pd.Series([""] * len(df))
+    total = float(df["total"].sum()) if "total" in df.columns else 0.0
+    sub = float(df["subtotal"].sum()) if "subtotal" in df.columns else total
+    return {
+        "n_facturas": int(len(df)), "total": round(total, 2), "subtotal": round(sub, 2),
+        "mensual": round(float(df.loc[tipo == "MENSUAL", "total"].sum()) if "total" in df.columns else 0.0, 2),
+        "comision": round(float(df.loc[tipo == "COMISION", "total"].sum()) if "total" in df.columns else 0.0, 2),
+        "otros": 0.0,
+    }
+
+def _fallback_metricas_estilo_tabla_mensual(df_contratos, anio, mes):
+    """Copia de la logica de Tabla Mensual (mes + YTD ejercicio)."""
+    out = {
+        "interes_leasing_mes": 0.0, "interes_residual_mes": 0.0, "capital_mes": 0.0, "renta_mes": 0.0,
+        "saldo_residual_mes": 0.0, "saldo_capital_mes": 0.0,
+        "interes_leasing_ytd": 0.0, "interes_residual_ytd": 0.0, "capital_ytd": 0.0, "renta_ytd": 0.0,
+        "n_contratos_mes": 0, "n_celdas_ytd": 0, "anio": int(anio), "mes": int(mes),
+    }
+    if df_contratos is None or getattr(df_contratos, "empty", True):
+        return out
+    n_mes = 0
+    for _, row in df_contratos.iterrows():
+        try:
+            pl = int(row.get("Plazo") or 0)
+            if pl <= 0:
+                continue
+            fa_ts = pd.to_datetime(row.get("Fecha_Alta"), errors="coerce")
+            if pd.isna(fa_ts):
+                continue
+            fa = fa_ts.date()
+            fv_ts = pd.to_datetime(row.get("Fecha_Vencimiento"), errors="coerce")
+            es_baja = str(row.get("Estatus", "") or "").upper() == "BAJA"
+            fecha_baja = None
+            if es_baja and pd.notna(row.get("Fecha_Baja")):
+                fb = pd.to_datetime(row.get("Fecha_Baja"), errors="coerce")
+                if pd.notna(fb):
+                    fecha_baja = fb
+            tasa = round(float(row.get("Tasa_Calculada") or 0), 8)
+            inv = float(row.get("Valor_Sin_IVA") or 0) - float(row.get("Anticipo_Monto") or 0)
+            renta = float(row.get("Mensualidad_Sin_IVA") or 0)
+            residual = float(row.get("Residual_Monto") or 0)
+            dfa, _, _, _, _ = calc_amort(round(inv, 4), round(renta, 4), round(residual, 4), pl, tasa)
+            try:
+                vpr = float(row.get("VP_Residual") or 0)
+                if vpr <= 0:
+                    vpr = float(vp_res(residual, tasa, pl))
+            except Exception:
+                vpr = float(vp_res(residual, tasa, pl))
+            dfr = calc_res_amort(round(vpr, 4), tasa, pl)
+            uso_mes = False
+            for m in range(1, int(mes) + 1):
+                fm = date(int(anio), m, 1)
+                if fm < date(fa.year, fa.month, 1):
+                    continue
+                if pd.notna(fv_ts):
+                    fv = fv_ts.date()
+                    if fm > date(fv.year, fv.month, 1):
+                        continue
+                if fecha_baja is not None and fm > date(fecha_baja.year, fecha_baja.month, 1):
+                    continue
+                mc = (int(anio) - fa.year) * 12 + (m - fa.month) + 1
+                if mc < 1 or mc > pl:
+                    continue
+                il = round(float(dfa.iloc[mc - 1]["Interes"]), 2)
+                ir = round(float(dfr.iloc[mc - 1]["Interes"]), 2)
+                cap = round(float(dfa.iloc[mc - 1]["Capital"]), 2)
+                out["interes_leasing_ytd"] += il
+                out["interes_residual_ytd"] += ir
+                out["capital_ytd"] += cap
+                out["renta_ytd"] += round(renta, 2)
+                out["n_celdas_ytd"] += 1
+                if m == int(mes):
+                    out["interes_leasing_mes"] += il
+                    out["interes_residual_mes"] += ir
+                    out["capital_mes"] += cap
+                    out["renta_mes"] += round(renta, 2)
+                    out["saldo_residual_mes"] += round(float(dfr.iloc[mc - 1]["Saldo_Fin"]), 2)
+                    out["saldo_capital_mes"] += round(float(dfa.iloc[mc - 1]["Saldo"]), 2)
+                    uso_mes = True
+            if uso_mes:
+                n_mes += 1
+        except Exception:
+            continue
+    out["n_contratos_mes"] = n_mes
+    for k, v in list(out.items()):
+        if isinstance(v, float):
+            out[k] = round(v, 2)
+    return out
+
+def _fallback_consolidar(df_activos, hoy=None):
+    hoy = hoy or date.today()
+    vacios = {"n_contratos": 0, "inversion_neta": 0.0, "saldo_capital": 0.0, "cxc_cp": 0.0, "cxc_lp": 0.0,
+              "cxc_total": 0.0, "renta_mensual": 0.0, "saldo_residual_activo": 0.0}
+    if df_activos is None or getattr(df_activos, "empty", True):
+        return vacios, pd.DataFrame()
+    # minimo: sumar rentas
+    renta = float(pd.to_numeric(df_activos.get("Mensualidad_Sin_IVA", 0), errors="coerce").fillna(0).sum())
+    vacios["n_contratos"] = len(df_activos)
+    vacios["renta_mensual"] = round(renta, 2)
+    return vacios, df_activos.copy()
+
+def _fallback_acumulado_amort(df_activos, hoy=None, solo_ejercicio=True):
+    hoy = hoy or date.today()
+    m = _fallback_metricas_estilo_tabla_mensual(df_activos, hoy.year, hoy.month)
+    return {
+        "intereses_devengados": m["interes_leasing_ytd"],
+        "intereses_residual_devengados": m["interes_residual_ytd"],
+        "capital_amortizado": m["capital_ytd"],
+        "rentas_esperadas_acum": m["renta_ytd"],
+        "intereses_del_mes": m["interes_leasing_mes"],
+        "intereses_residual_del_mes": m["interes_residual_mes"],
+        "capital_del_mes": m["capital_mes"],
+        "n_contratos": m["n_contratos_mes"],
+    }
+
+def _fallback_resumen_fact_anio(df_fact):
+    return pd.DataFrame()
+
+def _fallback_saldos_contrato(con, hoy=None):
+    return {"inversion_neta": 0.0, "saldo_capital": 0.0, "renta_mensual": float(con.get("Mensualidad_Sin_IVA") or 0)}
+
+_cc_err = None
+try:
+    import core.cartera_contable as _cc
+    consolidar_cartera_vigente = getattr(_cc, "consolidar_cartera_vigente", _fallback_consolidar)
+    resumen_facturacion_por_anio = getattr(_cc, "resumen_facturacion_por_anio", _fallback_resumen_fact_anio)
+    cobertura_facturacion_periodo = getattr(_cc, "cobertura_facturacion_periodo", _fallback_cobertura)
+    saldos_contrato_vigente = getattr(_cc, "saldos_contrato_vigente", _fallback_saldos_contrato)
+    acumulado_facturacion = getattr(_cc, "acumulado_facturacion", _fallback_acumulado_facturacion)
+    acumulado_amortizacion_cartera = getattr(_cc, "acumulado_amortizacion_cartera", _fallback_acumulado_amort)
+    metricas_estilo_tabla_mensual = getattr(_cc, "metricas_estilo_tabla_mensual", _fallback_metricas_estilo_tabla_mensual)
+    tabla_intereses_mensual = getattr(_cc, "tabla_intereses_mensual", None)
+    comparar_auxiliar = getattr(_cc, "comparar_auxiliar", _fallback_comparar_auxiliar)
+except Exception as _e_cc:
+    _cc_err = _e_cc
+    consolidar_cartera_vigente = _fallback_consolidar
+    resumen_facturacion_por_anio = _fallback_resumen_fact_anio
+    cobertura_facturacion_periodo = _fallback_cobertura
+    saldos_contrato_vigente = _fallback_saldos_contrato
+    acumulado_facturacion = _fallback_acumulado_facturacion
+    acumulado_amortizacion_cartera = _fallback_acumulado_amort
+    metricas_estilo_tabla_mensual = _fallback_metricas_estilo_tabla_mensual
+    comparar_auxiliar = _fallback_comparar_auxiliar
 
 TOLERANCIA = 0.10
 
@@ -2798,139 +3046,409 @@ def _render_conciliacion():
                 set_cfg('rfc_arrendadora', _rfc_nuevo)
                 st.success("RFC guardado. Se aplicará a partir de la próxima carga.")
 
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            archivos = st.file_uploader(
-                "Sube XMLs de CFDI o un Excel (.xlsx) con el listado de facturas",
-                type=['xml', 'xlsx', 'csv'],
-                accept_multiple_files=True,
-                help="Puedes subir múltiples XMLs, o un Layout en Excel con columnas: UUID, FECHA, FOLIO, SUBTOTAL, TOTAL, CONTRATO, CONCEPTO"
-            )
-        with col2:
+        st.markdown(
+            '<div style="background:#1E5C4F;color:#fff;padding:12px 14px;border-radius:6px;margin-bottom:14px;font-weight:600;">'
+            'CARGA DE XML — usa el Metodo 1 (carpeta en disco) si el navegador no deja subir archivos'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+        col_per, col_over = st.columns(2)
+        with col_per:
             periodo_ref = st.date_input(
                 "Mes de referencia",
                 value=hoy_ref().replace(day=1),
-                help="Se usa como período si no se detecta en el XML"
+                help="Se usa como periodo si el XML no trae fecha legible",
+                key="carga_periodo_ref",
             )
-            sobrescribir = st.checkbox("Sobrescribir facturas ya cargadas", value=False,
-                                       help="Si una factura con el mismo UUID ya existe (por ejemplo, ya la resolviste manualmente), "
-                                            "por default se OMITE para no perder ese trabajo. Actívalo solo si de verdad quieres reemplazarla.")
+        with col_over:
+            st.write("")
+            sobrescribir = st.checkbox(
+                "Sobrescribir facturas ya cargadas",
+                value=False,
+                help="Si el UUID ya existe, por default se omite.",
+                key="carga_sobrescribir",
+            )
+
+        st.subheader("Metodo 1 — Carpeta en este equipo (recomendado)")
+        st.caption(
+            "Pega la ruta completa de la carpeta (ej. C:/CFDI/2024). "
+            "Un solo boton busca y procesa. Si no ves mensajes, revisa el panel de estado abajo."
+        )
+        ruta_carpeta = st.text_input(
+            "Ruta de la carpeta con XML",
+            value=st.session_state.get("carga_ruta_carpeta", ""),
+            placeholder="C:/Users/TuUsuario/Documents/CFDI/2024",
+            key="carga_ruta_carpeta_input",
+        )
+        incluir_sub = st.checkbox("Incluir subcarpetas", value=True, key="carga_incluir_sub")
+
+        # Bandeja fija de la app (siempre funciona si copias XML ahi)
+        _inbox = os.path.join(DATA_DIR, "inbox_cfdi")
+        try:
+            os.makedirs(_inbox, exist_ok=True)
+        except Exception:
+            pass
+        st.caption(f"Opcional: copia tus XML a esta carpeta y procesala: `{_inbox}`")
+
+        col_p1, col_p2 = st.columns(2)
+        with col_p1:
+            _do_ruta = st.button("Procesar carpeta de la ruta", type="primary", key="btn_proc_ruta")
+        with col_p2:
+            _do_inbox = st.button("Procesar bandeja inbox_cfdi", key="btn_proc_inbox")
+
+        def _escanear_xml(ruta: str, sub: bool):
+            hallados, errores = [], []
+            ruta = (ruta or "").strip().strip('"').strip("'")
+            if not ruta:
+                errores.append("Ruta vacia.")
+                return hallados, errores
+            if not os.path.isdir(ruta):
+                errores.append(f"No existe o no es carpeta: {ruta}")
+                return hallados, errores
+            try:
+                if sub:
+                    for root_d, _dirs, files in os.walk(ruta):
+                        for fn in files:
+                            if fn.lower().endswith(".xml"):
+                                hallados.append(os.path.join(root_d, fn))
+                else:
+                    for fn in os.listdir(ruta):
+                        fp = os.path.join(ruta, fn)
+                        if os.path.isfile(fp) and fn.lower().endswith(".xml"):
+                            hallados.append(fp)
+                hallados.sort()
+            except Exception as e:
+                errores.append(f"Error al leer carpeta: {e}")
+            if not hallados and not errores:
+                errores.append(f"La carpeta no tiene archivos .xml: {ruta}")
+            return hallados, errores
+
+        def _procesar_lista_paths(paths, periodo_ref, sobrescribir):
+            resultados, errores_parse = [], []
+            total = len(paths)
+            if total == 0:
+                return resultados, errores_parse, "No hay archivos para procesar."
+            barra = st.progress(0.0, text=f"0/{total}")
+            log = st.empty()
+            uuids_en_lote = {}
+            reglas = get_reglas_concepto()
+            cache_lote = {}
+            alias_map = cargar_alias_contrato()
+            usos_alias = {}
+            for i, fp in enumerate(paths):
+                nombre = os.path.basename(fp)
+                barra.progress((i + 1) / total, text=f"{i+1}/{total} {nombre}")
+                log.info(f"Procesando: {fp}")
+                try:
+                    with open(fp, "rb") as fh:
+                        raw = fh.read()
+                    if not raw:
+                        errores_parse.append(f"**{nombre}**: vacio")
+                        continue
+                    if len(raw) > MAX_XML_BYTES:
+                        errores_parse.append(f"**{nombre}**: demasiado grande")
+                        continue
+                    fact = parse_cfdi(raw, reglas)
+                    if not fact.get("periodo"):
+                        fact["periodo"] = periodo_ref.strftime("%Y-%m")
+                    if fact.get("uuid") and fact["uuid"] in uuids_en_lote:
+                        errores_parse.append(f"**{nombre}**: UUID duplicado en lote")
+                        continue
+                    if fact.get("uuid"):
+                        uuids_en_lote[fact["uuid"]] = nombre
+                    detectado = fact.get("id_contrato")
+                    id_final, se_aplico = resolver_numero_contrato(detectado, alias_map)
+                    fact["id_contrato"] = id_final
+                    fact["alias_aplicado"] = 1 if se_aplico else 0
+                    if se_aplico and detectado:
+                        usos_alias[detectado] = usos_alias.get(detectado, 0) + 1
+                    res = conciliar_factura(fact, cache_lote)
+                    merged = {**fact, **res}
+                    merged["status"] = res.get("status")
+                    resultados.append(merged)
+                except Exception as e:
+                    errores_parse.append(f"**{nombre}**: {e}")
+            barra.progress(1.0, text=f"Listo {total}/{total}")
+            log.empty()
+            try:
+                marcar_alias_usado_lote(usos_alias)
+            except Exception:
+                pass
+            msg = f"Procesados {len(resultados)} de {total}. Errores: {len(errores_parse)}."
+            if resultados:
+                try:
+                    omitidas = guardar_facturas_batch(resultados, sobrescribir_existentes=sobrescribir)
+                    registrar_corrida_conciliacion(
+                        periodo_ref.strftime("%Y-%m"), resultados, omitidas=len(omitidas)
+                    )
+                    msg += f" Omitidas (ya existian): {len(omitidas)}."
+                    st.session_state["conciliacion_omitidas"] = omitidas
+                except Exception as e:
+                    msg += f" Error al guardar: {e}"
+                    errores_parse.append(f"Guardado: {e}")
+            st.session_state["conciliacion_resultados"] = resultados if resultados else None
+            st.session_state["conciliacion_errores_parse"] = errores_parse
+            st.session_state["conciliacion_periodo_lote"] = periodo_ref.strftime("%Y-%m")
+            st.session_state["carga_ultimo_msg"] = msg
+            return resultados, errores_parse, msg
+
+        if _do_ruta or _do_inbox:
+            _ruta_usar = _inbox if _do_inbox else (ruta_carpeta or "").strip().strip('"').strip("'")
+            st.session_state["carga_ruta_carpeta"] = _ruta_usar
+            with st.status("Buscando y procesando XML…", expanded=True) as _st_status:
+                st.write(f"Carpeta: `{_ruta_usar}`")
+                _paths, _err_e = _escanear_xml(_ruta_usar, incluir_sub if not _do_inbox else True)
+                for e in _err_e:
+                    st.write(e)
+                st.write(f"Archivos encontrados: {len(_paths)}")
+                if _paths:
+                    _res, _errp, _msg = _procesar_lista_paths(_paths, periodo_ref, sobrescribir)
+                    st.write(_msg)
+                    if _errp:
+                        st.write(f"Detalle errores ({len(_errp)}):")
+                        for e in _errp[:30]:
+                            st.write(e)
+                    _st_status.update(label="Carga terminada", state="complete")
+                else:
+                    st.write("No hay XML para procesar.")
+                    st.session_state["carga_ultimo_msg"] = "No se encontro ningun XML en la carpeta."
+                    st.session_state["conciliacion_errores_parse"] = _err_e
+                    _st_status.update(label="Sin archivos", state="error")
+
+        # Panel de estado SIEMPRE visible (aunque no hayas pulsado el boton ahora)
+        st.markdown("##### Estado de la ultima carga")
+        _umsg = st.session_state.get("carga_ultimo_msg")
+        if _umsg:
+            st.success(_umsg)
+        else:
+            st.info("Aun no has procesado ninguna carpeta en esta sesion.")
+        _uerr = st.session_state.get("conciliacion_errores_parse") or []
+        if _uerr:
+            with st.expander(f"Errores de la ultima carga ({len(_uerr)})", expanded=True):
+                for e in _uerr[:50]:
+                    st.markdown(str(e))
+        _ures = st.session_state.get("conciliacion_resultados")
+        if _ures:
+            st.caption(f"Ultimo lote en memoria: {len(_ures)} facturas — periodo {st.session_state.get('conciliacion_periodo_lote', '')}")
+
+        st.markdown("---")
+        st.subheader("Metodo 2 — Subir archivos con el navegador")
+        st.caption(
+            "Si este metodo no muestra nada al elegir archivos, usa el Metodo 1. "
+            "En algunos equipos (HTTPS local o app de escritorio) el uploader falla sin mensaje."
+        )
+        archivos = st.file_uploader(
+            "XML, ZIP con XML, o Excel",
+            type=["xml", "zip", "xlsx", "csv"],
+            accept_multiple_files=True,
+            key="carga_cfdi_uploader",
+        )
+
+        def _expandir_archivos_subidos(lista):
+            """Convierte ZIP en lista de (nombre, bytes). XML/Excel se leen tal cual."""
+            import zipfile
+            out = []
+            errores = []
+            if not lista:
+                return out, errores
+            for arch in lista:
+                name = arch.name or "sin_nombre"
+                name_l = name.lower()
+                try:
+                    raw = arch.getvalue() if hasattr(arch, "getvalue") else arch.read()
+                    if not raw:
+                        errores.append(f"{name}: archivo vacío (0 bytes).")
+                        continue
+                    if name_l.endswith(".zip"):
+                        try:
+                            with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+                                xml_names = [n for n in zf.namelist()
+                                             if n.lower().endswith(".xml") and not n.startswith("__MACOSX")]
+                                if not xml_names:
+                                    errores.append(f"{name}: el ZIP no contiene ningún .xml")
+                                    continue
+                                for n in xml_names:
+                                    out.append((n.split("/")[-1] or n, zf.read(n)))
+                        except zipfile.BadZipFile:
+                            errores.append(f"{name}: ZIP dañado o no es un ZIP válido.")
+                    elif name_l.endswith(".xml"):
+                        out.append((name, raw))
+                    elif name_l.endswith((".xlsx", ".csv")):
+                        out.append((name, raw))
+                    else:
+                        errores.append(f"{name}: extensión no soportada (usa .xml, .zip, .xlsx o .csv).")
+                except Exception as e:
+                    errores.append(f"{name}: no se pudo leer ({e})")
+            return out, errores
 
         if not archivos:
-            st.info("Sube los XMLs para comenzar.")
+            st.info("Sube XML (o un ZIP con XML) para comenzar. Si el botón de archivos no responde, prueba con un ZIP o con menos archivos por lote.")
         else:
-            st.markdown(f"**{len(archivos)} archivo(s) seleccionados**")
+            items, err_prev = _expandir_archivos_subidos(archivos)
+            n_xml = sum(1 for n, _ in items if n.lower().endswith(".xml"))
+            n_xls = sum(1 for n, _ in items if n.lower().endswith((".xlsx", ".csv")))
+            peso_kb = sum(len(b) for _, b in items) / 1024.0
+            st.success(
+                f"Listos para procesar: **{len(items)}** archivo(s) "
+                f"({n_xml} XML, {n_xls} Excel/CSV) — {peso_kb:,.0f} KB en total."
+            )
+            if err_prev:
+                with st.expander(f"{len(err_prev)} archivo(s) no se pudieron preparar", expanded=True):
+                    for msg in err_prev:
+                        st.warning(msg)
+            if not items:
+                st.error(
+                    "No quedó ningún archivo válido para procesar. "
+                    "Revisa que sean .xml reales (o un .zip con XML adentro), no PDF ni carpetas sueltas."
+                )
+            else:
+                with st.expander("Ver nombres del lote", expanded=False):
+                    st.write([n for n, _ in items[:200]] + (["…"] if len(items) > 200 else []))
 
-            if st.button("Procesar y Conciliar", type="primary"):
-                resultados = []
-                errores_parse = []
-                barra = st.progress(0, text="Procesando XMLs...")
-                total = len(archivos)
-                uuids_en_lote = {}  # detecta duplicados DENTRO del mismo lote subido
-
-                # Se resuelven una sola vez ANTES del ciclo, no archivo por
-                # archivo: `reglas` viene de la configuración de la empresa
-                # (antes se releía de la BD en cada XML) y `cache_lote`
-                # guarda el contrato + tabla de amortización ya calculada
-                # de cada ID_Contrato que se repite en el lote (renta +
-                # comisión del mismo anticipo, varios meses del mismo
-                # contrato, etc.). Con lotes de cientos de XMLs esto es la
-                # diferencia entre segundos y minutos.
-                reglas = get_reglas_concepto()
-                cache_lote = {}
-                alias_map = cargar_alias_contrato()
-                usos_alias = {}
-                # Refrescar la barra en cada archivo, uno por uno, es
-                # innecesario en lotes grandes (cada refresco es un viaje
-                # de ida y vuelta al navegador); con más de 40 archivos se
-                # actualiza cada 1% para no ser, ella misma, un cuello de
-                # botella.
-                paso_barra = max(1, total // 100)
-
-                for i, arch in enumerate(archivos):
-                    if i % paso_barra == 0 or i == total - 1:
-                        barra.progress((i + 1) / total, text=f"Procesando {arch.name} ({i+1}/{total})")
+                if st.button("Procesar y Conciliar", type="primary", key="btn_procesar_cfdi"):
+                    resultados = []
+                    errores_parse = list(err_prev)
+                    total = len(items)
+                    barra = st.progress(0, text=f"Iniciando… 0/{total}")
+                    estado = st.empty()
+                    uuids_en_lote = {}
                     try:
-                        name_lower = arch.name.lower()
-                        facts = []
-                        if name_lower.endswith('.xml'):
-                            raw = arch.read()
-                            facts = [parse_cfdi(raw, reglas)]
-                        elif name_lower.endswith(('.xlsx', '.csv')):
-                            df_arch = pd.read_excel(arch) if name_lower.endswith('.xlsx') else pd.read_csv(arch)
-                            df_arch.columns = [str(col).strip().upper() for col in df_arch.columns]
-                            for idx, row in df_arch.iterrows():
-                                _uuid = str(row.get('UUID', f'VIRTUAL-{arch.name}-{idx}')).strip()
-                                _fecha = str(row.get('FECHA', '')).split(' ')[0]
-                                _folio = str(row.get('FOLIO', ''))
-                                try: _subt = float(row.get('SUBTOTAL', 0.0) or 0)
-                                except: _subt = 0.0
-                                try: _tot = float(row.get('TOTAL', 0.0) or 0)
-                                except: _tot = 0.0
-                                _con = str(row.get('CONTRATO', '')).strip()
-                                _desc = str(row.get('CONCEPTO', 'Renta'))
-                                
-                                c_clave = clasificar_concepto(_desc, reglas)
-                                fact = {
-                                    'uuid': _uuid, 'fecha': _fecha, 'folio': _folio,
-                                    'subtotal': _subt, 'total': _tot,
-                                    'id_contrato': _con, 'mes_contrato': None,
-                                    'tipo': c_clave, 'periodo': _fecha[:7] if len(_fecha)>=7 else '',
-                                    'conceptos': {c_clave: _subt}, 'conceptos_raw': [{'descripcion': _desc, 'importe': _subt, 'clave': c_clave}],
-                                    'rfc_emisor': '', 'rfc_receptor': '', 'tipo_comprobante': 'I', 'moneda': 'MXN'
-                                }
-                                facts.append(fact)
-                        
-                        for fact in facts:
-                            if fact.get('uuid') and fact['uuid'] in uuids_en_lote:
-                                errores_parse.append(
-                                    f"**{arch.name}**: UUID duplicado omitido."
-                                )
-                                continue
-                            if fact.get('uuid'):
-                                uuids_en_lote[fact['uuid']] = arch.name
-                            if not fact['periodo']:
-                                fact['periodo'] = periodo_ref.strftime('%Y-%m')
-                                
-                            fact['id_contrato_detectado'] = fact.get('id_contrato')
-                            detectado = fact.get('id_contrato')
-                            id_final, se_aplico = resolver_numero_contrato(detectado, alias_map)
-                            fact['id_contrato'] = id_final
-                            fact['alias_aplicado'] = 1 if se_aplico else 0
-                            if se_aplico:
-                                usos_alias[detectado] = usos_alias.get(detectado, 0) + 1
-                            res = conciliar_factura(fact, cache_lote)
-                            merged = {**fact, **res}
-                            merged['status'] = res['status']
-                            if fact['alias_aplicado']:
-                                merged['msg'] = (
-                                    f"{merged.get('msg', '')} -> Se aplicó alias ({detectado} -> {id_final})"
-                                ).strip(' ->')
-                            resultados.append(merged)
-                    except Exception as e:
-                        errores_parse.append(f"**{arch.name}**: {e}")
+                        reglas = get_reglas_concepto()
+                        cache_lote = {}
+                        alias_map = cargar_alias_contrato()
+                        usos_alias = {}
 
-                barra.empty()
-                marcar_alias_usado_lote(usos_alias)
-                st.session_state['conciliacion_errores_parse'] = errores_parse
+                        for i, (nombre, raw) in enumerate(items):
+                            pct = (i + 1) / total
+                            barra.progress(pct, text=f"Procesando {nombre} ({i+1}/{total})")
+                            estado.caption(f"Archivo {i+1} de {total}: {nombre}")
+                            try:
+                                name_lower = nombre.lower()
+                                facts = []
+                                if name_lower.endswith(".xml"):
+                                    if len(raw) > MAX_XML_BYTES:
+                                        raise ValueError(
+                                            f"pesa {len(raw)/1024:.0f} KB (límite {MAX_XML_BYTES//1024//1024} MB). "
+                                            "No parece un CFDI normal."
+                                        )
+                                    facts = [parse_cfdi(raw, reglas)]
+                                elif name_lower.endswith(".xlsx"):
+                                    df_arch = pd.read_excel(io.BytesIO(raw))
+                                    df_arch.columns = [str(col).strip().upper() for col in df_arch.columns]
+                                    for _, r in df_arch.iterrows():
+                                        facts.append({
+                                            "uuid": str(r.get("UUID", "") or ""),
+                                            "fecha": str(r.get("FECHA", "") or ""),
+                                            "folio": str(r.get("FOLIO", "") or ""),
+                                            "subtotal": float(r.get("SUBTOTAL", 0) or 0),
+                                            "total": float(r.get("TOTAL", 0) or 0),
+                                            "id_contrato": str(r.get("CONTRATO", "") or "") or None,
+                                            "mes_contrato": None,
+                                            "tipo": "MENSUAL",
+                                            "periodo": str(r.get("FECHA", "") or "")[:7],
+                                            "conceptos": {"RENTA": float(r.get("SUBTOTAL", 0) or 0)},
+                                            "conceptos_raw": [],
+                                            "rfc_emisor": None,
+                                            "rfc_receptor": None,
+                                            "tipo_comprobante": "I",
+                                            "moneda": "MXN",
+                                            "avisos_xml": [],
+                                            "alias_aplicado": 0,
+                                        })
+                                elif name_lower.endswith(".csv"):
+                                    df_arch = pd.read_csv(io.BytesIO(raw))
+                                    df_arch.columns = [str(col).strip().upper() for col in df_arch.columns]
+                                    for _, r in df_arch.iterrows():
+                                        facts.append({
+                                            "uuid": str(r.get("UUID", "") or ""),
+                                            "fecha": str(r.get("FECHA", "") or ""),
+                                            "folio": str(r.get("FOLIO", "") or ""),
+                                            "subtotal": float(r.get("SUBTOTAL", 0) or 0),
+                                            "total": float(r.get("TOTAL", 0) or 0),
+                                            "id_contrato": str(r.get("CONTRATO", "") or "") or None,
+                                            "mes_contrato": None,
+                                            "tipo": "MENSUAL",
+                                            "periodo": str(r.get("FECHA", "") or "")[:7],
+                                            "conceptos": {"RENTA": float(r.get("SUBTOTAL", 0) or 0)},
+                                            "conceptos_raw": [],
+                                            "rfc_emisor": None,
+                                            "rfc_receptor": None,
+                                            "tipo_comprobante": "I",
+                                            "moneda": "MXN",
+                                            "avisos_xml": [],
+                                            "alias_aplicado": 0,
+                                        })
 
-                if not resultados:
-                    st.error("No se procesó ningún XML correctamente.")
-                    st.session_state['conciliacion_resultados'] = None
-                else:
-                    with st.spinner("Guardando en base de datos..."):
-                        omitidas = guardar_facturas_batch(resultados, sobrescribir_existentes=sobrescribir)
-                    registrar_corrida_conciliacion(periodo_ref.strftime('%Y-%m'), resultados, omitidas=len(omitidas))
-                    # Se guarda en session_state (no en variables locales) para que la
-                    # tabla y las acciones de resolución sigan visibles aunque
-                    # resuelvas una discrepancia, cambies de pestaña, o Streamlit
-                    # vuelva a correr el script por cualquier otro motivo — antes
-                    # todo esto vivía SOLO dentro de este "if", así que en cuanto
-                    # dabas clic en cualquier otro botón (como "Asignar contrato")
-                    # la tabla entera desaparecía de golpe hasta recargar la página.
-                    st.session_state['conciliacion_resultados'] = resultados
-                    st.session_state['conciliacion_omitidas'] = omitidas
-                    st.session_state['conciliacion_periodo_lote'] = periodo_ref.strftime('%Y-%m')
+                                for fact in facts:
+                                    if not fact.get("periodo"):
+                                        fact["periodo"] = periodo_ref.strftime("%Y-%m")
+                                    if fact.get("uuid") and fact["uuid"] in uuids_en_lote:
+                                        errores_parse.append(
+                                            f"**{nombre}**: UUID duplicado en el mismo lote "
+                                            f"(también en {uuids_en_lote[fact['uuid']]})"
+                                        )
+                                        continue
+                                    if fact.get("uuid"):
+                                        uuids_en_lote[fact["uuid"]] = nombre
+                                    detectado = fact.get("id_contrato")
+                                    id_final, se_aplico = resolver_numero_contrato(detectado, alias_map)
+                                    fact["id_contrato"] = id_final
+                                    fact["alias_aplicado"] = 1 if se_aplico else 0
+                                    if se_aplico and detectado:
+                                        usos_alias[detectado] = usos_alias.get(detectado, 0) + 1
+                                    res = conciliar_factura(fact, cache_lote)
+                                    merged = {**fact, **res}
+                                    merged["status"] = res["status"]
+                                    if fact.get("alias_aplicado"):
+                                        merged["msg"] = (
+                                            f"{merged.get('msg', '')} -> Se aplicó alias ({detectado} -> {id_final})"
+                                        ).strip(" ->")
+                                    resultados.append(merged)
+                            except Exception as e:
+                                errores_parse.append(f"**{nombre}**: {e}")
+
+                        barra.progress(1.0, text=f"Terminado {total}/{total}")
+                        estado.empty()
+                        marcar_alias_usado_lote(usos_alias)
+                        st.session_state["conciliacion_errores_parse"] = errores_parse
+
+                        if not resultados:
+                            st.error(
+                                "No se procesó ningún XML correctamente. "
+                                "Abre la lista de errores abajo para ver el motivo de cada archivo."
+                            )
+                            st.session_state["conciliacion_resultados"] = None
+                            if errores_parse:
+                                with st.expander(f"Ver {len(errores_parse)} error(es)", expanded=True):
+                                    for msg in errores_parse:
+                                        st.markdown(msg)
+                        else:
+                            with st.spinner("Guardando en base de datos…"):
+                                omitidas = guardar_facturas_batch(resultados, sobrescribir_existentes=sobrescribir)
+                            registrar_corrida_conciliacion(
+                                periodo_ref.strftime("%Y-%m"), resultados, omitidas=len(omitidas)
+                            )
+                            st.session_state["conciliacion_resultados"] = resultados
+                            st.session_state["conciliacion_omitidas"] = omitidas
+                            st.session_state["conciliacion_periodo_lote"] = periodo_ref.strftime("%Y-%m")
+                            st.success(
+                                f"Procesados **{len(resultados)}** factura(s). "
+                                f"Omitidas (ya existían): **{len(omitidas)}**. "
+                                f"Errores de parseo: **{len(errores_parse)}**."
+                            )
+                            if errores_parse:
+                                with st.expander(f"{len(errores_parse)} archivo(s) con error"):
+                                    for msg in errores_parse:
+                                        st.markdown(msg)
+                    except Exception as e_lote:
+                        barra.empty()
+                        estado.empty()
+                        st.error(
+                            "La carga se detuvo por un error general (no de un XML suelto). "
+                            f"Detalle: {e_lote}"
+                        )
+                        st.session_state["conciliacion_errores_parse"] = errores_parse + [str(e_lote)]
 
         # --- Resultados guardados: todos los meses y años, siempre desde la
         # base de datos, nunca solo en memoria de la sesión. ---
@@ -3260,9 +3778,13 @@ def _render_conciliacion():
                 filas_avance = []
                 for _, _con_av in df_avance_base.iterrows():
                     _avp = calcular_avance_pago(_con_av, facturas_dict)
+                    _renta = float(_con_av.get('Mensualidad_Sin_IVA') or 0)
+                    _monto_atraso = round(_renta * _avp['meses_atraso'], 2)
                     filas_avance.append({
                         'ID_Contrato': _con_av['ID_Contrato'], 'Cliente': _con_av['Cliente'],
                         'Estado': _avp['estado'],
+                        'Renta mensual': _renta,
+                        'Monto atraso': _monto_atraso,
                         'Mes esperado hoy': _avp['mes_esperado_hoy'],
                         'Mes máx. facturado': _avp['mes_max_facturado'],
                         'Meses adelanto': _avp['meses_adelanto'],
@@ -3274,9 +3796,13 @@ def _render_conciliacion():
             n_ade = int((df_avance['Estado']=='ADELANTADO').sum())
             n_cor = int((df_avance['Estado']=='AL_CORRIENTE').sum())
             ka1,ka2,ka3 = st.columns(3)
+            _monto_atr_tot = float(df_avance.loc[df_avance['Estado']=='ATRASADO', 'Monto atraso'].sum()) if 'Monto atraso' in df_avance.columns else 0.0
             ka1.metric("Atrasados", n_atr)
             ka2.metric("Al corriente", n_cor)
             ka3.metric("Adelantados", n_ade)
+            ka1b, ka2b = st.columns(2)
+            ka1b.metric("Monto estimado en atraso", f"${_monto_atr_tot:,.2f}")
+            ka2b.metric("Contratos en atraso", f"{n_atr}")
 
             filtro_estado = st.multiselect(
                 "Filtrar por estado", ['ATRASADO','AL_CORRIENTE','ADELANTADO'],
@@ -3561,6 +4087,61 @@ def _render_conciliacion():
             "SELECT DISTINCT periodo FROM facturas WHERE periodo IS NOT NULL ORDER BY periodo DESC"
         ).fetchall()
         lista_per = [r[0] for r in periodos]
+
+        # Analisis multi-anio (todos los XML cargados, varios anios a la vez)
+        with st.expander("Analisis multi-anio de facturacion (todos los XML cargados)", expanded=True):
+            st.caption(
+                "Sube XML de varios anios en la pestaña Carga (acepta multiples archivos). "
+                "Aqui se agrupa por anio y tipo para ver el panorama completo y amarrar con contabilidad."
+            )
+            try:
+                _df_all_f = pd.read_sql_query(
+                    """SELECT periodo, tipo, total, subtotal, cancelada, estatus
+                       FROM facturas WHERE periodo IS NOT NULL""",
+                    conn,
+                )
+            except Exception:
+                _df_all_f = pd.DataFrame()
+            if _df_all_f.empty:
+                st.info("Aun no hay facturas. Sube XML de uno o varios anios en Carga.")
+            else:
+                _res_anio = resumen_facturacion_por_anio(_df_all_f, solo_vigentes=True)
+                if not _res_anio.empty:
+                    _anios = sorted(_res_anio["Anio"].unique())
+                    st.markdown(f"**Anios con facturas:** {', '.join(_anios)}  |  **Total vigentes:** ${_res_anio['Total'].sum():,.2f}")
+                    c_chart, c_tab = st.columns([1, 1])
+                    with c_chart:
+                        try:
+                            _pivot = _res_anio.pivot_table(
+                                index="Anio", columns="Tipo", values="Total", aggfunc="sum", fill_value=0
+                            ).reset_index()
+                            fig_an = go.Figure()
+                            for col in [c for c in _pivot.columns if c != "Anio"]:
+                                fig_an.add_trace(go.Bar(x=_pivot["Anio"], y=_pivot[col], name=str(col)))
+                            fig_an.update_layout(barmode="stack", title="Facturado vigente por anio y tipo", height=320)
+                            st.plotly_chart(sfig(fig_an, h=320), width="stretch", key="pc_multi_anio")
+                        except Exception:
+                            pass
+                    with c_tab:
+                        st.dataframe(
+                            _res_anio.style.format({"Total": "${:,.2f}", "Subtotal": "${:,.2f}"}),
+                            width="stretch", height=300, key="df_multi_anio",
+                        )
+                    try:
+                        from reports.excel import excel_con_formato as _exc_ma
+                        _buf_ma = _exc_ma(
+                            {"Por anio": _res_anio},
+                            currency_cols=["Total", "Subtotal"],
+                        )
+                        st.download_button(
+                            "Excel multi-anio",
+                            data=_buf_ma,
+                            file_name="facturacion_multi_anio.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="dl_multi_anio",
+                        )
+                    except Exception:
+                        pass
 
         if not lista_per:
             st.info("Aún no hay facturas procesadas. Carga algunos XMLs primero.")
@@ -4092,7 +4673,7 @@ DESCRIPCIONES_GRUPO = {
     "Configuración": "Ajustes generales, cuentas contables y respaldos.",
 }
 DESCRIPCIONES = {
-    "Dashboard & Cartera": "Panorama general de tu cartera: KPIs, alertas automáticas y gráficas de morosidad, vencimientos y flujo.",
+    "Dashboard & Cartera": "Cartera vigente comparable con contabilidad: inversion neta, saldo capital, CxC, residual, cobertura del periodo y export Excel.",
     "Estado de Cuenta": "Consulta el estado de cuenta detallado de un contrato o cliente específico.",
     "Carga Masiva y Altas": "Sube archivos para dar de alta contratos nuevos de forma masiva.",
     "Editar / Eliminar": "Modifica o elimina la información de un contrato ya existente.",
@@ -4295,34 +4876,81 @@ if ROL_ACTUAL == "lectura" and menu in PANTALLAS_SOLO_ESCRITURA:
 # Dashboard
 try:
     if menu=="Dashboard & Cartera":
-        # Dashboard principal
-        hoy = hoy_ref()
-        df_all  = obtener()
-        df      = obtener('ACTIVO')
-        df_anot = obtener_anotaciones()
-        df_evts = obtener_eventos_especiales()
+        # Solo cifras de cartera vigente + mes seleccionado + acumulado a ese mes.
+        hoy_sistema = hoy_ref()
+        df_all = obtener()
+        df = obtener('ACTIVO')
+        _tot_c = {}
+        _det_c = pd.DataFrame()
+        _acu_prev = {}
+        _acu_am = {}
+        _acu_anio = {}
 
-        # Buscador universal: ver cualquier contrato al instante
-        # Va arriba a propósito — es la forma más rápida de "ver lo que
-        # quieras, cuando lo quieras" sin tener que navegar el menú ni
-        # bajar hasta la tabla.
-        # (Antes había aquí un banner verde grande repitiendo "O-Leasing —
-        # Dashboard" y la fecha — información que ya está arriba, en la
-        # barra de ruta, y abajo, en el KPI de "Contratos activos". Quitarlo
-        # deja ver el contenido real de inmediato en vez de tres bloques de
-        # encabezado seguidos antes de llegar a algo útil.)
-        busq_top = st.text_input("Buscar contrato o cliente y saltar directo a su estado de cuenta",
-                                  placeholder="Escribe un ID o un nombre…", key="dash_busq_top")
+        if _cc_err is not None:
+            st.warning(
+                f"core/cartera_contable.py no cargo bien ({type(_cc_err).__name__}: {_cc_err}). "
+                "Se usan formulas internas de respaldo (igual Tabla Mensual). "
+                "Copia el archivo del ZIP a core\\cartera_contable.py y borra core\\__pycache__."
+            )
+        st.markdown(
+            '<div style="background:#1E5C4F;color:#fff;padding:10px 14px;border-radius:6px;margin-bottom:12px;font-weight:600;">'
+            'DASHBOARD CARTERA / CONTABILIDAD — elige mes y año para ver el mes y el acumulado a ese corte'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+        col_m, col_a, col_info = st.columns([1, 1, 2])
+        with col_m:
+            mes_sel = st.selectbox(
+                "Mes de análisis",
+                list(range(1, 13)),
+                index=max(0, hoy_sistema.month - 1),
+                format_func=lambda m: MN[m - 1],
+                key="dash_mes_analisis",
+            )
+        with col_a:
+            anio_sel = st.number_input(
+                "Año de análisis",
+                min_value=2000,
+                max_value=2100,
+                value=int(hoy_sistema.year),
+                step=1,
+                key="dash_anio_analisis",
+            )
+        # Corte = último día del mes seleccionado (para saldos y acumulado)
+        try:
+            _corte = (date(int(anio_sel), int(mes_sel), 1) + relativedelta(months=1) - relativedelta(days=1))
+        except Exception:
+            _corte = hoy_sistema
+        if _corte > hoy_sistema:
+            _corte = hoy_sistema
+        _periodo = f"{int(anio_sel):04d}-{int(mes_sel):02d}"
+        with col_info:
+            st.markdown(
+                f"**Corte:** {_corte.isoformat()}  \n"
+                f"**Periodo del mes:** `{_periodo}`  \n"
+                f"Primer mes en firma = mes 1 de amortización."
+            )
+
+        busq_top = st.text_input(
+            "Buscar contrato o cliente → Estado de cuenta",
+            placeholder="ID o nombre…",
+            key="dash_busq_top",
+        )
         if busq_top.strip() and not df_all.empty:
             _match_top = df_all[
-                df_all['ID_Contrato'].str.contains(busq_top, case=False, na=False) |
-                df_all['Cliente'].str.contains(busq_top, case=False, na=False)
+                df_all['ID_Contrato'].str.contains(busq_top, case=False, na=False)
+                | df_all['Cliente'].str.contains(busq_top, case=False, na=False)
             ]
             if not _match_top.empty:
                 for _, _mr in _match_top.head(5).iterrows():
-                    if st.button(f"{_mr['ID_Contrato']} — {_mr['Cliente']}", key=f"jump_{_mr['ID_Contrato']}", width='stretch'):
+                    if st.button(
+                        f"{_mr['ID_Contrato']} — {_mr['Cliente']}",
+                        key=f"jump_{_mr['ID_Contrato']}",
+                        width='stretch',
+                    ):
                         st.session_state['ec_contrato'] = _mr['ID_Contrato']
-                        st.session_state['menu_item']   = "Estado de Cuenta"
+                        st.session_state['menu_item'] = "Estado de Cuenta"
                         for g, its in GRUPOS.items():
                             if "Estado de Cuenta" in its:
                                 st.session_state['menu_grupo'] = g
@@ -4330,323 +4958,277 @@ try:
             else:
                 st.caption("Sin coincidencias.")
 
-        # KPIs — el semáforo: solo lo que responde "¿estamos bien hoy?"
-        tot_v   = df['Valor_Sin_IVA'].sum()       if not df.empty else 0
-        tot_r   = df['Mensualidad_Sin_IVA'].sum() if not df.empty else 0
-        tot_res = df['Residual_Monto'].sum()      if not df.empty else 0
-        tot_ant = df['Anticipo_Monto'].sum()      if not df.empty else 0
-        tot_com = df['Comision_Monto'].sum()      if not df.empty else 0
-        n_mora  = int((df['Nivel_Morosidad']>0).sum()) if not df.empty else 0
-        n_excl  = int(df['Fecha_Excl_Poliza'].notna().sum()) if ('Fecha_Excl_Poliza' in df.columns and not df.empty) else 0
+        # --- VERDAD = Tabla Mensual por Contrato (misma funcion / mismos numeros del Excel) ---
+        st.markdown("---")
+        st.subheader(f"Comparativos contables — {_periodo}")
+        st.caption(
+            "Los intereses se calculan con **la misma funcion** que Tabla Mensual por Contrato "
+            "(Excel int_208). Del mes = columna del mes. Acumulado = suma de columnas enero…mes."
+        )
+
+        with st.spinner("Calculando con logica de Tabla Mensual…"):
+            _tot_tm = totales_intereses_desde_tabla_mensual(int(anio_sel), int(mes_sel))
+
+        if _tot_tm.get("error"):
+            st.error(_tot_tm["error"])
+
+        _m_tm = {
+            "interes_leasing_mes": _tot_tm.get("interes_leasing_mes", 0),
+            "interes_residual_mes": _tot_tm.get("interes_residual_mes", 0),
+            "comision_mes": _tot_tm.get("comision_mes", 0),
+            "interes_leasing_ytd": _tot_tm.get("interes_leasing_ytd", 0),
+            "interes_residual_ytd": _tot_tm.get("interes_residual_ytd", 0),
+            "comision_ytd": _tot_tm.get("comision_ytd", 0),
+            "saldo_residual_mes": _tot_tm.get("saldo_residual_mes", 0),
+            "n_contratos_mes": _tot_tm.get("n_contratos_mes", 0),
+            "capital_mes": 0.0,
+            "capital_ytd": 0.0,
+            "renta_mes": 0.0,
+            "renta_ytd": 0.0,
+            "saldo_capital_mes": 0.0,
+        }
+
+        # Control: totales por mes = suma de columnas de los Excel de Tabla Mensual
+        if _tot_tm.get("por_mes_leasing") or _tot_tm.get("por_mes_comision"):
+            _df_ctrl = pd.DataFrame([
+                {
+                    "Mes": MN[m - 1],
+                    "Intereses leasing": _tot_tm["por_mes_leasing"].get(m, 0),
+                    "Intereses residual": _tot_tm["por_mes_residual"].get(m, 0),
+                    "Amort. comision apertura": _tot_tm["por_mes_comision"].get(m, 0),
+                }
+                for m in range(1, 13)
+            ])
+            st.dataframe(_df_ctrl, width="stretch", key="df_ctrl_int_mes_v3")
+            st.success(
+                f"Del mes ({MN[int(mes_sel)-1]}): "
+                f"leasing **${_m_tm['interes_leasing_mes']:,.2f}** · "
+                f"residual **${_m_tm['interes_residual_mes']:,.2f}** · "
+                f"comision **${_m_tm['comision_mes']:,.2f}**  |  "
+                f"Acum ene–{MN[int(mes_sel)-1][:3].lower()}: "
+                f"leasing **${_m_tm['interes_leasing_ytd']:,.2f}** · "
+                f"residual **${_m_tm['interes_residual_ytd']:,.2f}** · "
+                f"comision **${_m_tm['comision_ytd']:,.2f}**"
+            )
+
         try:
-            _df_pe_dash = calcular_punto_equilibrio()
-            n_pe_hoy = int(_df_pe_dash['PE_Alcanzado_Hoy'].sum()) if not _df_pe_dash.empty else 0
+            _tot_c, _det_c = consolidar_cartera_vigente(df, _corte)
+        except Exception as _e_c:
+            _tot_c, _det_c = {}, pd.DataFrame()
+            st.warning(f"Saldos cartera: {_e_c}")
+
+        # Facturacion del mes (si hay CFDI cargados)
+        try:
+            _conn_d = get_db()
+            _row_f = _conn_d.execute(
+                """SELECT COALESCE(SUM(total),0) AS t,
+                          COALESCE(SUM(CASE WHEN tipo='MENSUAL' THEN total ELSE 0 END),0) AS tm,
+                          COUNT(*) AS n
+                   FROM facturas
+                   WHERE periodo=? AND (cancelada IS NULL OR cancelada=0)
+                     AND estatus IN ('CONCILIADO','DISCREPANCIA','PENDIENTE')""",
+                (_periodo,),
+            ).fetchone()
+            _fact_mes = float(_row_f['t'] if _row_f else 0)
+            _fact_mes_renta = float(_row_f['tm'] if _row_f else 0)
+            _n_fact_mes = int(_row_f['n'] if _row_f else 0)
         except Exception:
-            n_pe_hoy = 0
+            _fact_mes = _fact_mes_renta = 0.0
+            _n_fact_mes = 0
 
-        k1,k2,k3,k4 = st.columns(4)
-        k1.metric("Contratos activos",  f"{len(df):,}")
-        k2.metric("Valor cartera",      f"${tot_v/1e6:.2f}M")
-        k3.metric("Con morosidad",   f"{n_mora}", delta=f"-{n_mora} contratos" if n_mora else None,
-                  delta_color="inverse")
-        k4.metric("Ya en punto de equilibrio", f"{n_pe_hoy}/{len(df)}" if len(df) else "0/0",
-                  help="Contratos activos que ya recuperaron su capital invertido, según la tabla de amortización real. Ver detalle en 'Punto de Equilibrio'.")
+        # ---- 1) DEL MES ----
+        st.markdown(f"### 1. Del mes: {MN[int(mes_sel)-1]} {int(anio_sel)}")
+        st.caption("Misma fuente que Tabla Mensual por Contrato (Excel).")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Intereses leasing (del mes)", f"${_m_tm.get('interes_leasing_mes', 0):,.2f}")
+        c2.metric("Intereses residual (del mes)", f"${_m_tm.get('interes_residual_mes', 0):,.2f}")
+        c3.metric("Amort. comision apertura (del mes)", f"${_m_tm.get('comision_mes', 0):,.2f}")
+        c4.metric("Saldo residual activo (del mes)", f"${_m_tm.get('saldo_residual_mes', 0):,.2f}")
+        c5, c6 = st.columns(2)
+        c5.metric("Contratos en el mes", f"{_m_tm.get('n_contratos_mes', 0):,}")
+        c6.metric("Facturado rentas (CFDI)", f"${_fact_mes_renta:,.2f}")
 
-        with st.expander("Ver más detalle financiero (rentas, residual, anticipo, comisión, excluidos)"):
-            j1,j2,j3,j4,j5 = st.columns(5)
-            j1.metric("Rentas / mes",        f"${tot_r:,.0f}")
-            j2.metric("Residual total",      f"${tot_res:,.0f}")
-            j3.metric("Anticipo total",      f"${tot_ant:,.0f}")
-            j4.metric("Comisión total",      f"${tot_com:,.0f}")
-            j5.metric("Excluidos póliza", f"{n_excl}", delta=f"-{n_excl}" if n_excl else None,
-                      delta_color="inverse")
+        # ---- 2) ACUMULADO EJERCICIO ----
+        st.markdown(f"### 2. Acumulado ejercicio {int(anio_sel)} (enero → {MN[int(mes_sel)-1].lower()})")
+        st.caption("Suma de columnas enero…mes de las mismas tablas de Tabla Mensual.")
+        a1, a2, a3, a4 = st.columns(4)
+        a1.metric("Intereses leasing (acum.)", f"${_m_tm.get('interes_leasing_ytd', 0):,.2f}")
+        a2.metric("Intereses residual (acum.)", f"${_m_tm.get('interes_residual_ytd', 0):,.2f}")
+        a3.metric("Amort. comision apertura (acum.)", f"${_m_tm.get('comision_ytd', 0):,.2f}")
+        a4.metric("Contratos (ref. mes)", f"{_m_tm.get('n_contratos_mes', 0):,}")
 
+        try:
+            _df_fact_all = pd.read_sql_query(
+                """SELECT periodo, tipo, total, subtotal, cancelada FROM facturas""",
+                get_db(),
+            )
+        except Exception:
+            _df_fact_all = pd.DataFrame()
+        _acu_anio = acumulado_facturacion(_df_fact_all, anio=int(anio_sel), hasta_periodo=_periodo)
+        b1, b2 = st.columns(2)
+        b1.metric(f"Facturado total {int(anio_sel)} YTD", f"${_acu_anio.get('total', 0):,.2f}")
+        b2.metric(f"Rentas facturadas {int(anio_sel)} YTD", f"${_acu_anio.get('mensual', 0):,.2f}")
+
+        _dif_mes = round(_fact_mes_renta - _m_tm.get('renta_mes', 0), 2)
+        _dif_ytd = round(_acu_anio.get('mensual', 0) - _m_tm.get('renta_ytd', 0), 2)
+        st.info(
+            f"Cuadre rentas del mes: CFDI ${_fact_mes_renta:,.2f} vs esperado ${_m_tm.get('renta_mes', 0):,.2f} "
+            f"→ dif. ${_dif_mes:+,.2f}.  |  "
+            f"YTD: CFDI ${_acu_anio.get('mensual', 0):,.2f} vs esperado ${_m_tm.get('renta_ytd', 0):,.2f} "
+            f"→ dif. ${_dif_ytd:+,.2f}."
+        )
+
+        # Guardar para auxiliar y export
+        _acu_am = {
+            "intereses_devengados": _m_tm.get("interes_leasing_ytd", 0),
+            "intereses_residual_devengados": _m_tm.get("interes_residual_ytd", 0),
+            "comision_apertura_acum": _m_tm.get("comision_ytd", 0),
+            "comision_apertura_mes": _m_tm.get("comision_mes", 0),
+            "capital_amortizado": _m_tm.get("capital_ytd", 0),
+            "rentas_esperadas_acum": _m_tm.get("renta_ytd", 0),
+            "intereses_del_mes": _m_tm.get("interes_leasing_mes", 0),
+            "intereses_residual_del_mes": _m_tm.get("interes_residual_mes", 0),
+            "capital_del_mes": _m_tm.get("capital_mes", 0),
+            "n_contratos": _m_tm.get("n_contratos_mes", 0),
+        }
+        _acu_prev = _acu_am
+
+        if _m_tm.get("n_contratos_mes", 0) == 0:
+            st.warning(
+                "No hubo contratos con amortizacion en este mes. Revisa año/mes, "
+                "Fecha_Alta de los contratos y que la tasa no sea cero."
+            )
+
+        # --- Auxiliar contable ---
         st.markdown("---")
-
-        # ALERTAS AUTOMÁTICAS
-        alertas = []
-
-        # Vencimientos próximos 60 días
-        if not df.empty and 'Fecha_Vencimiento' in df.columns:
-            df_venc60 = df[
-                (df['Fecha_Vencimiento'].dt.date >= hoy) &
-                (df['Fecha_Vencimiento'].dt.date <= hoy + relativedelta(days=60))
-            ]
-            if not df_venc60.empty:
-                alertas.append(('warning',
-                    f"{len(df_venc60)} contrato(s) vencen en los próximos 60 días",
-                    df_venc60[['ID_Contrato','Cliente','Fecha_Vencimiento']].copy()))
-
-        # Contratos en morosidad alta
-        if not df.empty:
-            df_mora_alta = df[df['Nivel_Morosidad'].fillna(0).astype(int) >= 3]
-            if not df_mora_alta.empty:
-                alertas.append(('error',
-                    f"{len(df_mora_alta)} contrato(s) en Morosidad nivel 3 o 4",
-                    df_mora_alta[['ID_Contrato','Cliente','Nivel_Morosidad']].copy()))
-
-        # Eventos especiales pendientes
-        if not df_evts.empty:
-            df_evts_pend = df_evts[df_evts['Estatus_Seguro']=='PENDIENTE']
-            if not df_evts_pend.empty:
-                alertas.append(('warning',
-                    f"{len(df_evts_pend)} evento(s) especial(es) pendiente(s) de resolución",
-                    df_evts_pend[['ID_Contrato','Tipo_Evento','Fecha_Evento']].head(10).copy()))
-
-        # Contratos sin anotaciones en >90 días (posibles "fantasma")
-        if not df.empty and not df_anot.empty:
-            ultima = df_anot.groupby('ID_Contrato')['Fecha'].max().reset_index()
-            ultima['Fecha'] = pd.to_datetime(ultima['Fecha'])
-            df_sin_anot = df[~df['ID_Contrato'].isin(ultima['ID_Contrato'])]
-            df_viejas = df.merge(ultima, on='ID_Contrato', how='left')
-            df_viejas = df_viejas[df_viejas['Fecha'] < pd.Timestamp(hoy - relativedelta(days=90))]
-            n_sin_seguimiento = len(df_sin_anot) + len(df_viejas)
-            if n_sin_seguimiento > 0:
-                alertas.append(('info',
-                    f"{n_sin_seguimiento} contrato(s) sin anotaciones en los últimos 90 días",
-                    None))
-
-        # Contratos vencidos que siguen marcados ACTIVO
-        if not df.empty and 'Fecha_Vencimiento' in df.columns:
-            df_venc_ya = df[df['Fecha_Vencimiento'].dt.date < hoy]
-            if not df_venc_ya.empty:
-                alertas.append(('warning',
-                    f"{len(df_venc_ya)} contrato(s) ya vencieron y siguen marcados ACTIVO — revisa si hay que renovarlos o darlos de baja",
-                    df_venc_ya[['ID_Contrato','Cliente','Fecha_Vencimiento']].copy()))
-
-        # Inconsistencias entre Estatus y Fecha_Baja (datos que no cuadran
-        # entre sí) — se revisan sobre TODOS los contratos, no solo activos.
-        if not df_all.empty:
-            df_baja_sin_fecha = df_all[(df_all['Estatus'].astype(str).str.upper()=='BAJA') &
-                                        (df_all['Fecha_Baja'].isna() | (df_all['Fecha_Baja'].astype(str).str.strip()==''))]
-            if not df_baja_sin_fecha.empty:
-                alertas.append(('warning',
-                    f"{len(df_baja_sin_fecha)} contrato(s) marcados BAJA sin fecha de baja capturada",
-                    df_baja_sin_fecha[['ID_Contrato','Cliente','Estatus']].copy()))
-
-            df_activo_con_baja = df_all[(df_all['Estatus'].astype(str).str.upper()!='BAJA') &
-                                         df_all['Fecha_Baja'].notna() & (df_all['Fecha_Baja'].astype(str).str.strip()!='')]
-            if not df_activo_con_baja.empty:
-                alertas.append(('warning',
-                    f"{len(df_activo_con_baja)} contrato(s) tienen fecha de baja capturada pero su estatus no es BAJA",
-                    df_activo_con_baja[['ID_Contrato','Cliente','Estatus','Fecha_Baja']].copy()))
-
-            df_baja_antes_alta = df_all[df_all['Fecha_Baja'].notna() &
-                                         (pd.to_datetime(df_all['Fecha_Baja'], errors='coerce') < df_all['Fecha_Alta'])]
-            if not df_baja_antes_alta.empty:
-                alertas.append(('error',
-                    f"{len(df_baja_antes_alta)} contrato(s) con fecha de baja ANTERIOR a su fecha de alta — dato imposible, seguro es un error de captura",
-                    df_baja_antes_alta[['ID_Contrato','Cliente','Fecha_Alta','Fecha_Baja']].copy()))
-
-        # eso se avisa arriba con las demás alertas (el detalle y la gráfica
-        # viven en la pestaña "Morosidad y Concentración" más abajo).
-        _top1_pct = 0.0
-        if not df.empty and tot_v > 0:
-            _conc_alerta = df.groupby('Cliente')['Valor_Sin_IVA'].sum().sort_values(ascending=False)
-            _top1_pct = float(_conc_alerta.iloc[0] / tot_v * 100)
-            if _top1_pct > 20:
-                alertas.append(('warning',
-                    f"Un solo cliente ({_conc_alerta.index[0]}) concentra el {_top1_pct:.1f}% de tu cartera — "
-                    f"revisa el detalle en la pestaña 'Morosidad y Concentración'",
-                    None))
-
-        if alertas:
-            # Reorganizar visualmente como "Centro de Atención" (D.1)
-            # Priorizamos 'error' (datos imposibles), luego 'warning', luego 'info'
-            orden_severidad = {'error': 0, 'warning': 1, 'info': 2}
-            alertas.sort(key=lambda x: orden_severidad.get(x[0], 99))
-            
-            st.markdown(f'''
-                <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:10px;">
-                    <h3 style="margin:0; color:var(--text-primary) !important;">Centro de Atención</h3>
-                    <span style="color:var(--text-secondary); font-size:14px; font-weight:600;">{len(alertas)} pendientes</span>
-                </div>
-            ''', unsafe_allow_html=True)
-            
-            for _idx_alerta, (tipo, msg, detalle) in enumerate(alertas):
-                if tipo == 'error':
-                    icono = "🔴"
-                    bg = "var(--danger-soft)"
-                    color = "var(--danger)"
-                elif tipo == 'warning':
-                    icono = "🟡"
-                    bg = "var(--warning-soft)"
-                    color = "var(--warning)"
+        st.subheader(f"4. Comparar con auxiliar contable (ejercicio {int(anio_sel)})")
+        st.caption(
+            "Sube un Excel/CSV de tu auxiliar (CONTPAQi u otro) con columnas de cuenta/concepto y saldo. "
+            "El sistema intenta emparejar intereses, capital y rentas del ejercicio contra esos renglones."
+        )
+        _aux_file = st.file_uploader(
+            "Auxiliar contable (.xlsx o .csv)",
+            type=["xlsx", "csv"],
+            key="dash_aux_uploader",
+        )
+        if _aux_file is not None:
+            try:
+                if _aux_file.name.lower().endswith(".csv"):
+                    _df_aux = pd.read_csv(_aux_file)
                 else:
-                    icono = "🔵"
-                    bg = "var(--info-soft)"
-                    color = "var(--info)"
-                
-                with st.container(key=f"ca_{_idx_alerta}"):
-                    st.markdown(f'''
-                        <div style="background:{bg}; border-left:4px solid {color}; border-radius:4px; padding:12px; margin-bottom:10px;">
-                            <span style="font-size:16px; margin-right:8px;">{icono}</span>
-                            <span style="font-weight:500; color:var(--text-primary);">{msg}</span>
-                        </div>
-                    ''', unsafe_allow_html=True)
-                    if detalle is not None:
-                        with st.expander("Ver detalle", key=f"exp_alerta_{_idx_alerta}"):
-                            st.dataframe(detalle, width='stretch', key=f"df_006_{_idx_alerta}")
-            st.markdown("---")
+                    _df_aux = pd.read_excel(_aux_file)
+                st.write("Vista previa auxiliar:", _df_aux.head(8))
+                _tot_sis = {
+                    "intereses_devengados": _acu_am.get("intereses_devengados", 0),
+                    "capital_amortizado": _acu_am.get("capital_amortizado", 0),
+                    "rentas_esperadas_acum": _acu_am.get("rentas_esperadas_acum", 0),
+                    "intereses_residual_devengados": _acu_am.get("intereses_residual_devengados", 0),
+                    "facturado_ytd": _acu_anio.get("total", 0),
+                }
+                _cmp = comparar_auxiliar(_df_aux, _tot_sis)
+                st.dataframe(_cmp, width="stretch", key="df_cmp_aux")
+                try:
+                    from reports.excel import excel_con_formato as _exc_aux
+                    _buf_aux = _exc_aux(
+                        {"Comparacion": _cmp, "Auxiliar": _df_aux, "Totales sistema": pd.DataFrame([_tot_sis])},
+                    )
+                    st.download_button(
+                        "Excel comparacion vs auxiliar",
+                        data=_buf_aux,
+                        file_name=f"comparacion_auxiliar_{_periodo}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="dl_cmp_aux",
+                    )
+                except Exception:
+                    pass
+            except Exception as _e_aux:
+                st.error(f"No se pudo leer el auxiliar: {_e_aux}")
 
-        # El resto va en pestañas: antes estas cuatro secciones (morosidad,
-        # vencimientos, flujo, anotaciones) estaban todas apiladas y visibles
-        # siempre, y era demasiado para ver de un vistazo. Ahora eliges cuál
-        # ver; las demás siguen ahí, a un clic.
-        tab_mor, tab_venc, tab_flujo, tab_act = st.tabs([
-            "Morosidad y Concentración", "Vencimientos", "Proyección de Flujo", "Actividad Reciente"
+        tab_det, tab_cli, tab_anio, tab_exp = st.tabs([
+            "Detalle por contrato al corte",
+            "Por cliente",
+            "Facturación por año",
+            "Exportar Excel",
         ])
-
-        with tab_mor:
-            mc1, mc2 = st.columns([1.1, 1])
-            with mc1:
-                st.markdown('<span class="section-label">Cartera por nivel de morosidad</span>', unsafe_allow_html=True)
-                if not df.empty:
-                    ML_labels = {0:"0-Al corriente",1:"1-Atraso",2:"2-Convenio",3:"3-Devuelve no paga",4:"4-Judicial"}
-                    MC = {0:C_PASTEL['success'],1:C_PASTEL['gold'],2:C_PASTEL['warning'],3:C_PASTEL['accent'],4:"#B4607E"}
-                    df_mor = df.copy()
-                    df_mor['Nivel_Morosidad'] = df_mor['Nivel_Morosidad'].fillna(0).astype(int)
-                    dist_m = df_mor.groupby('Nivel_Morosidad').agg(
-                        Contratos=('ID_Contrato','count'),
-                        Valor=('Valor_Sin_IVA','sum')
-                    ).reset_index()
-                    dist_m['Label'] = dist_m['Nivel_Morosidad'].map(ML_labels)
-                    dist_m['Color'] = dist_m['Nivel_Morosidad'].map(MC)
-                    fig_mor = go.Figure()
-                    fig_mor.add_trace(go.Bar(
-                        x=dist_m['Label'], y=dist_m['Contratos'],
-                        marker_color=dist_m['Color'].tolist(),
-                        text=dist_m['Contratos'], textposition='outside',
-                        customdata=dist_m['Valor'],
-                        hovertemplate='<b>%{x}</b><br>Contratos: %{y}<br>Valor: $%{customdata:,.0f}<extra></extra>'
-                    ))
-                    fig_mor.update_layout(showlegend=False, xaxis_tickangle=-20)
-                    fig_mor = sfig(fig_mor, h=240)
-                    st.plotly_chart(fig_mor, width='stretch', key="pc_004")
-            with mc2:
-                st.markdown('<span class="section-label">Concentración por cliente</span>', unsafe_allow_html=True)
-                if not df.empty and tot_v > 0:
-                    conc = df.groupby('Cliente')['Valor_Sin_IVA'].sum().sort_values(ascending=False).reset_index()
-                    conc['% de la cartera'] = conc['Valor_Sin_IVA'] / tot_v * 100
-                    top5_pct = conc.head(5)['% de la cartera'].sum()
-                    fconc = px.bar(conc.head(6), x='% de la cartera', y='Cliente', orientation='h',
-                                    text_auto='.1f', color='% de la cartera',
-                                    color_continuous_scale=["#5E9587", "#D9A75C", "#C4796C"])
-                    fconc = sfig(fconc, h=240)
-                    fconc.update_layout(yaxis={'categoryorder':'total ascending'}, coloraxis_showscale=False)
-                    fconc.update_traces(textposition='outside', texttemplate='%{x:.1f}%')
-                    st.plotly_chart(fconc, width='stretch', key="pc_concentracion")
-                    st.caption(f"Top 1: **{_top1_pct:.1f}%** · Top 5: **{top5_pct:.1f}%** de la cartera. "
-                               "Regla común: ningún cliente debería superar 15–20%.")
-
-        with tab_venc:
-            st.markdown('<span class="section-label">Vencimientos próximos 12 meses</span>', unsafe_allow_html=True)
-            if not df.empty and 'Fecha_Vencimiento' in df.columns:
-                meses12 = [(hoy + relativedelta(months=i)).strftime('%Y-%m') for i in range(0,13)]
-                df_vt = df.copy()
-                df_vt['Mes_Venc'] = df_vt['Fecha_Vencimiento'].dt.to_period('M').astype(str)
-                dv12 = df_vt[df_vt['Mes_Venc'].isin(meses12)].groupby('Mes_Venc').agg(
-                    Contratos=('ID_Contrato','count'), Valor=('Valor_Sin_IVA','sum')
-                ).reset_index().sort_values('Mes_Venc')
-                if not dv12.empty:
-                    fig_venc = px.bar(dv12, x='Mes_Venc', y='Contratos',
-                        color='Valor', color_continuous_scale=[[0,"#F3F4F6"],[1,"#5E9587"]],
-                        labels={'Mes_Venc':'Mes','Contratos':'Contratos','Valor':'Valor (MXN)'},
-                        text='Contratos')
-                    fig_venc.update_traces(textposition='outside',
-                        hovertemplate='<b>%{x}</b><br>Contratos: %{y}<br>Valor: $%{marker.color:,.0f}<extra></extra>')
-                    fig_venc.update_layout(coloraxis_showscale=False, showlegend=False)
-                    fig_venc = sfig(fig_venc, h=230)
-                    st.plotly_chart(fig_venc, width='stretch', key="pc_005")
+        with tab_det:
+            if _det_c is not None and not _det_c.empty:
+                st.dataframe(_det_c, width='stretch', height=360, key="df_cartera_mes")
+            else:
+                st.info("Sin detalle.")
+        with tab_cli:
+            if _det_c is not None and not _det_c.empty and "Cliente" in _det_c.columns:
+                _por_cli = (
+                    _det_c.groupby("Cliente", dropna=False)
+                    .agg(
+                        Contratos=("ID_Contrato", "count"),
+                        Inversion_Neta=("Inversion_Neta", "sum"),
+                        Saldo_Capital=("Saldo_Capital", "sum"),
+                        Renta_Mensual=("Renta_Mensual", "sum"),
+                        CxC_CP=("CxC_CP", "sum"),
+                        CxC_LP=("CxC_LP", "sum"),
+                    )
+                    .reset_index()
+                )
+                _por_cli["CxC_Total"] = _por_cli["CxC_CP"] + _por_cli["CxC_LP"]
+                st.dataframe(_por_cli.sort_values("Saldo_Capital", ascending=False), width='stretch', height=320, key="df_cli_mes")
+            else:
+                st.info("Sin datos.")
+        with tab_anio:
+            if not _df_fact_all.empty:
+                _res_a = resumen_facturacion_por_anio(_df_fact_all, solo_vigentes=True)
+                if not _res_a.empty:
+                    st.dataframe(_res_a, width='stretch', height=280, key="df_fact_anio_dash")
+                    try:
+                        _pivot = _res_a.pivot_table(index="Anio", columns="Tipo", values="Total", aggfunc="sum", fill_value=0).reset_index()
+                        fig_an = go.Figure()
+                        for col in [c for c in _pivot.columns if c != "Anio"]:
+                            fig_an.add_trace(go.Bar(x=_pivot["Anio"], y=_pivot[col], name=str(col)))
+                        fig_an.update_layout(barmode="stack", title="Facturado por año", height=300)
+                        st.plotly_chart(sfig(fig_an, h=300), width="stretch", key="pc_dash_anio")
+                    except Exception:
+                        pass
                 else:
-                    st.info("Sin vencimientos en los próximos 12 meses.")
-
-        with tab_flujo:
-            st.markdown('<span class="section-label">Flujo esperado — próximos 12 meses</span>', unsafe_allow_html=True)
-            if not df.empty:
-                ri12 = proy_rentas(df, 12)
-                rf12 = proy_residual(df)
-                if not ri12.empty:
-                    ri12_c = ri12.copy()
-                    if not rf12.empty:
-                        rf_d = {r['Mes']:r['Residual_Monto'] for _,r in rf12.iterrows()}
-                        ri12_c['Residual'] = ri12_c['Mes'].map(rf_d).fillna(0)
-                    else:
-                        ri12_c['Residual'] = 0
-                    fig_fl = go.Figure()
-                    fig_fl.add_trace(go.Bar(x=ri12_c['Mes'], y=ri12_c['Rentas'],
-                        name='Rentas', marker_color=C_PASTEL['primary'], opacity=0.85))
-                    fig_fl.add_trace(go.Bar(x=ri12_c['Mes'], y=ri12_c['Residual'],
-                        name='Residual', marker_color=C_PASTEL['accent'], opacity=0.85))
-                    fig_fl.update_layout(barmode='stack', legend=dict(orientation='h', y=1.05))
-                    fig_fl = sfig(fig_fl, h=280)
-                    st.plotly_chart(fig_fl, width='stretch', key="pc_006")
-                    total_12 = ri12_c['Rentas'].sum() + ri12_c['Residual'].sum()
-                    st.caption(f"Total proyectado 12 meses: **${total_12:,.0f}**")
-
-        with tab_act:
-            st.markdown('<span class="section-label">Últimas anotaciones</span>', unsafe_allow_html=True)
-            TIPO_COLORS_D = {"General":"#3E6FA6","Ajuste contable":"#B3261E","Nota legal":"#6E5A9C",
-                             "Seguimiento":"#1E5C4F","Alerta":"#96660C","Acuerdo con cliente":"#1C7A4D","Otro":"#8A6D2F"}
-            if not df_anot.empty:
-                ult = df_anot.sort_values('Fecha', ascending=False).head(6)
-                for _, an in ult.iterrows():
-                    tipo_a = str(an.get('Tipo','General') or 'General')
-                    col_a  = TIPO_COLORS_D.get(tipo_a,'#0369A1')
-                    texto_corto = str(an['Texto'])[:80] + ('…' if len(str(an['Texto']))>80 else '')
-                    with st.container(key=f"dash_anot_{int(an['id'])}"):
-                        st.markdown(f"""
-                        <div style="border:1px solid #DCE0E5;border-left:3px solid {col_a};padding:5px 10px;
-                                    margin-bottom:5px;background:#FFFFFF;border-radius:0 4px 4px 0;">
-                          <span style="font-size:.72rem;color:{col_a};font-weight:700;">{tipo_a}</span>
-                          <span style="font-size:.7rem;color:#8A929C;float:right;">{an['Fecha']} · {an['ID_Contrato']}</span><br>
-                          <span style="font-size:.82rem;color:#20242B;">{texto_corto}</span>
-                        </div>
-                    """, unsafe_allow_html=True)
+                    st.info("Sin facturas agrupables.")
             else:
-                st.info("Sin anotaciones registradas.")
-
-        st.markdown("---")
-
-        # TABLA DETALLE + acceso rápido a estado de cuenta
-        # Colapsada por default a propósito: el buscador de arriba ya cubre
-        # "encuentra un contrato rápido"; esto es para cuando de verdad
-        # quieres ver/exportar la cartera completa de un vistazo.
-        with st.expander(f"Ver tabla completa de contratos activos ({len(df)})"):
-            busq_dash = st.text_input("Filtrar esta tabla por contrato o cliente", placeholder="ID, nombre…", key="dash_busq")
-            df_show = df.copy()
-            if busq_dash.strip():
-                mask_b = (df_show['ID_Contrato'].str.contains(busq_dash, case=False, na=False) |
-                          df_show['Cliente'].str.contains(busq_dash, case=False, na=False))
-                df_show = df_show[mask_b]
-
-            if not df_show.empty:
-                cols_dash = ['ID_Contrato','Cliente','Vehiculo','Fecha_Alta','Fecha_Vencimiento',
-                             'Valor_Sin_IVA','Mensualidad_Sin_IVA','Residual_Monto','Nivel_Morosidad',
-                             'Fecha_Excl_Poliza','Motivo_Excl_Poliza']
-                cols_dash = [c for c in cols_dash if c in df_show.columns]
-                fmt_d = {}
-                for c in ['Valor_Sin_IVA','Mensualidad_Sin_IVA','Residual_Monto']:
-                    if c in df_show.columns: fmt_d[c] = '${:,.2f}'
-                st.dataframe(
-                    df_show[cols_dash].style.format(fmt_d)
-                        .map(lambda v: 'background-color:#FFE8E8' if v and str(v) not in ['0','0.0','nan','None',''] else '',
-                                  subset=[c for c in ['Fecha_Excl_Poliza'] if c in cols_dash]),
-                    width='stretch', height=340,
-            key="df_007")
-                # Botón acceso rápido a estado de cuenta
-                ids_show = df_show['ID_Contrato'].tolist()
-                if len(ids_show) == 1:
-                    if st.button(f"Ver estado de cuenta — {ids_show[0]}", width='stretch'):
-                        st.session_state['ec_contrato'] = ids_show[0]
-                        st.session_state['menu_item']   = "Estado de Cuenta"
-                        for g, its in GRUPOS.items():
-                            if "Estado de Cuenta" in its:
-                                st.session_state['menu_grupo'] = g
-                        st.session_state['_refresh'] = True
-            else:
-                st.info("Sin contratos que coincidan.")
-
+                st.info("Aún no hay facturas cargadas. Sube XML en Conciliación → Carga.")
+        with tab_exp:
+            try:
+                from reports.excel import excel_con_formato
+                _hojas = {
+                    "Saldos corte": _det_c if _det_c is not None else pd.DataFrame(),
+                    "Totales corte": pd.DataFrame([_tot_c]) if _tot_c else pd.DataFrame(),
+                    "Del mes": pd.DataFrame([{
+                        "periodo": _periodo,
+                        "renta_esperada": _cob["esperado"],
+                        "facturado": _cob["facturado"],
+                        "diferencia": _cob["diferencia"],
+                        "cobertura_pct": _cob["cobertura_pct"],
+                        "capital_mes": round(_cap_mes, 2),
+                        "intereses_mes": round(_int_mes, 2),
+                        "intereses_residual_mes": round(_int_res_mes, 2),
+                    }]),
+                    "Acumulado amort": pd.DataFrame([_acu_am]),
+                    "Facturado hasta mes": pd.DataFrame([_acu_hasta]),
+                    "Facturado YTD anio": pd.DataFrame([_acu_anio]),
+                }
+                _buf = excel_con_formato(_hojas)
+                st.download_button(
+                    f"Descargar Excel — {_periodo} (mes + acumulado)",
+                    data=_buf,
+                    file_name=f"cartera_{_periodo}_mes_y_acumulado.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="dl_mes_acu",
+                )
+            except Exception as _e_exp:
+                st.error(f"No se pudo armar el Excel: {_e_exp}")
+                if _det_c is not None and not _det_c.empty:
+                    st.download_button(
+                        "CSV detalle cartera",
+                        data=_det_c.to_csv(index=False).encode("utf-8-sig"),
+                        file_name=f"cartera_{_periodo}.csv",
+                        mime="text/csv",
+                        key="dl_csv_mes",
+                    )
 
     elif menu=="Estado de Cuenta":
         st.title("Estado de Cuenta por Contrato")
@@ -7566,7 +8148,11 @@ try:
 
     # CONCILIACIÓN DE FACTURAS (NUEVO)
     elif menu == "Conciliación de Facturas":
-        _render_conciliacion()
+        try:
+            _render_conciliacion()
+        except Exception as _e_conc:
+            st.error("Error al abrir Conciliación de Facturas. Detalle técnico abajo.")
+            st.exception(_e_conc)
 
     elif menu == "Comparar Analíticas":
         _render_analiticas()

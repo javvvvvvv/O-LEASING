@@ -1,0 +1,25 @@
+INSTALACION DEL PARCHE
+======================
+
+Ruta de tu app (segun el error):
+  C:\O-Leasing\punto y aparte\V10.01\o-leasing\
+
+1) Cierra O-Leasing por completo.
+
+2) Copia estos archivos ENCIMA de los de esa carpeta:
+
+   app.py
+   -> C:\O-Leasing\punto y aparte\V10.01\o-leasing\app.py
+
+   core\cartera_contable.py
+   -> C:\O-Leasing\punto y aparte\V10.01\o-leasing\core\cartera_contable.py
+
+   (Opcional) .streamlit\config.toml
+   -> C:\O-Leasing\punto y aparte\V10.01\o-leasing\.streamlit\config.toml
+
+3) Si existe la carpeta core\__pycache__, borrala (para que no use el .pyc viejo).
+
+4) Abre de nuevo la app.
+
+El error ImportError comparar_auxiliar se debe a que solo se actualizo app.py
+y no core\cartera_contable.py. Ambos deben ir juntos.
