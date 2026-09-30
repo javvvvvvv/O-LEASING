@@ -60,6 +60,90 @@ from models.auth import (
     verificar_login, listar_usuarios, cambiar_estado_usuario,
     cambiar_rol_usuario, resetear_password, ROLES, ROL_LABELS,
 )
+
+def _asegurar_tabla_pantallas(db_path):
+    """Crea usuario_pantallas si no existe (compatible con auth.py viejo)."""
+    import sqlite3 as _sq
+    conn = _sq.connect(db_path)
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS usuario_pantallas (
+                user_id INTEGER NOT NULL,
+                pantalla TEXT NOT NULL,
+                PRIMARY KEY (user_id, pantalla)
+            )
+        """)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _obtener_pantallas_usuario_local(db_path, user_id):
+    import sqlite3 as _sq
+    _asegurar_tabla_pantallas(db_path)
+    conn = _sq.connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT pantalla FROM usuario_pantallas WHERE user_id=? ORDER BY pantalla",
+            (int(user_id),),
+        ).fetchall()
+        if not rows:
+            return None
+        return [r[0] for r in rows]
+    finally:
+        conn.close()
+
+
+def _guardar_pantallas_usuario_local(db_path, user_id, pantallas):
+    import sqlite3 as _sq
+    _asegurar_tabla_pantallas(db_path)
+    conn = _sq.connect(db_path)
+    try:
+        conn.execute("DELETE FROM usuario_pantallas WHERE user_id=?", (int(user_id),))
+        n = 0
+        for p in pantallas or []:
+            p = (p or "").strip()
+            if not p:
+                continue
+            conn.execute(
+                "INSERT OR IGNORE INTO usuario_pantallas (user_id, pantalla) VALUES (?,?)",
+                (int(user_id), p),
+            )
+            n += 1
+        conn.commit()
+        return True, f"Se guardaron {n} pantalla(s) para el usuario."
+    except Exception as e:
+        return False, str(e)
+    finally:
+        conn.close()
+
+
+try:
+    from models.auth import obtener_pantallas_usuario as _op_auth
+    from models.auth import guardar_pantallas_usuario as _gp_auth
+    # Probar que realmente existen y no son stubs
+    if not callable(_op_auth) or not callable(_gp_auth):
+        raise ImportError("stubs")
+    def obtener_pantallas_usuario(db_path, user_id):
+        try:
+            return _op_auth(db_path, user_id)
+        except Exception:
+            return _obtener_pantallas_usuario_local(db_path, user_id)
+    def guardar_pantallas_usuario(db_path, user_id, pantallas):
+        try:
+            ok, msg = _gp_auth(db_path, user_id, pantallas)
+            # Si el auth viejo devuelve el mensaje de falta archivo, usar local
+            if not ok and msg and "Falta models" in str(msg):
+                return _guardar_pantallas_usuario_local(db_path, user_id, pantallas)
+            # Si falla por tabla inexistente, crear y reintentar local
+            if not ok and msg and ("no such table" in str(msg).lower() or "usuario_pantallas" in str(msg).lower()):
+                return _guardar_pantallas_usuario_local(db_path, user_id, pantallas)
+            return ok, msg
+        except Exception:
+            return _guardar_pantallas_usuario_local(db_path, user_id, pantallas)
+except ImportError:
+    obtener_pantallas_usuario = _obtener_pantallas_usuario_local
+    guardar_pantallas_usuario = _guardar_pantallas_usuario_local
 from models.configuracion import (
     cargar_catalogo, guardar_catalogo, get_cfg, set_cfg,
     get_config_codificacion_cuentas, set_config_codificacion_cuentas, cta_sg,
@@ -248,6 +332,10 @@ inyectar_css()
 # (empresas, catálogo, menú, etc.), tanto por claridad como por seguridad.
 AUTH_DB = get_auth_db_path(DATA_DIR)
 init_auth_db(AUTH_DB)
+try:
+    _asegurar_tabla_pantallas(AUTH_DB)
+except Exception:
+    pass
 
 _VIDEO_BIENVENIDA = os.path.join(BASE_DIR, "assets", "bienvenida.mp4")
 _SPLASH_DURACION_DEFAULT = 10.0  # respaldo si el MP4 no se puede leer
@@ -454,15 +542,17 @@ def facturacion_intereses_rango(fecha_ini: date, fecha_fin: date):
     while cursor <= fin_m and idx < 60:
         fp = pd.Timestamp(cursor); ti=tr=tc=0.0; cnt=0
         for _, row in df.iterrows():
-            fa=row['Fecha_Alta']; fv=row['Fecha_Vencimiento']
-            if fp<pd.Timestamp(fa.year,fa.month,1) or fp>pd.Timestamp(fv.year,fv.month,1): continue
-            mc=(cursor.year-fa.year)*12+(cursor.month-fa.month)+1
-            if mc<1 or mc>row['Plazo']: continue
-            inv=row['Valor_Sin_IVA']-row['Anticipo_Monto']
-            dfa,_,_,_,_=calc_amort(round(inv,4),round(row['Mensualidad_Sin_IVA'],4),round(row['Residual_Monto'],4),int(row['Plazo']),round(row['Tasa_Calculada'],8))
-            dfr=calc_res_amort(round(float(row['VP_Residual']),4),round(row['Tasa_Calculada'],8),int(row['Plazo']))
-            ti+=dfa.iloc[mc-1]['Interes']; tr+=dfr.iloc[mc-1]['Interes']
-            tc+=row['Comision_Monto']/row['Plazo']; cnt+=1
+            mc = _mes_en_vigencia_contrato(row, cursor.year, cursor.month, inc_primer_mes=True)
+            if mc is None:
+                continue
+            try:
+                dfa, dfr, pl, _t = _amort_tablas_contrato(row)
+                ti += float(dfa.iloc[mc - 1]['Interes'])
+                tr += float(dfr.iloc[mc - 1]['Interes'])
+                tc += float(row.get('Comision_Monto') or 0) / pl if pl else 0.0
+                cnt += 1
+            except Exception:
+                continue
         rows.append({'Mes':cursor.strftime('%Y-%m'),'Mes_Label':cursor.strftime('%b %Y'),
                      'Int_Leasing':round(ti,2),'Int_Residual':round(tr,2),'Amort_Com':round(tc,2),
                      'Solo_Intereses':round(ti+tr,2),'Total_Facturable':round(ti+tr+tc,2),'Contratos':cnt})
@@ -883,38 +973,38 @@ CONCEPTOS_POLIZA_CUSTOM = {
 }
 
 def valor_concepto_custom(con: dict, concepto: str, mes: int, anio: int):
-    """Calcula cuánto vale un concepto para este contrato en (mes, anio),
-    usando las mismas fórmulas de amortización que ya usa el resto de la
-    app. Regresa 0.0 si el concepto no aplica ese mes (p. ej. Anticipo
-    solo aplica en el mes de alta)."""
-    fa = pd.to_datetime(con['Fecha_Alta'])
+    """Misma logica que Tabla Mensual / poliza con primer mes en firma."""
+    mc = _mes_en_vigencia_contrato(con, anio, mes, inc_primer_mes=True)
     pl = int(con['Plazo'])
-    mc = (anio - fa.year) * 12 + (mes - fa.month) + 1
-    inv = con['Valor_Sin_IVA'] - con['Anticipo_Monto']
-    r, t, res = con['Mensualidad_Sin_IVA'], con['Tasa_Calculada'], con['Residual_Monto']
+    res = float(con['Residual_Monto'])
 
     if concepto in ('ANTICIPO_INICIAL', 'RESIDUAL_PACTADO'):
+        # Solo mes de alta (mc==1)
         if mc != 1:
             return 0.0
-        return float(con['Anticipo_Monto']) if concepto == 'ANTICIPO_INICIAL' else float(res)
+        return float(con['Anticipo_Monto']) if concepto == 'ANTICIPO_INICIAL' else res
 
-    if mc < 1 or mc > pl:
+    if mc is None:
         return 0.0
 
     if concepto == 'COMISION_MES':
         com = con.get('Comision_Monto', 0) or 0
-        return round(com / pl, 2) if pl else 0.0
+        return round(float(com) / pl, 2) if pl else 0.0
+
+    try:
+        dfa, dfr, pl, _t = _amort_tablas_contrato(con)
+    except Exception:
+        return 0.0
 
     if concepto in ('INTERES_MES', 'CAPITAL_MES', 'RENTA_TOTAL_MES'):
-        dfa, _, _, _, _ = calc_amort(round(inv, 4), round(r, 4), round(res, 4), pl, round(t, 8))
         fila = dfa.iloc[mc - 1]
-        if concepto == 'INTERES_MES': return round(float(fila['Interes']), 2)
-        if concepto == 'CAPITAL_MES': return round(float(fila['Capital']), 2)
+        if concepto == 'INTERES_MES':
+            return round(float(fila['Interes']), 2)
+        if concepto == 'CAPITAL_MES':
+            return round(float(fila['Capital']), 2)
         return round(float(fila['Interes']) + float(fila['Capital']), 2)
 
     if concepto == 'RESIDUAL_INTERES_MES':
-        vpr = vp_res(res, t, pl)
-        dfr = calc_res_amort(round(vpr, 4), round(t, 8), pl)
         return round(float(dfr.iloc[mc - 1]['Interes']), 2)
 
     return 0.0
@@ -1422,33 +1512,55 @@ def proy_rentas(df,meses=24):
     return pd.DataFrame(rows)
 
 def calc_int_mes(mes,anio):
-    df=obtener('ACTIVO')
-    if df.empty: return pd.DataFrame(),{}
-    rows=[]; fp=pd.Timestamp(anio,mes,1)
-    for _,row in df.iterrows():
-        fa=row['Fecha_Alta']; fv=row['Fecha_Vencimiento']
-        if fp<pd.Timestamp(fa.year,fa.month,1) or fp>pd.Timestamp(fv.year,fv.month,1): continue
-        mc=(anio-fa.year)*12+(mes-fa.month)+1
-        if mc<1 or mc>row['Plazo']: continue
-        inv=row['Valor_Sin_IVA']-row['Anticipo_Monto']
-        dfa,_,_,_,_=calc_amort(round(inv,4),round(row['Mensualidad_Sin_IVA'],4),
-                                round(row['Residual_Monto'],4),int(row['Plazo']),round(row['Tasa_Calculada'],8))
-        dfr=calc_res_amort(round(float(row['VP_Residual']),4),round(row['Tasa_Calculada'],8),int(row['Plazo']))
-        fa_=dfa.iloc[mc-1]; fr_=dfr.iloc[mc-1]
-        rows.append({'ID_Contrato':row['ID_Contrato'],'Cliente':row['Cliente'],'Vehiculo':row['Vehiculo'],
-                     'Mes_Cont':mc,'Plazo':int(row['Plazo']),'Renta':row['Mensualidad_Sin_IVA'],
-                     'Int_Leasing':round(fa_['Interes'],2),'Capital':round(fa_['Capital'],2),
-                     'Saldo_Cap':round(fa_['Saldo'],2),'Int_Residual':round(fr_['Interes'],2),
-                     'Amort_Com':round(row['Comision_Monto']/row['Plazo'],2),
-                     'Tasa_Anual_Pct':round(row['Tasa_Calculada']*1200,4)})
-    df2=pd.DataFrame(rows)
-    if df2.empty: return df2,{}
-    df2['Total_Int']=df2['Int_Leasing']+df2['Int_Residual']
-    m={'il':df2['Int_Leasing'].sum(),'ir':df2['Int_Residual'].sum(),
-       'tot':df2['Total_Int'].sum(),'cap':df2['Capital'].sum(),
-       'com':df2['Amort_Com'].sum(),'n':len(df2),
-       'top':df2.groupby('Cliente')['Total_Int'].sum().idxmax() if len(df2)>0 else 'N/A'}
-    return df2.sort_values('Total_Int',ascending=False),m
+    """Intereses del mes — misma logica que Tabla Mensual / Dashboard / poliza con primer mes en firma.
+
+    Universo: todos los contratos (obtener), no solo ACTIVO, para cuadrar con Tabla Mensual.
+    """
+    df = obtener()
+    if df.empty:
+        return pd.DataFrame(), {}
+    mes = int(mes)
+    anio = int(anio)
+    rows = []
+    for _, row in df.iterrows():
+        mc = _mes_en_vigencia_contrato(row, anio, mes, inc_primer_mes=True)
+        if mc is None:
+            continue
+        try:
+            dfa, dfr, pl, t = _amort_tablas_contrato(row)
+            fa_ = dfa.iloc[mc - 1]
+            fr_ = dfr.iloc[mc - 1]
+            rows.append({
+                'ID_Contrato': row['ID_Contrato'],
+                'Cliente': row['Cliente'],
+                'Vehiculo': row.get('Vehiculo', ''),
+                'Mes_Cont': mc,
+                'Plazo': pl,
+                'Renta': float(row['Mensualidad_Sin_IVA']),
+                'Int_Leasing': round(float(fa_['Interes']), 2),
+                'Capital': round(float(fa_['Capital']), 2),
+                'Saldo_Cap': round(float(fa_['Saldo']), 2),
+                'Int_Residual': round(float(fr_['Interes']), 2),
+                'Amort_Com': round(float(row.get('Comision_Monto') or 0) / pl, 2) if pl else 0.0,
+                'Tasa_Anual_Pct': round(float(row['Tasa_Calculada']) * 1200, 4),
+            })
+        except Exception:
+            continue
+    if not rows:
+        return pd.DataFrame(), {}
+    df2 = pd.DataFrame(rows)
+    df2['Total_Int'] = df2['Int_Leasing'] + df2['Int_Residual']
+    m = {
+        'il': float(df2['Int_Leasing'].sum()),
+        'ir': float(df2['Int_Residual'].sum()),
+        'tot': float(df2['Total_Int'].sum()),
+        'cap': float(df2['Capital'].sum()),
+        'com': float(df2['Amort_Com'].sum()),
+        'n': len(df2),
+        'top': df2.groupby('Cliente')['Total_Int'].sum().idxmax() if len(df2) > 0 else 'N/A',
+    }
+    return df2.sort_values('Total_Int', ascending=False), m
+
 
 def proy_intereses(meses=12):
     df=obtener('ACTIVO')
@@ -1458,83 +1570,150 @@ def proy_intereses(meses=12):
         fd=hoy+relativedelta(months=i+1); mp,ap=fd.month,fd.year; fp=pd.Timestamp(ap,mp,1)
         ti=tr=0.0; cnt=0
         for _,row in df.iterrows():
-            fa=row['Fecha_Alta']; fv=row['Fecha_Vencimiento']
-            if fp<pd.Timestamp(fa.year,fa.month,1) or fp>pd.Timestamp(fv.year,fv.month,1): continue
-            mc=(ap-fa.year)*12+(mp-fa.month)+1
-            if mc<1 or mc>row['Plazo']: continue
-            inv=row['Valor_Sin_IVA']-row['Anticipo_Monto']
-            dfa,_,_,_,_=calc_amort(round(inv,4),round(row['Mensualidad_Sin_IVA'],4),
-                                    round(row['Residual_Monto'],4),int(row['Plazo']),round(row['Tasa_Calculada'],8))
-            dfr=calc_res_amort(round(float(row['VP_Residual']),4),round(row['Tasa_Calculada'],8),int(row['Plazo']))
-            ti+=dfa.iloc[mc-1]['Interes']; tr+=dfr.iloc[mc-1]['Interes']; cnt+=1
+            mc = _mes_en_vigencia_contrato(row, ap, mp, inc_primer_mes=True)
+            if mc is None:
+                continue
+            try:
+                dfa, dfr, pl, _t = _amort_tablas_contrato(row)
+                ti += float(dfa.iloc[mc - 1]['Interes'])
+                tr += float(dfr.iloc[mc - 1]['Interes'])
+                cnt += 1
+            except Exception:
+                continue
         rows.append({'Mes':fd.strftime('%Y-%m'),'Label':fd.strftime('%b %Y'),'IL':round(ti,2),'IR':round(tr,2),'Total':round(ti+tr,2),'N':cnt})
         bar.progress((i+1)/meses,text=f"Mes {i+1}/{meses}…")
     bar.empty(); return pd.DataFrame(rows)
 
 def tabla_rentas_mensuales(anio):
-    df=obtener('ACTIVO')
-    if df.empty: return pd.DataFrame()
-    MN=['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
-    data=[]
-    for _,row in df.iterrows():
-        fila={'ID_Contrato':row['ID_Contrato'],'Cliente':row['Cliente']}
-        for i,n in enumerate(MN,1):
-            fm=pd.Timestamp(anio,i,1)
-            fila[n]=row['Mensualidad_Sin_IVA'] if row['Fecha_Alta']<=fm<=row['Fecha_Vencimiento'] else 0.0
+    """Rentas por mes con la misma vigencia que Tabla Mensual / poliza."""
+    df = obtener('ACTIVO')
+    if df.empty:
+        return pd.DataFrame()
+    MN = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
+    data = []
+    for _, row in df.iterrows():
+        fila = {'ID_Contrato': row['ID_Contrato'], 'Cliente': row['Cliente']}
+        for i, n in enumerate(MN, 1):
+            mc = _mes_en_vigencia_contrato(row, anio, i, inc_primer_mes=True)
+            fila[n] = float(row['Mensualidad_Sin_IVA']) if mc is not None else 0.0
         data.append(fila)
     return pd.DataFrame(data).set_index('ID_Contrato')
 
+
+def _mes_en_vigencia_contrato(row, anio, mes, inc_primer_mes=True):
+    """Misma regla que pol_parcialidad con Incluir mes de alta = True (primer mes en firma).
+
+    Incluye el mes si coincide con poliza parcialidad:
+      fa_m <= fm <= fv_m (por mes calendario)
+      si BAJA: no posterior al mes de Fecha_Baja
+      mc = mt+1 entre 1 y Plazo; mt==0 solo si inc_primer_mes
+    Devuelve mc (1-based) o None.
+    """
+    try:
+        fa = pd.to_datetime(row['Fecha_Alta'])
+        fv = pd.to_datetime(row['Fecha_Vencimiento'])
+    except Exception:
+        return None
+    if pd.isna(fa) or pd.isna(fv):
+        return None
+    anio = int(anio)
+    mes = int(mes)
+    fm = pd.Timestamp(anio, mes, 1)
+    fa_m = pd.Timestamp(int(fa.year), int(fa.month), 1)
+    fv_m = pd.Timestamp(int(fv.year), int(fv.month), 1)
+    if fa_m > fm or fv_m < fm:
+        return None
+    es_baja = str(row.get('Estatus', '') or '').upper() == 'BAJA'
+    if es_baja and pd.notna(row.get('Fecha_Baja')):
+        try:
+            fb = pd.to_datetime(row['Fecha_Baja'])
+            if not pd.isna(fb):
+                fb_m = pd.Timestamp(int(fb.year), int(fb.month), 1)
+                if fb_m < fm:
+                    return None
+        except Exception:
+            pass
+    mt = (anio - int(fa.year)) * 12 + (mes - int(fa.month))
+    if mt == 0 and not inc_primer_mes:
+        return None
+    mc = mt + 1
+    try:
+        pl = int(row['Plazo'])
+    except Exception:
+        return None
+    if mc < 1 or mc > pl:
+        return None
+    return mc
+
+
+def _amort_tablas_contrato(row):
+    """dfa (leasing) y dfr (residual) — mismos inputs que polizas."""
+    pl = int(row['Plazo'])
+    t = round(float(row['Tasa_Calculada']), 8)
+    inv = float(row['Valor_Sin_IVA']) - float(row['Anticipo_Monto'])
+    dfa, _, _, _, _ = calc_amort(
+        round(inv, 4),
+        round(float(row['Mensualidad_Sin_IVA']), 4),
+        round(float(row['Residual_Monto']), 4),
+        pl, t,
+    )
+    try:
+        vpr = float(row['VP_Residual'])
+    except Exception:
+        vpr = 0.0
+    if not vpr or vpr <= 0:
+        vpr = float(vp_res(float(row['Residual_Monto']), t, pl))
+    dfr = calc_res_amort(round(vpr, 4), t, pl)
+    return dfa, dfr, pl, t
+
+
 def tabla_mensual_conceptos(anio):
-    """Fuente de verdad: tablas mensuales (igual Excel int_208 / residual / comision)."""
+    """Fuente de verdad unica: intereses leasing, residual, comision, saldo residual.
+
+    Dashboard, Excel Tabla Mensual e Intereses del Mes usan esta misma logica.
+    Regla de mes = pol_parcialidad con Incluir mes de alta (primer mes en firma).
+    """
     df = obtener()
     if df.empty:
         return None, None, None, None, "Sin contratos registrados"
     MN = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
+    anio = int(anio)
     ids = df['ID_Contrato'].tolist()
     di = pd.DataFrame(index=ids, columns=range(1, 13), dtype=float)
     dr = di.copy()
     dc = di.copy()
     ds = di.copy()
     bar = st.progress(0, "Calculando...")
-    tot = len(df)
+    tot = max(len(df), 1)
     for i, (_, row) in enumerate(df.iterrows()):
         id_c = row['ID_Contrato']
-        fa = row['Fecha_Alta']
-        pl = int(row['Plazo'])
-        t = round(row['Tasa_Calculada'], 8)
-        inv = row['Valor_Sin_IVA'] - row['Anticipo_Monto']
         try:
-            dfa, _, _, _, _ = calc_amort(
-                round(inv, 4),
-                round(row['Mensualidad_Sin_IVA'], 4),
-                round(row['Residual_Monto'], 4),
-                pl, t,
-            )
-            dfr = calc_res_amort(round(float(row['VP_Residual']), 4), t, pl)
+            dfa, dfr, pl, _t = _amort_tablas_contrato(row)
         except Exception:
             bar.progress((i + 1) / tot, text=f"Procesando {i+1}/{tot}...")
             continue
-        es_baja = str(row.get('Estatus', '')).upper() == 'BAJA'
-        fecha_baja = pd.to_datetime(row['Fecha_Baja']) if es_baja and pd.notna(row.get('Fecha_Baja')) else None
+        try:
+            com_mes = round(float(row.get('Comision_Monto') or 0) / pl, 2) if pl else 0.0
+        except Exception:
+            com_mes = 0.0
         for mes in range(1, 13):
-            fm = pd.Timestamp(anio, mes, 1)
-            if fm < pd.Timestamp(fa.year, fa.month, 1) or fm > row['Fecha_Vencimiento']:
+            mc = _mes_en_vigencia_contrato(row, anio, mes, inc_primer_mes=True)
+            if mc is None:
                 continue
-            if fecha_baja is not None and fm > pd.Timestamp(fecha_baja.year, fecha_baja.month, 1):
+            try:
+                di.at[id_c, mes] = round(float(dfa.iloc[mc - 1]['Interes']), 2)
+                dr.at[id_c, mes] = round(float(dfr.iloc[mc - 1]['Interes']), 2)
+                dc.at[id_c, mes] = com_mes
+                ds.at[id_c, mes] = round(float(dfr.iloc[mc - 1]['Saldo_Fin']), 2)
+            except Exception:
                 continue
-            mc = (anio - fa.year) * 12 + (mes - fa.month) + 1
-            if mc < 1 or mc > pl:
-                continue
-            di.at[id_c, mes] = round(dfa.iloc[mc - 1]['Interes'], 2)
-            dr.at[id_c, mes] = round(dfr.iloc[mc - 1]['Interes'], 2)
-            dc.at[id_c, mes] = round(row['Comision_Monto'] / pl, 2)
-            ds.at[id_c, mes] = round(dfr.iloc[mc - 1]['Saldo_Fin'], 2)
         bar.progress((i + 1) / tot, text=f"Procesando {i+1}/{tot}...")
     bar.empty()
     for d in [di, dr, dc, ds]:
         d.columns = MN
         d.dropna(how='all', inplace=True)
     return di, dr, dc, ds, None
+
 
 
 def totales_intereses_desde_tabla_mensual(anio, mes):
@@ -1712,42 +1891,39 @@ def reporte_maestro_saldos(anio):
     bar=st.progress(0,"Calculando Reporte de Saldos...")
     tot=len(df)
     for i,(_,row) in enumerate(df.iterrows()):
-        id_c=row['ID_Contrato']; fa=row['Fecha_Alta']; pl=int(row['Plazo'])
-        t=round(row['Tasa_Calculada'],8); inv=row['Valor_Sin_IVA']-row['Anticipo_Monto']
+        id_c=row['ID_Contrato']
         try:
-            dfa,_,_,_,_=calc_amort(round(inv,4),round(row['Mensualidad_Sin_IVA'],4),round(row['Residual_Monto'],4),pl,t)
-            dfr=calc_res_amort(round(float(row['VP_Residual']),4),t,pl)
-        except: continue
-        es_baja = str(row.get('Estatus','')).upper() == 'BAJA'
-        fecha_baja = pd.to_datetime(row['Fecha_Baja']) if es_baja and pd.notna(row.get('Fecha_Baja')) else None
-        
+            dfa, dfr, pl, _t = _amort_tablas_contrato(row)
+        except Exception:
+            continue
         interes_array = dfa['Interes'].values
         rem_int = np.zeros(pl)
         for idx in range(pl):
             rem_int[idx] = np.sum(interes_array[idx+1:])
             
         for mes in range(1,13):
-            fm=pd.Timestamp(anio,mes,1)
-            if fm < pd.Timestamp(fa.year,fa.month,1): continue
-                
-            if fecha_baja is not None and fm > pd.Timestamp(fecha_baja.year,fecha_baja.month,1):
-                d_cap.at[id_c,mes] = 0; d_int.at[id_c,mes] = 0; d_tot.at[id_c,mes] = 0; d_res.at[id_c,mes] = 0
+            mc = _mes_en_vigencia_contrato(row, anio, mes, inc_primer_mes=True)
+            if mc is None:
+                # Fuera de vigencia: si ya empezo el contrato, saldos en 0; si aun no, vacio
+                try:
+                    fa_chk = pd.to_datetime(row['Fecha_Alta'])
+                    fm = pd.Timestamp(anio, mes, 1)
+                    if fm >= pd.Timestamp(int(fa_chk.year), int(fa_chk.month), 1):
+                        d_cap.at[id_c,mes] = 0; d_int.at[id_c,mes] = 0; d_tot.at[id_c,mes] = 0; d_res.at[id_c,mes] = 0
+                except Exception:
+                    pass
                 continue
-                
-            mc = (anio-fa.year)*12 + (mes-fa.month) + 1
-            if mc > pl:
-                d_cap.at[id_c,mes] = 0; d_int.at[id_c,mes] = 0; d_tot.at[id_c,mes] = 0; d_res.at[id_c,mes] = 0
-                continue
-                
             idx = mc - 1
-            saldo_cap = dfa.iloc[idx]['Saldo']
-            saldo_int = rem_int[idx]
-            saldo_res = dfr.iloc[idx]['Saldo_Fin']
-            
-            d_cap.at[id_c,mes] = round(saldo_cap, 2)
-            d_int.at[id_c,mes] = round(saldo_int, 2)
-            d_tot.at[id_c,mes] = round(saldo_cap + saldo_int, 2)
-            d_res.at[id_c,mes] = round(saldo_res, 2)
+            try:
+                saldo_cap = float(dfa.iloc[idx]['Saldo'])
+                saldo_int = float(rem_int[idx])
+                saldo_res = float(dfr.iloc[idx]['Saldo_Fin'])
+                d_cap.at[id_c,mes] = round(saldo_cap, 2)
+                d_int.at[id_c,mes] = round(saldo_int, 2)
+                d_tot.at[id_c,mes] = round(saldo_cap + saldo_int, 2)
+                d_res.at[id_c,mes] = round(saldo_res, 2)
+            except Exception:
+                continue
             
         bar.progress((i+1)/tot,text=f"Procesando {i+1}/{tot}...")
     bar.empty()
@@ -1866,30 +2042,31 @@ def reporte_maestro_mensual(anio):
     bar=st.progress(0,"Calculando Reporte Maestro...")
     tot=len(df)
     for i,(_,row) in enumerate(df.iterrows()):
-        id_c=row['ID_Contrato']; fa=row['Fecha_Alta']; pl=int(row['Plazo'])
-        t=round(row['Tasa_Calculada'],8); inv=row['Valor_Sin_IVA']-row['Anticipo_Monto']
+        id_c=row['ID_Contrato']
         try:
-            dfa,_,_,_,_=calc_amort(round(inv,4),round(row['Mensualidad_Sin_IVA'],4),round(row['Residual_Monto'],4),pl,t)
-            dfr=calc_res_amort(round(float(row['VP_Residual']),4),t,pl)
-        except: continue
-        es_baja = str(row.get('Estatus','')).upper() == 'BAJA'
-        fecha_baja = pd.to_datetime(row['Fecha_Baja']) if es_baja and pd.notna(row.get('Fecha_Baja')) else None
+            dfa, dfr, pl, _t = _amort_tablas_contrato(row)
+        except Exception:
+            bar.progress((i+1)/tot,text=f"Procesando {i+1}/{tot}...")
+            continue
+        try:
+            com_mes = round(float(row.get('Comision_Monto') or 0) / pl, 2) if pl else 0.0
+        except Exception:
+            com_mes = 0.0
         for mes in range(1,13):
-            fm=pd.Timestamp(anio,mes,1)
-            if fm<pd.Timestamp(fa.year,fa.month,1) or fm>row['Fecha_Vencimiento']: continue
-            if fecha_baja is not None and fm>pd.Timestamp(fecha_baja.year,fecha_baja.month,1): continue
-            mc=(anio-fa.year)*12+(mes-fa.month)+1
-            if mc<1 or mc>pl: continue
-            
-            interes_leasing = round(dfa.iloc[mc-1]['Interes'],2)
-            capital_leasing = round(dfa.iloc[mc-1]['Capital'],2)
-            
-            di.at[id_c,mes] = interes_leasing
-            dcap.at[id_c,mes] = capital_leasing
-            drenta.at[id_c,mes] = interes_leasing + capital_leasing
-            dr.at[id_c,mes] = round(dfr.iloc[mc-1]['Interes'],2)
-            dc.at[id_c,mes] = round(row['Comision_Monto']/pl,2)
-            ds.at[id_c,mes] = round(dfr.iloc[mc-1]['Saldo_Fin'],2)
+            mc = _mes_en_vigencia_contrato(row, anio, mes, inc_primer_mes=True)
+            if mc is None:
+                continue
+            try:
+                interes_leasing = round(float(dfa.iloc[mc-1]['Interes']), 2)
+                capital_leasing = round(float(dfa.iloc[mc-1]['Capital']), 2)
+                di.at[id_c,mes] = interes_leasing
+                dcap.at[id_c,mes] = capital_leasing
+                drenta.at[id_c,mes] = interes_leasing + capital_leasing
+                dr.at[id_c,mes] = round(float(dfr.iloc[mc-1]['Interes']), 2)
+                dc.at[id_c,mes] = com_mes
+                ds.at[id_c,mes] = round(float(dfr.iloc[mc-1]['Saldo_Fin']), 2)
+            except Exception:
+                continue
         bar.progress((i+1)/tot,text=f"Procesando {i+1}/{tot}...")
     bar.empty()
     
@@ -2069,83 +2246,33 @@ def _fallback_acumulado_facturacion(df_fact, anio=None, hasta_periodo=None):
     }
 
 def _fallback_metricas_estilo_tabla_mensual(df_contratos, anio, mes):
-    """Copia de la logica de Tabla Mensual (mes + YTD ejercicio)."""
-    out = {
-        "interes_leasing_mes": 0.0, "interes_residual_mes": 0.0, "capital_mes": 0.0, "renta_mes": 0.0,
-        "saldo_residual_mes": 0.0, "saldo_capital_mes": 0.0,
-        "interes_leasing_ytd": 0.0, "interes_residual_ytd": 0.0, "capital_ytd": 0.0, "renta_ytd": 0.0,
-        "n_contratos_mes": 0, "n_celdas_ytd": 0, "anio": int(anio), "mes": int(mes),
-    }
-    if df_contratos is None or getattr(df_contratos, "empty", True):
-        return out
-    n_mes = 0
-    for _, row in df_contratos.iterrows():
-        try:
-            pl = int(row.get("Plazo") or 0)
-            if pl <= 0:
-                continue
-            fa_ts = pd.to_datetime(row.get("Fecha_Alta"), errors="coerce")
-            if pd.isna(fa_ts):
-                continue
-            fa = fa_ts.date()
-            fv_ts = pd.to_datetime(row.get("Fecha_Vencimiento"), errors="coerce")
-            es_baja = str(row.get("Estatus", "") or "").upper() == "BAJA"
-            fecha_baja = None
-            if es_baja and pd.notna(row.get("Fecha_Baja")):
-                fb = pd.to_datetime(row.get("Fecha_Baja"), errors="coerce")
-                if pd.notna(fb):
-                    fecha_baja = fb
-            tasa = round(float(row.get("Tasa_Calculada") or 0), 8)
-            inv = float(row.get("Valor_Sin_IVA") or 0) - float(row.get("Anticipo_Monto") or 0)
-            renta = float(row.get("Mensualidad_Sin_IVA") or 0)
-            residual = float(row.get("Residual_Monto") or 0)
-            dfa, _, _, _, _ = calc_amort(round(inv, 4), round(renta, 4), round(residual, 4), pl, tasa)
-            try:
-                vpr = float(row.get("VP_Residual") or 0)
-                if vpr <= 0:
-                    vpr = float(vp_res(residual, tasa, pl))
-            except Exception:
-                vpr = float(vp_res(residual, tasa, pl))
-            dfr = calc_res_amort(round(vpr, 4), tasa, pl)
-            uso_mes = False
-            for m in range(1, int(mes) + 1):
-                fm = date(int(anio), m, 1)
-                if fm < date(fa.year, fa.month, 1):
-                    continue
-                if pd.notna(fv_ts):
-                    fv = fv_ts.date()
-                    if fm > date(fv.year, fv.month, 1):
-                        continue
-                if fecha_baja is not None and fm > date(fecha_baja.year, fecha_baja.month, 1):
-                    continue
-                mc = (int(anio) - fa.year) * 12 + (m - fa.month) + 1
-                if mc < 1 or mc > pl:
-                    continue
-                il = round(float(dfa.iloc[mc - 1]["Interes"]), 2)
-                ir = round(float(dfr.iloc[mc - 1]["Interes"]), 2)
-                cap = round(float(dfa.iloc[mc - 1]["Capital"]), 2)
-                out["interes_leasing_ytd"] += il
-                out["interes_residual_ytd"] += ir
-                out["capital_ytd"] += cap
-                out["renta_ytd"] += round(renta, 2)
-                out["n_celdas_ytd"] += 1
-                if m == int(mes):
-                    out["interes_leasing_mes"] += il
-                    out["interes_residual_mes"] += ir
-                    out["capital_mes"] += cap
-                    out["renta_mes"] += round(renta, 2)
-                    out["saldo_residual_mes"] += round(float(dfr.iloc[mc - 1]["Saldo_Fin"]), 2)
-                    out["saldo_capital_mes"] += round(float(dfa.iloc[mc - 1]["Saldo"]), 2)
-                    uso_mes = True
-            if uso_mes:
-                n_mes += 1
-        except Exception:
-            continue
-    out["n_contratos_mes"] = n_mes
-    for k, v in list(out.items()):
-        if isinstance(v, float):
-            out[k] = round(v, 2)
-    return out
+    """Delega a totales_intereses_desde_tabla_mensual (misma verdad que Dashboard)."""
+    try:
+        tot = totales_intereses_desde_tabla_mensual(int(anio), int(mes))
+        return {
+            "interes_leasing_mes": tot.get("interes_leasing_mes", 0),
+            "interes_residual_mes": tot.get("interes_residual_mes", 0),
+            "capital_mes": 0.0,
+            "renta_mes": 0.0,
+            "saldo_residual_mes": tot.get("saldo_residual_mes", 0),
+            "saldo_capital_mes": 0.0,
+            "interes_leasing_ytd": tot.get("interes_leasing_ytd", 0),
+            "interes_residual_ytd": tot.get("interes_residual_ytd", 0),
+            "capital_ytd": 0.0,
+            "renta_ytd": 0.0,
+            "n_contratos_mes": tot.get("n_contratos_mes", 0),
+            "n_celdas_ytd": 0,
+            "anio": int(anio),
+            "mes": int(mes),
+        }
+    except Exception:
+        return {
+            "interes_leasing_mes": 0.0, "interes_residual_mes": 0.0, "capital_mes": 0.0, "renta_mes": 0.0,
+            "saldo_residual_mes": 0.0, "saldo_capital_mes": 0.0,
+            "interes_leasing_ytd": 0.0, "interes_residual_ytd": 0.0, "capital_ytd": 0.0, "renta_ytd": 0.0,
+            "n_contratos_mes": 0, "n_celdas_ytd": 0, "anio": int(anio), "mes": int(mes),
+        }
+
 
 def _fallback_consolidar(df_activos, hoy=None):
     hoy = hoy or date.today()
@@ -4708,6 +4835,23 @@ ROL_ACTUAL = AUTH_USER.get("rol", "admin")
 if ROL_ACTUAL not in ("admin", "super_usuario"):
     GRUPOS = {g: its for g, its in GRUPOS.items() if g != "Configuración"}
 
+# Permisos por pantalla (admin marca con palomitas qué ve cada usuario)
+_TODAS_PANTALLAS = [item for _g, _its in GRUPOS.items() for item in _its]
+_uid_act = AUTH_USER.get("id")
+_pantallas_usr = None
+if _uid_act and ROL_ACTUAL not in ("admin", "super_usuario"):
+    try:
+        _pantallas_usr = obtener_pantallas_usuario(AUTH_DB, int(_uid_act))
+    except Exception:
+        _pantallas_usr = None
+    if _pantallas_usr is not None:
+        _permitidas = set(_pantallas_usr)
+        GRUPOS = {
+            g: [i for i in its if i in _permitidas]
+            for g, its in GRUPOS.items()
+        }
+        GRUPOS = {g: its for g, its in GRUPOS.items() if its}
+
 # El rol lectura puede consultar todo pero no capturar/editar/borrar — se
 # bloquean aquí las pantallas cuyo propósito central es escribir datos.
 PANTALLAS_SOLO_ESCRITURA = {"Carga Masiva y Altas", "Editar / Eliminar", "Gestor de Bajas"}
@@ -4760,6 +4904,22 @@ for grupo, items in GRUPOS.items():
                 st.session_state['_refresh'] = True
 
 menu = st.session_state['menu_item']
+
+# Si el usuario no tiene permiso a la pantalla actual, redirigir a la primera permitida
+if ROL_ACTUAL not in ("admin", "super_usuario") and _pantallas_usr is not None:
+    if menu not in _pantallas_usr:
+        _first = next((it for its in GRUPOS.values() for it in its), None)
+        if _first:
+            st.session_state['menu_item'] = _first
+            for _g, _its in GRUPOS.items():
+                if _first in _its:
+                    st.session_state['menu_grupo'] = _g
+                    break
+            st.warning(f"No tienes permiso para ver **{menu}**. Se muestra **{_first}**.")
+            menu = _first
+        else:
+            st.error("Tu usuario no tiene pantallas asignadas. Pide al administrador que marque al menos una.")
+            st.stop()
 
 st.sidebar.markdown(f"""<div class="empresa-badge">
   <span class="emp-label">Sesión activa</span>
@@ -4972,6 +5132,7 @@ try:
         if _tot_tm.get("error"):
             st.error(_tot_tm["error"])
 
+        _m_calc = metricas_estilo_tabla_mensual(df_all, int(anio_sel), int(mes_sel))
         _m_tm = {
             "interes_leasing_mes": _tot_tm.get("interes_leasing_mes", 0),
             "interes_residual_mes": _tot_tm.get("interes_residual_mes", 0),
@@ -4981,11 +5142,11 @@ try:
             "comision_ytd": _tot_tm.get("comision_ytd", 0),
             "saldo_residual_mes": _tot_tm.get("saldo_residual_mes", 0),
             "n_contratos_mes": _tot_tm.get("n_contratos_mes", 0),
-            "capital_mes": 0.0,
-            "capital_ytd": 0.0,
-            "renta_mes": 0.0,
-            "renta_ytd": 0.0,
-            "saldo_capital_mes": 0.0,
+            "capital_mes": _m_calc.get("capital_mes", 0.0),
+            "capital_ytd": _m_calc.get("capital_ytd", 0.0),
+            "renta_mes": _m_calc.get("renta_mes", 0.0),
+            "renta_ytd": _m_calc.get("renta_ytd", 0.0),
+            "saldo_capital_mes": _m_calc.get("saldo_capital_mes", 0.0),
         }
 
         # Control: totales por mes = suma de columnas de los Excel de Tabla Mensual
@@ -4995,20 +5156,17 @@ try:
                     "Mes": MN[m - 1],
                     "Intereses leasing": _tot_tm["por_mes_leasing"].get(m, 0),
                     "Intereses residual": _tot_tm["por_mes_residual"].get(m, 0),
-                    "Amort. comision apertura": _tot_tm["por_mes_comision"].get(m, 0),
                 }
                 for m in range(1, 13)
             ])
-            st.dataframe(_df_ctrl, width="stretch", key="df_ctrl_int_mes_v3")
+            st.dataframe(_df_ctrl, width="stretch", key="df_ctrl_int_mes_v4")
             st.success(
                 f"Del mes ({MN[int(mes_sel)-1]}): "
                 f"leasing **${_m_tm['interes_leasing_mes']:,.2f}** · "
-                f"residual **${_m_tm['interes_residual_mes']:,.2f}** · "
-                f"comision **${_m_tm['comision_mes']:,.2f}**  |  "
+                f"residual **${_m_tm['interes_residual_mes']:,.2f}**  |  "
                 f"Acum ene–{MN[int(mes_sel)-1][:3].lower()}: "
                 f"leasing **${_m_tm['interes_leasing_ytd']:,.2f}** · "
-                f"residual **${_m_tm['interes_residual_ytd']:,.2f}** · "
-                f"comision **${_m_tm['comision_ytd']:,.2f}**"
+                f"residual **${_m_tm['interes_residual_ytd']:,.2f}**"
             )
 
         try:
@@ -5042,20 +5200,18 @@ try:
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Intereses leasing (del mes)", f"${_m_tm.get('interes_leasing_mes', 0):,.2f}")
         c2.metric("Intereses residual (del mes)", f"${_m_tm.get('interes_residual_mes', 0):,.2f}")
-        c3.metric("Amort. comision apertura (del mes)", f"${_m_tm.get('comision_mes', 0):,.2f}")
-        c4.metric("Saldo residual activo (del mes)", f"${_m_tm.get('saldo_residual_mes', 0):,.2f}")
-        c5, c6 = st.columns(2)
-        c5.metric("Contratos en el mes", f"{_m_tm.get('n_contratos_mes', 0):,}")
-        c6.metric("Facturado rentas (CFDI)", f"${_fact_mes_renta:,.2f}")
+        c3.metric("Saldo residual activo (del mes)", f"${_m_tm.get('saldo_residual_mes', 0):,.2f}")
+        c4.metric("Contratos en el mes", f"{_m_tm.get('n_contratos_mes', 0):,}")
+        c5, = st.columns(1)
+        c5.metric("Facturado rentas (CFDI)", f"${_fact_mes_renta:,.2f}")
 
         # ---- 2) ACUMULADO EJERCICIO ----
         st.markdown(f"### 2. Acumulado ejercicio {int(anio_sel)} (enero → {MN[int(mes_sel)-1].lower()})")
         st.caption("Suma de columnas enero…mes de las mismas tablas de Tabla Mensual.")
-        a1, a2, a3, a4 = st.columns(4)
+        a1, a2, a3 = st.columns(3)
         a1.metric("Intereses leasing (acum.)", f"${_m_tm.get('interes_leasing_ytd', 0):,.2f}")
         a2.metric("Intereses residual (acum.)", f"${_m_tm.get('interes_residual_ytd', 0):,.2f}")
-        a3.metric("Amort. comision apertura (acum.)", f"${_m_tm.get('comision_ytd', 0):,.2f}")
-        a4.metric("Contratos (ref. mes)", f"{_m_tm.get('n_contratos_mes', 0):,}")
+        a3.metric("Contratos (ref. mes)", f"{_m_tm.get('n_contratos_mes', 0):,}")
 
         try:
             _df_fact_all = pd.read_sql_query(
@@ -6783,7 +6939,7 @@ try:
             mes=c1_.selectbox("Mes",range(1,13),index=datetime.now().month-1,format_func=lambda m:MN[m-1])
             anio=c2_.number_input("Año",value=datetime.now().year)
             inc_pm=inc_am=False
-            if tipo=="Parcialidad (mensual)": inc_pm=st.checkbox("Incluir mes de alta")
+            if tipo=="Parcialidad (mensual)": inc_pm=st.checkbox("Incluir mes de alta (primer mes en firma)", value=True)
             elif tipo=="Comisión por apertura": inc_am=st.checkbox("Incluir amortización en mes de alta")
 
             if st.button("Generar Póliza"):
@@ -7710,6 +7866,62 @@ try:
                             ok, msg = resetear_password(AUTH_DB, _u['id'], _npw)
                             (st.success if ok else st.error)(msg)
                     st.caption(f"Último acceso: {_u['ultimo_login'] or 'nunca'}")
+
+                    # --- Pantallas permitidas (palomitas una por una) ---
+                    if _u['rol'] in ("admin", "super_usuario"):
+                        st.info("Este usuario es administrador: ve **todas** las pantallas. No requiere palomitas.")
+                    else:
+                        st.markdown("**Pantallas que puede ver** (marca con palomita una por una)")
+                        st.caption(
+                            "Si no guardas ninguna selección, el usuario ve el menú completo de su rol "
+                            "(sin Configuración). Al guardar, solo verá las pantallas marcadas."
+                        )
+                        _grupos_ref = {
+                            "Cartera": [
+                                "Dashboard & Cartera", "Estado de Cuenta", "Carga Masiva y Altas",
+                                "Editar / Eliminar", "Gestor de Bajas", "Tabla Mensual por Contrato",
+                                "Reporte Maestro", "Reporte Maestro Saldos",
+                            ],
+                            "Gestión de Riesgo": ["Gestión de Morosidad", "Eventos Especiales", "Anotaciones"],
+                            "Finanzas & Contabilidad": [
+                                "Pólizas Contables", "Intereses del Mes", "Facturación de Intereses",
+                                "Conciliación de Facturas", "Comparar Analíticas", "Tablas de Amortización",
+                            ],
+                            "Análisis": [
+                                "Proyección Financiera", "Análisis de Rentabilidad",
+                                "Punto de Equilibrio", "Reportes por Cliente",
+                            ],
+                        }
+                        try:
+                            _perm_actual = obtener_pantallas_usuario(AUTH_DB, int(_u['id']))
+                        except Exception:
+                            _perm_actual = None
+                        _todas_flat = [x for xs in _grupos_ref.values() for x in xs]
+                        if _perm_actual is None:
+                            _default_on = set(_todas_flat)
+                        else:
+                            _default_on = set(_perm_actual)
+                        _nuevas = []
+                        for _gname, _items in _grupos_ref.items():
+                            st.markdown(f"*{_gname}*")
+                            _cols = st.columns(2)
+                            for _ii, _pname in enumerate(_items):
+                                _chk = _cols[_ii % 2].checkbox(
+                                    _pname,
+                                    value=(_pname in _default_on),
+                                    key=f"pant_{_u['id']}_{_pname}",
+                                )
+                                if _chk:
+                                    _nuevas.append(_pname)
+                        _bc1, _bc2 = st.columns(2)
+                        if _bc1.button("Guardar pantallas", key=f"save_pant_{_u['id']}", type="primary"):
+                            ok, msg = guardar_pantallas_usuario(AUTH_DB, int(_u['id']), _nuevas)
+                            (st.success if ok else st.error)(msg)
+                        if _bc2.button("Quitar restricción (ver todo su rol)", key=f"clear_pant_{_u['id']}"):
+                            ok, msg = guardar_pantallas_usuario(AUTH_DB, int(_u['id']), [])
+                            (st.success if ok else st.error)(
+                                "Restricción eliminada: verá el menú completo de su rol." if ok else msg
+                            )
 
             st.divider(); st.subheader("Agregar Nuevo Usuario")
             with st.form("nuevo_usuario"):

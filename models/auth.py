@@ -80,6 +80,15 @@ def init_auth_db(db_path: str) -> None:
                 FOREIGN KEY (grupo_id) REFERENCES grupos(id)
             )
         """)
+        # Pantallas permitidas por usuario (una fila = una pantalla marcada)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS usuario_pantallas (
+                user_id INTEGER NOT NULL,
+                pantalla TEXT NOT NULL,
+                PRIMARY KEY (user_id, pantalla),
+                FOREIGN KEY (user_id) REFERENCES usuarios(id) ON DELETE CASCADE
+            )
+        """)
         conn.commit()
     finally:
         conn.close()
@@ -253,5 +262,55 @@ def resetear_password(db_path: str, user_id: int, password_nueva: str, password_
         conn.execute("UPDATE usuarios SET password_hash=?, password_salt=? WHERE id=?", (hash_pw, salt_hex, user_id))
         conn.commit()
         return True, "Contraseña actualizada."
+    finally:
+        conn.close()
+
+
+def obtener_pantallas_usuario(db_path: str, user_id: int) -> list[str] | None:
+    """Lista de pantallas permitidas. None = sin restriccion guardada (usa default del rol)."""
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT pantalla FROM usuario_pantallas WHERE user_id=? ORDER BY pantalla",
+            (int(user_id),),
+        ).fetchall()
+        if not rows:
+            return None
+        return [r[0] for r in rows]
+    finally:
+        conn.close()
+
+
+def guardar_pantallas_usuario(db_path: str, user_id: int, pantallas: list[str]) -> tuple[bool, str]:
+    """Reemplaza las pantallas permitidas del usuario. Lista vacia = sin acceso a ninguna."""
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA foreign_keys = ON")
+    try:
+        conn.execute("DELETE FROM usuario_pantallas WHERE user_id=?", (int(user_id),))
+        for p in pantallas:
+            p = (p or "").strip()
+            if not p:
+                continue
+            conn.execute(
+                "INSERT OR IGNORE INTO usuario_pantallas (user_id, pantalla) VALUES (?,?)",
+                (int(user_id), p),
+            )
+        conn.commit()
+        return True, f"Se guardaron {len(pantallas)} pantalla(s) para el usuario."
+    except Exception as e:
+        return False, str(e)
+    finally:
+        conn.close()
+
+
+def usuario_tiene_restriccion_pantallas(db_path: str, user_id: int) -> bool:
+    """True si el admin ya configuro pantallas para este usuario."""
+    conn = sqlite3.connect(db_path)
+    try:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM usuario_pantallas WHERE user_id=?",
+            (int(user_id),),
+        ).fetchone()[0]
+        return n > 0
     finally:
         conn.close()
