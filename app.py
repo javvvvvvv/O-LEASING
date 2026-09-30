@@ -34,6 +34,7 @@ import streamlit as st
 from ui.components import sfig, explain, estado_vacio, sz, titled_chart, titled_table
 import pandas as pd
 from core.cfdi import clasificar_concepto
+from core.cotizador import simular_cotizacion, generar_pdf_cotizacion
 import numpy as np
 import numpy_financial as npf
 from datetime import datetime, date
@@ -4776,6 +4777,7 @@ GRUPOS = {
     ],
     "Análisis": [
         "Proyección Financiera",
+        "Cotizador Comercial",
         "Análisis de Rentabilidad",
         "Punto de Equilibrio",
         "Reportes por Cliente",
@@ -4818,6 +4820,7 @@ DESCRIPCIONES = {
     "Comparar Analíticas": "Sube las analíticas contables del contador y compáralas contra lo que el sistema esperaba, con sugerencia de póliza de ajuste.",
     "Tablas de Amortización": "Consulta la tabla de amortización completa de cualquier contrato.",
     "Proyección Financiera": "Proyecta el comportamiento financiero futuro de tu cartera.",
+    "Cotizador Comercial": "Simulador interactivo de nuevos arrendamientos puros con desglose inicial, amortización y exportación de cotización en PDF.",
     "Análisis de Rentabilidad": "Analiza la rentabilidad de tus contratos y de la cartera en general.",
     "Punto de Equilibrio": "Calcula el punto de equilibrio de tu operación.",
     "Reportes por Cliente": "Genera reportes personalizados agrupados por cliente.",
@@ -5025,6 +5028,36 @@ st.markdown(f"""
   </div>
 </div>
 """, unsafe_allow_html=True)
+
+# --- BÚSQUEDA GLOBAL / COMMAND CENTER ---
+with st.expander("🔍 Búsqueda Global — Buscar Contratos, Clientes, Series o Facturas", expanded=st.session_state.get("_open_search", False)):
+    _q_glob = st.text_input("Ingresa cualquier término (ID Contrato, Cliente, Vehículo, Serie/VIN o Anotaciones):", key="global_search_q_input", placeholder="Ej: 0773, Besthelg, Ford, 3FA6P...").strip()
+    if _q_glob:
+        _df_con_g = obtener()
+        if not _df_con_g.empty:
+            _mask_c = (
+                _df_con_g['ID_Contrato'].astype(str).str.contains(_q_glob, case=False, na=False) |
+                _df_con_g['Cliente'].astype(str).str.contains(_q_glob, case=False, na=False) |
+                _df_con_g['Vehiculo'].astype(str).str.contains(_q_glob, case=False, na=False) |
+                _df_con_g.get('Serie', pd.Series(dtype=str)).astype(str).str.contains(_q_glob, case=False, na=False) |
+                _df_con_g.get('Anotaciones', pd.Series(dtype=str)).astype(str).str.contains(_q_glob, case=False, na=False)
+            )
+            _res_con = _df_con_g[_mask_c]
+            st.markdown(f"**Contratos encontrados ({len(_res_con)}):**")
+            if not _res_con.empty:
+                for _, _r_g in _res_con.head(10).iterrows():
+                    _gcol1, _gcol2, _gcol3, _gcol4 = st.columns([2, 3, 2, 2])
+                    _gcol1.markdown(f"**{_r_g['ID_Contrato']}**")
+                    _gcol2.markdown(f"**{_r_g['Cliente']}**<br><small style='color:#666;'>{_r_g['Vehiculo']}</small>", unsafe_allow_html=True)
+                    _gcol3.markdown(f"Renta: **${float(_r_g.get('Mensualidad_Sin_IVA',0)):,.2f}**")
+                    if _gcol4.button("📋 Estado Cta", key=f"btn_gs_ec_{_r_g['ID_Contrato']}"):
+                        st.session_state['ec_contrato'] = _r_g['ID_Contrato']
+                        st.session_state['menu_item'] = "Estado de Cuenta"
+                        st.session_state['menu_grupo'] = "Cartera"
+                        st.session_state['_open_search'] = False
+                        st.rerun()
+            else:
+                st.caption("No se encontraron coincidencias en la cartera.")
 
 if ROL_ACTUAL == "lectura" and menu in PANTALLAS_SOLO_ESCRITURA:
     st.warning(
@@ -7130,6 +7163,122 @@ try:
                     st.dataframe(dfp.style.format({'IL':'${:,.2f}','IR':'${:,.2f}','Total':'${:,.2f}','Acum':'${:,.2f}'}),width='stretch', key="df_020")
                     buf = excel_con_formato({'Proyeccion': dfp}, currency_cols=['IL','IR','Total','Acum'])
                     st.download_button("Descargar",buf,"proyeccion_intereses.xlsx")
+
+    elif menu == "Cotizador Comercial":
+        st.title("🧮 Cotizador Comercial y Simulador de Arrendamiento")
+        st.markdown("Simula y estructura un nuevo contrato de arrendamiento puro, calcula el desglose de pago inicial, la renta mensual proyectada y genera la cotización formal en PDF para tu cliente.")
+
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            st.subheader("1. Datos del Cliente y Vehículo")
+            cot_cliente = st.text_input("Nombre del Prospecto / Cliente", value="PROSPECTO EJEMPLO, S.A. DE C.V.", key="cot_cliente")
+            cot_vehiculo = st.text_input("Descripción del Vehículo / Equipo", value="NISSAN URVAN 2026", key="cot_vehiculo")
+            cot_valor = st.number_input("Valor de la Unidad (Sin IVA)", min_value=10000.0, max_value=50000000.0, value=450000.0, step=10000.0, key="cot_valor")
+            cot_incluir_iva = st.checkbox("Aplicar IVA del 16%", value=True, key="cot_incluir_iva")
+
+        with col2:
+            st.subheader("2. Condiciones Financieras")
+            c_f1, c_f2 = st.columns(2)
+            cot_anticipo = c_f1.number_input("% Anticipo a Capital", min_value=0.0, max_value=70.0, value=10.0, step=5.0, key="cot_anticipo")
+            cot_residual = c_f2.number_input("% Valor Residual", min_value=0.0, max_value=60.0, value=20.0, step=5.0, key="cot_residual")
+            
+            c_f3, c_f4 = st.columns(2)
+            cot_tasa = c_f3.number_input("Tasa Anual de Interés (%)", min_value=1.0, max_value=60.0, value=24.0, step=0.5, key="cot_tasa")
+            cot_plazo = c_f4.selectbox("Plazo (Meses)", [12, 18, 24, 36, 48, 60], index=3, key="cot_plazo")
+            
+            cot_comision = st.number_input("% Comisión por Apertura", min_value=0.0, max_value=10.0, value=2.0, step=0.5, key="cot_comision")
+
+        # Ejecutar Simulación
+        sim = simular_cotizacion(
+            valor_vehiculo_sin_iva=cot_valor,
+            pct_anticipo=cot_anticipo,
+            pct_residual=cot_residual,
+            tasa_anual=cot_tasa,
+            plazo_meses=cot_plazo,
+            pct_comision=cot_comision,
+            incluir_iva=cot_incluir_iva
+        )
+
+        st.markdown("---")
+        st.subheader("📊 Resumen de la Cotización")
+
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Renta Mensual (Sin IVA)", f"${sim['renta_mensual_sin_iva']:,.2f}")
+        k2.metric("Renta Total (Con IVA)", f"${sim['renta_total_con_iva']:,.2f}")
+        k3.metric("Pago Inicial Requerido", f"${sim['pago_inicial_con_iva']:,.2f}")
+        k4.metric("TIR Anualizada Proyectada", f"{sim['tir_anual']:.2f}%")
+
+        st.markdown("#### Desglose Detallado de Pagos")
+        d1, d2 = st.columns(2)
+        with d1:
+            st.markdown(f"""
+            * **Inversión Neta a Financiar:** `${sim['inversion_neta']:,.2f}`
+            * **Anticipo a Capital ({sim['pct_anticipo']}%):** `${sim['monto_anticipo']:,.2f}` (+ IVA `${sim['monto_anticipo']*0.16:,.2f}`)
+            * **Comisión por Apertura ({sim['pct_comision']}%):** `${sim['monto_comision']:,.2f}` (+ IVA `${sim['monto_comision']*0.16:,.2f}`)
+            """)
+        with d2:
+            st.markdown(f"""
+            * **Valor Residual Pactado ({sim['pct_residual']}%):** `${sim['monto_residual']:,.2f}` (+ IVA `${sim['monto_residual']*0.16:,.2f}`)
+            * **Valor Presente del Residual:** `${sim['vp_residual']:,.2f}`
+            * **Pago Inicial Total (Con IVA):** `${sim['pago_inicial_con_iva']:,.2f}`
+            """)
+
+        # Gráfica interactiva de Amortización Proyectada
+        dfa_sim = sim['tabla_amortizacion']
+        fig_sim = px.bar(
+            dfa_sim,
+            x='Mes',
+            y=['Interes', 'Capital'],
+            title=f"Amortización Proyectada de Renta Mensual (${sim['renta_mensual_sin_iva']:,.2f})",
+            labels={'value': 'Monto (MXN)', 'variable': 'Concepto'},
+            color_discrete_map={'Interes': '#1E5C4F', 'Capital': '#8FD9BE'}
+        )
+        fig_sim.add_trace(go.Scatter(
+            x=dfa_sim['Mes'],
+            y=dfa_sim['Saldo'],
+            mode='lines+markers',
+            name='Saldo Insoluto',
+            line=dict(color='#B3261E', width=2.5)
+        ))
+        fig_sim = sfig(fig_sim, h=340)
+        st.plotly_chart(fig_sim, width="stretch", key="pc_cotizador_sim")
+
+        # Botones de exportación
+        st.markdown("---")
+        ex1, ex2 = st.columns(2)
+        with ex1:
+            pdf_bytes = generar_pdf_cotizacion(
+                sim,
+                cliente_nombre=cot_cliente,
+                vehiculo_desc=cot_vehiculo,
+                empresa_nombre=st.session_state.get('_nombre_empresa', 'O-Leasing')
+            )
+            st.download_button(
+                "📄 Descargar Cotización Formal en PDF",
+                pdf_bytes,
+                file_name=f"cotizacion_{cot_cliente.replace(' ','_')[:15]}.pdf",
+                mime="application/pdf",
+                type="primary",
+                use_container_width=True
+            )
+        with ex2:
+            buf_sim = excel_con_formato(
+                {"Amortización Proyectada": dfa_sim},
+                currency_cols=["Renta", "Interes", "Capital", "Saldo", "Saldo_Fin"]
+            )
+            st.download_button(
+                "📊 Descargar Tabla en Excel",
+                buf_sim,
+                file_name=f"simulacion_amort_{cot_cliente.replace(' ','_')[:15]}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+
+        with st.expander("Ver Tabla Completa de Amortización Proyectada"):
+            st.dataframe(
+                dfa_sim.style.format({'Renta': '${:,.2f}', 'Interes': '${:,.2f}', 'Capital': '${:,.2f}', 'Saldo': '${:,.2f}'}),
+                width="stretch"
+            )
 
     elif menu=="Cuentas (Macro)":
         st.title("Catálogo Maestro de Cuentas Contables")
