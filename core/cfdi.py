@@ -41,7 +41,7 @@ NS_V3 = {
     'tfd':  'http://www.sat.gob.mx/TimbreFiscalDigital',
 }
 
-MAX_XML_BYTES = 2 * 1024 * 1024  # un CFDI real pesa unos cuantos KB; 2MB ya es sospechoso
+MAX_XML_BYTES = 10 * 1024 * 1024  # Aumentado a 10MB para CFDIs grandes o con Addendas
 
 _PAT_CONTRATO = re.compile(
     r'(?:CONTRATO\s*|RENTA\s*CONTRATO\s*|RENTA\s*)?(\d{1,4})-(\d{1,4})',
@@ -73,14 +73,6 @@ def normalizar_contrato(raw_num: str, raw_suf: str) -> str:
 
 
 def clasificar_concepto(descripcion: str, reglas: dict) -> str:
-    """Clasifica el texto de un concepto según las reglas vigentes.
-
-    `reglas` es obligatorio: se resuelve una sola vez por lote (en app.py,
-    antes del ciclo que procesa los XMLs) en vez de reconsultar la
-    configuración de la empresa activa en cada archivo — con lotes de
-    cientos de XMLs, esa sola consulta repetida era buena parte de la
-    lentitud al cargar.
-    """
     d = descripcion.upper()
     for clave in _ORDEN_CLAVES_CONCEPTO:
         for palabra in reglas.get(clave, []):
@@ -91,10 +83,10 @@ def clasificar_concepto(descripcion: str, reglas: dict) -> str:
 
 def parse_cfdi(xml_bytes: bytes, reglas: dict) -> dict:
     """Extrae de un CFDI 3.3 / 4.0 únicamente los datos que O-Leasing necesita.
-    Tolerante a cualquier codificación, BOM, espacios y variantes de namespace.
+    Tolerante a cualquier codificación, BOM, espacios, ampersands sin escapar y variantes de namespace.
     """
     if len(xml_bytes) > MAX_XML_BYTES:
-        raise ValueError(f"El archivo pesa {len(xml_bytes)/1024:.0f} KB — un CFDI normal pesa unos cuantos KB.")
+        raise ValueError(f"El archivo pesa {len(xml_bytes)/1024:.0f} KB — límite de 10 MB excedido.")
     
     if xml_bytes.startswith(b'\xef\xbb\xbf'):
         xml_bytes = xml_bytes[3:]
@@ -111,6 +103,9 @@ def parse_cfdi(xml_bytes: bytes, reglas: dict) -> dict:
         xml_str = xml_bytes.decode('utf-8', errors='replace')
         
     xml_str = xml_str.strip()
+
+    # Sanitizar ampersands sin escapar que rompen ElementTree
+    xml_str = re.sub(r'&(?!(amp|lt|gt|apos|quot|#\d+|#x[0-9a-fA-F]+);)', '&amp;', xml_str)
 
     try:
         # Remover declaración xml si trae encoding incompatible con fromstring
