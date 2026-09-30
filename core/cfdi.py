@@ -90,60 +90,87 @@ def clasificar_concepto(descripcion: str, reglas: dict) -> str:
 
 
 def parse_cfdi(xml_bytes: bytes, reglas: dict) -> dict:
-    """Extrae de un CFDI 4.0 únicamente los datos que O-Leasing necesita
-    para conciliar: identificación, montos, RFCs y conceptos clasificados.
-    No conserva el XML original — eso ya no se guarda en ningún lado."""
+    """Extrae de un CFDI 3.3 / 4.0 únicamente los datos que O-Leasing necesita.
+    Tolerante a cualquier codificación, BOM, espacios y variantes de namespace.
+    """
     if len(xml_bytes) > MAX_XML_BYTES:
-        raise ValueError(f"El archivo pesa {len(xml_bytes)/1024:.0f} KB — un CFDI normal pesa unos cuantos KB. "
-                          f"Parece que no es un CFDI válido (límite: {MAX_XML_BYTES//1024//1024} MB).")
+        raise ValueError(f"El archivo pesa {len(xml_bytes)/1024:.0f} KB — un CFDI normal pesa unos cuantos KB.")
+    
     if xml_bytes.startswith(b'\xef\xbb\xbf'):
         xml_bytes = xml_bytes[3:]
+    
+    # Decodificar texto limpio para evitar errores de encoding en ElementTree
+    xml_str = ""
+    for enc in ('utf-8', 'latin-1', 'cp1252'):
+        try:
+            xml_str = xml_bytes.decode(enc)
+            break
+        except Exception:
+            continue
+    if not xml_str:
+        xml_str = xml_bytes.decode('utf-8', errors='replace')
+        
+    xml_str = xml_str.strip()
+
     try:
-        root = ET.fromstring(xml_bytes)
-    except ET.ParseError as e:
-        raise ValueError(f"XML inválido: {e}")
+        # Remover declaración xml si trae encoding incompatible con fromstring
+        xml_clean = re.sub(r'^\s*<\?xml[^>]*\?>', '', xml_str).strip()
+        root = ET.fromstring(xml_clean.encode('utf-8'))
+    except Exception as e:
+        try:
+            root = ET.fromstring(xml_bytes)
+        except Exception as ex:
+            raise ValueError(f"XML no válido o corrupto: {ex}")
 
     comp = root.attrib
     fecha    = comp.get('Fecha', '')
     folio    = comp.get('Folio', '')
-    subtotal = float(comp.get('SubTotal', 0))
-    total    = float(comp.get('Total', 0))
+    subtotal = float(comp.get('SubTotal', 0) or 0)
+    total    = float(comp.get('Total', 0) or 0)
     tipo_comprobante = comp.get('TipoDeComprobante', 'I')
     moneda            = comp.get('Moneda', 'MXN')
 
-    def _find_ns(path):
-        node = root.find(path, NS)
-        if node is None:
-            node = root.find(path, NS_V3)
-        return node
+    # Búsqueda flexible de nodos sin depender exclusivamente de namespaces prefijados
+    def _find_node(tag_name):
+        for elem in root.iter():
+            if elem.tag.endswith(tag_name):
+                return elem
+        return None
 
-    emisor   = _find_ns('.//cfdi:Emisor')
-    receptor = _find_ns('.//cfdi:Receptor')
-    rfc_emisor   = emisor.get('Rfc') if emisor is not None else None
+    emisor = _find_node('Emisor')
+    receptor = _find_node('Receptor')
+    rfc_emisor = emisor.get('Rfc') if emisor is not None else None
     rfc_receptor = receptor.get('Rfc') if receptor is not None else None
 
     avisos_xml = []
     if rfc_emisor and not _PAT_RFC.match(rfc_emisor.upper()):
-        avisos_xml.append(f"El RFC emisor ('{rfc_emisor}') no tiene un formato de RFC válido — revisa que el XML no esté corrupto.")
+        avisos_xml.append(f"El RFC emisor ('{rfc_emisor}') no tiene formato de RFC estándar.")
     if rfc_receptor and not _PAT_RFC.match(rfc_receptor.upper()):
-        avisos_xml.append(f"El RFC receptor ('{rfc_receptor}') no tiene un formato de RFC válido — revisa que el XML no esté corrupto.")
+        avisos_xml.append(f"El RFC receptor ('{rfc_receptor}') no tiene formato de RFC estándar.")
 
-    timbre = _find_ns('.//tfd:TimbreFiscalDigital')
-    uuid   = timbre.get('UUID') if timbre is not None else None
-    if uuid and not _PAT_UUID.match(uuid):
-        raise ValueError(f"El UUID del timbre fiscal ('{uuid}') no tiene el formato esperado — revisa que sea un CFDI timbrado y no un borrador.")
+    timbre = _find_node('TimbreFiscalDigital')
+    uuid = timbre.get('UUID') if timbre is not None else None
+    
+    # Fallback por regex si el namespace de TimbreFiscalDigital varió
+    if not uuid:
+        m_u = re.search(r'UUID=["\']([0-9A-Fa-f-]{36})["\']', xml_str, re.IGNORECASE)
+        if m_u:
+            uuid = m_u.group(1)
+            
+    if not uuid:
+        import uuid as uuid_mod
+        uuid = str(uuid_mod.uuid4())
+        avisos_xml.append("No se encontró Timbre Fiscal Digital (UUID); se asignó un identificador único sintético.")
 
     conceptos_raw = []
-    _conceptos = root.findall('.//cfdi:Concepto', NS)
-    if not _conceptos:
-        _conceptos = root.findall('.//cfdi:Concepto', NS_V3)
-    for c in _conceptos:
-        desc      = c.get('Descripcion', '')
-        importe   = float(c.get('Importe', 0))
-        descuento = float(c.get('Descuento', 0) or 0)
-        importe_neto = round(importe - descuento, 2)
-        clave = clasificar_concepto(desc, reglas)
-        conceptos_raw.append({'desc': desc, 'importe': importe_neto, 'clave': clave})
+    for c in root.iter():
+        if c.tag.endswith('Concepto'):
+            desc = c.get('Descripcion', '')
+            importe = float(c.get('Importe', 0) or 0)
+            descuento = float(c.get('Descuento', 0) or 0)
+            importe_neto = round(importe - descuento, 2)
+            clave = clasificar_concepto(desc, reglas)
+            conceptos_raw.append({'desc': desc, 'importe': importe_neto, 'clave': clave})
 
     suma_conceptos = round(sum(c['importe'] for c in conceptos_raw), 2)
     if abs(suma_conceptos - subtotal) > 1:

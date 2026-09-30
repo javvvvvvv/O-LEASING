@@ -35,6 +35,7 @@ from ui.components import sfig, explain, estado_vacio, sz, titled_chart, titled_
 import pandas as pd
 from core.cfdi import clasificar_concepto
 from core.cotizador import simular_cotizacion, generar_pdf_cotizacion
+from reports.cierre_mensual_pdf import generar_pdf_cierre_mensual
 import numpy as np
 import numpy_financial as npf
 from datetime import datetime, date
@@ -4770,6 +4771,7 @@ GRUPOS = {
         "Intereses del Mes",
         "Facturación de Intereses",
         "Conciliación de Facturas",
+        "Cierre y Conciliación Mensual",
         "Comparar Analíticas",
         "Tablas de Amortización",
     ],
@@ -4815,6 +4817,7 @@ DESCRIPCIONES = {
     "Intereses del Mes": "Calcula y revisa los intereses correspondientes al mes en curso.",
     "Facturación de Intereses": "Genera y administra la facturación de los intereses cobrados.",
     "Conciliación de Facturas": "Concilia las facturas CFDI recibidas contra tus contratos registrados.",
+    "Cierre y Conciliación Mensual": "Resumen ejecutivo mensual de movimientos, facturación, cobranza y pólizas para cierre de mes contable con exportación PDF.",
     "Comparar Analíticas": "Sube las analíticas contables del contador y compáralas contra lo que el sistema esperaba, con sugerencia de póliza de ajuste.",
     "Tablas de Amortización": "Consulta la tabla de amortización completa de cualquier contrato.",
     "Proyección Financiera": "Proyecta el comportamiento financiero futuro de tu cartera.",
@@ -7277,6 +7280,118 @@ try:
                 dfa_sim.style.format({'Renta': '${:,.2f}', 'Interes': '${:,.2f}', 'Capital': '${:,.2f}', 'Saldo': '${:,.2f}'}),
                 width="stretch"
             )
+
+    elif menu == "Cierre y Conciliación Mensual":
+        st.title("📋 Cierre y Conciliación Mensual de Cartera")
+        st.markdown("Genera el reporte oficial de cierre contable del mes, conciliación de facturas CFDI vs devengamiento y descarga el expediente completo en PDF o Excel.")
+
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            mes_cierre = st.selectbox("Mes de Cierre", list(range(1, 13)), index=datetime.now().month - 1, format_func=lambda m: MN[m - 1], key="cierre_mes_sel")
+            anio_cierre = st.number_input("Año de Cierre", min_value=2020, max_value=2050, value=datetime.now().year, key="cierre_anio_sel")
+
+        # Cargar datos de cierre
+        di, dr, dc, ds, err_c = tabla_mensual_conceptos(int(anio_cierre))
+        
+        if err_c:
+            st.error(err_c)
+        else:
+            nombre_mes_sel = MN[mes_cierre - 1]
+            
+            # Totales del mes
+            tot_leasing = float(di[nombre_mes_sel].sum()) if di is not None and nombre_mes_sel in di.columns else 0.0
+            tot_residual = float(dr[nombre_mes_sel].sum()) if dr is not None and nombre_mes_sel in dr.columns else 0.0
+            tot_comision = float(dc[nombre_mes_sel].sum()) if dc is not None and nombre_mes_sel in dc.columns else 0.0
+            
+            # Facturas conciliadas
+            conn = get_db()
+            per_str = f"{int(anio_cierre):04d}-{int(mes_cierre):02d}"
+            r_fact = conn.execute("SELECT COUNT(*) as n, SUM(total) as tot FROM facturas WHERE periodo=?", (per_str,)).fetchone()
+            tot_facturado = float(r_fact['tot'] or 0.0) if r_fact else 0.0
+            n_facturas = int(r_fact['n'] or 0) if r_fact else 0
+            
+            r_conc = conn.execute("SELECT COUNT(*) FROM facturas WHERE periodo=? AND estatus='CONCILIADO'", (per_str,)).fetchone()
+            r_disc = conn.execute("SELECT COUNT(*) FROM facturas WHERE periodo=? AND estatus='DISCREPANCIA'", (per_str,)).fetchone()
+            n_conc = int(r_conc[0]) if r_conc else 0
+            n_disc = int(r_disc[0]) if r_disc else 0
+
+            st.markdown("---")
+            st.subheader(f"📊 Resumen del Cierre — {nombre_mes_sel} {anio_cierre}")
+
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("Interés Leasing (Cta 208)", f"${tot_leasing:,.2f}")
+            k2.metric("Interés Residual", f"${tot_residual:,.2f}")
+            k3.metric("Amort. Comisión", f"${tot_comision:,.2f}")
+            k4.metric("Total CFDI Facturado", f"${tot_facturado:,.2f}", f"{n_facturas} facturas")
+
+            st.markdown("#### Estado de la Conciliación del Mes")
+            kc1, kc2, kc3 = st.columns(3)
+            kc1.metric("Facturas Conciliadas (100% OK)", f"{n_conc}")
+            kc2.metric("Discrepancias / Pendientes", f"{n_disc}")
+            kc3.metric("Cobertura de Facturación", f"{(tot_facturado / max(tot_leasing, 1) * 100):.1f}%")
+
+            st.markdown("---")
+            st.subheader("📑 Tablas de Cierre Contable")
+
+            t_c1, t_c2 = st.tabs(["Detalle por Contrato", "Póliza Consolidada del Mes"])
+            with t_c1:
+                if di is not None and not di.empty:
+                    st.dataframe(di[[nombre_mes_sel]].style.format('{:,.2f}'), width="stretch")
+            with t_c2:
+                # Póliza consolidada mensual
+                pol_rows = [
+                    {"Cuenta": "1150-000-000", "Concepto": f"CXC Rentas {nombre_mes_sel}", "Cargo": round(tot_leasing, 2), "Abono": 0.0},
+                    {"Cuenta": "1260-000-000", "Concepto": f"CXC VP Residual {nombre_mes_sel}", "Cargo": round(tot_residual, 2), "Abono": 0.0},
+                    {"Cuenta": "2080-000-000", "Concepto": f"Intereses Leasing Devengados", "Cargo": 0.0, "Abono": round(tot_leasing, 2)},
+                    {"Cuenta": "2280-000-000", "Concepto": f"Intereses Residual Devengados", "Cargo": 0.0, "Abono": round(tot_residual, 2)},
+                ]
+                df_pol_cons = pd.DataFrame(pol_rows)
+                st.dataframe(df_pol_cons.style.format({'Cargo': '${:,.2f}', 'Abono': '${:,.2f}'}), width="stretch")
+
+            # Botones de exportación del Expediente de Cierre
+            st.markdown("---")
+            kpis_cierre = {
+                'interes_leasing': tot_leasing,
+                'interes_residual': tot_residual,
+                'comision': tot_comision,
+                'facturado_total': tot_facturado,
+                'contratos_activos': len(di) if di is not None else 0,
+                'conciliadas': n_conc,
+                'discrepancias': n_disc
+            }
+            
+            ex1, ex2 = st.columns(2)
+            with ex1:
+                pdf_cierre_bytes = generar_pdf_cierre_mensual(
+                    mes=int(mes_cierre),
+                    anio=int(anio_cierre),
+                    kpis=kpis_cierre,
+                    df_conciliados=di,
+                    empresa_nombre=st.session_state.get('_nombre_empresa', 'O-Leasing')
+                )
+                st.download_button(
+                    "📄 Descargar Informe de Cierre en PDF",
+                    pdf_cierre_bytes,
+                    file_name=f"informe_cierre_{nombre_mes_sel}_{anio_cierre}.pdf",
+                    mime="application/pdf",
+                    type="primary",
+                    use_container_width=True
+                )
+            with ex2:
+                buf_cierre = excel_con_formato(
+                    {
+                        "Intereses Leasing": di[[nombre_mes_sel]] if di is not None else pd.DataFrame(),
+                        "Póliza Consolidada": df_pol_cons
+                    },
+                    currency_cols=[nombre_mes_sel, 'Cargo', 'Abono']
+                )
+                st.download_button(
+                    "📊 Descargar Expediente en Excel",
+                    buf_cierre,
+                    file_name=f"expediente_cierre_{nombre_mes_sel}_{anio_cierre}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
 
     elif menu=="Cuentas (Macro)":
         st.title("Catálogo Maestro de Cuentas Contables")
