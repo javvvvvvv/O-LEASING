@@ -21,7 +21,7 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors as rl_colors
 
-from core.cfdi import calc_amort, vp_res, calc_res_amort
+from finanzas import calc_amort, vp_res, calc_res_amort
 
 def simular_cotizacion(
     valor_vehiculo_sin_iva: float,
