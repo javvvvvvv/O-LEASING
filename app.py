@@ -1668,13 +1668,9 @@ def _amort_tablas_contrato(row):
     return dfa, dfr, pl, t
 
 
-def tabla_mensual_conceptos(anio):
-    """Fuente de verdad unica: intereses leasing, residual, comision, saldo residual.
-
-    Dashboard, Excel Tabla Mensual e Intereses del Mes usan esta misma logica.
-    Regla de mes = pol_parcialidad con Incluir mes de alta (primer mes en firma).
-    """
-    df = obtener()
+@st.cache_data(ttl=60, show_spinner=False)
+def _tabla_mensual_conceptos_cached(db_path, anio, _version):
+    df = _obtener_cached(db_path, None, _version)
     if df.empty:
         return None, None, None, None, "Sin contratos registrados"
     MN = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
@@ -1684,14 +1680,11 @@ def tabla_mensual_conceptos(anio):
     dr = di.copy()
     dc = di.copy()
     ds = di.copy()
-    bar = st.progress(0, "Calculando...")
-    tot = max(len(df), 1)
-    for i, (_, row) in enumerate(df.iterrows()):
+    for _, row in df.iterrows():
         id_c = row['ID_Contrato']
         try:
             dfa, dfr, pl, _t = _amort_tablas_contrato(row)
         except Exception:
-            bar.progress((i + 1) / tot, text=f"Procesando {i+1}/{tot}...")
             continue
         try:
             com_mes = round(float(row.get('Comision_Monto') or 0) / pl, 2) if pl else 0.0
@@ -1708,12 +1701,17 @@ def tabla_mensual_conceptos(anio):
                 ds.at[id_c, mes] = round(float(dfr.iloc[mc - 1]['Saldo_Fin']), 2)
             except Exception:
                 continue
-        bar.progress((i + 1) / tot, text=f"Procesando {i+1}/{tot}...")
-    bar.empty()
     for d in [di, dr, dc, ds]:
         d.columns = MN
         d.dropna(how='all', inplace=True)
     return di, dr, dc, ds, None
+
+
+def tabla_mensual_conceptos(anio):
+    """Fuente de verdad unica: intereses leasing, residual, comision, saldo residual."""
+    db_path = get_db_path()
+    version = _version_datos.get(db_path, 0)
+    return _tabla_mensual_conceptos_cached(db_path, int(anio), version)
 
 
 

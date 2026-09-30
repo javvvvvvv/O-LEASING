@@ -160,10 +160,14 @@ def restaurar_respaldo_automatico(db_path: str, archivo_respaldo: str, password:
 def _engine(db_path: str):
     conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    # DELETE en vez de WAL: ver nota extensa en el módulo original — mucho
-    # más robusto en carpetas sincronizadas por la nube o con antivirus
-    # agresivo, que es la causa más común de "database disk image is
-    # malformed" en instalaciones de escritorio de un solo usuario como ésta.
+    # DELETE mode + NORMAL sync for robust Cloud/Antivirus safety and fast writes
     conn.execute("PRAGMA journal_mode=DELETE")
-    conn.execute("PRAGMA synchronous=FULL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA cache_size=-64000")  # 64 MB RAM buffer for lightning-fast queries
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_contratos_estatus ON contratos(Estatus)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_contratos_cliente ON contratos(Cliente)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_facturas_periodo ON facturas(periodo)")
+    except Exception:
+        pass
     return conn
