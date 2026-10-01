@@ -3191,9 +3191,9 @@ def _render_conciliacion():
         with col_over:
             st.write("")
             sobrescribir = st.checkbox(
-                "Sobrescribir facturas ya cargadas",
-                value=False,
-                help="Si el UUID ya existe, por default se omite.",
+                "Sobrescribir / Actualizar facturas ya cargadas",
+                value=True,
+                help="Si el UUID ya existe en la base de datos, se actualizarán sus montos y conceptos.",
                 key="carga_sobrescribir",
             )
 
@@ -3396,7 +3396,7 @@ def _render_conciliacion():
                                     errores.append(f"{name}: el ZIP no contiene ningún .xml")
                                     continue
                                 for n in xml_names:
-                                    out.append((n.split("/")[-1] or n, zf.read(n)))
+                                    out.append((os.path.basename(n.replace("\\", "/")) or n, zf.read(n)))
                         except zipfile.BadZipFile:
                             errores.append(f"{name}: ZIP dañado o no es un ZIP válido.")
                     elif name_l.endswith(".xml"):
