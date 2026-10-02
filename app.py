@@ -4489,17 +4489,15 @@ def _render_conciliacion():
             st.info("Aún no hay facturas procesadas. Carga algunos XMLs primero.")
         else:
             per_rep = st.selectbox("Selecciona un período", lista_per, key="per_reporte")
-            if st.button("Generar Reporte", width='stretch'):
-                with st.spinner("Generando reporte..."):
-                    rows = conn.execute(
-                        """SELECT uuid, folio, id_contrato, tipo, mes_contrato,
-                                  subtotal, total, estatus, observaciones, fecha_emision, fecha_registro, cancelada
-                           FROM facturas WHERE periodo=? ORDER BY fecha_emision""",
-                        (per_rep,)
-                    ).fetchall()
-                    if not rows:
-                        st.warning("No hay facturas para este período.")
-                    else:
+            rows = conn.execute(
+                """SELECT uuid, folio, id_contrato, tipo, mes_contrato,
+                          subtotal, total, estatus, observaciones, fecha_emision, fecha_registro, cancelada
+                   FROM facturas WHERE periodo=? ORDER BY fecha_emision""",
+                (per_rep,)
+            ).fetchall()
+            if not rows:
+                st.warning("No hay facturas para este período.")
+            else:
                         df_rep = pd.DataFrame(rows, columns=[
                             'UUID', 'Folio', 'Contrato', 'Tipo', 'Mes',
                             'Subtotal', 'Total', 'Estatus', 'Observación', 'Fecha Emisión', 'Fecha Registro', 'Cancelada'
