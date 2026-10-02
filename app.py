@@ -3202,8 +3202,7 @@ def _render_conciliacion():
             st.caption(
                 "Si capturas aquí el RFC de tu empresa (la que emite las facturas de renta), el sistema "
                 "rechaza automáticamente cualquier XML cuyo RFC emisor no coincida — así una factura de "
-                "otra empresa, o un lote mezclado por error, nunca se compara contra un contrato que no "
-                "le corresponde. Déjalo en blanco si no quieres esta validación."
+                "otra empresa nunca se compara contra un contrato que no le corresponde."
             )
             _rfc_actual = get_cfg('rfc_arrendadora', '') or ''
             _rfc_nuevo = st.text_input("RFC de tu arrendadora", value=_rfc_actual, max_chars=13,
@@ -3212,19 +3211,15 @@ def _render_conciliacion():
                 set_cfg('rfc_arrendadora', _rfc_nuevo)
                 st.success("RFC guardado. Se aplicará a partir de la próxima carga.")
 
-        st.markdown(
-            '<div style="background:#1E5C4F;color:#fff;padding:12px 14px;border-radius:6px;margin-bottom:14px;font-weight:600;">'
-            'CARGA DE XML — usa el Metodo 1 (carpeta en disco) si el navegador no deja subir archivos'
-            '</div>',
-            unsafe_allow_html=True,
-        )
+        st.subheader("Carga e Importación de Facturas CFDI (XML)")
+        st.caption("Selecciona o arrastra directamente tus archivos `.xml` (o un archivo `.zip` que contenga tus XMLs) para procesar e ingresar a la base de datos.")
 
         col_per, col_over = st.columns(2)
         with col_per:
             periodo_ref = st.date_input(
                 "Mes de referencia",
                 value=hoy_ref().replace(day=1),
-                help="Se usa como periodo si el XML no trae fecha legible",
+                help="Se usa como período predeterminado si algún XML no trae fecha legible",
                 key="carga_periodo_ref",
             )
         with col_over:
@@ -3236,174 +3231,11 @@ def _render_conciliacion():
                 key="carga_sobrescribir",
             )
 
-        st.subheader("Método 1 — Carga rápida por carpeta en este equipo")
-        st.caption(
-            "Ingresa la ruta completa de la carpeta donde tienes tus archivos XML (por ejemplo: `C:\\Users\\cynti\\Downloads\\tre\\XML_Exportados_24-09-2026 12-46-34`)."
-        )
-        col_r_in, col_r_btn = st.columns([3, 1])
-        with col_r_in:
-            ruta_carpeta = st.text_input(
-                "Ruta de la carpeta con XML",
-                value=st.session_state.get("carga_ruta_carpeta", "C:\\Users\\cynti\\Downloads\\tre\\XML_Exportados_24-09-2026 12-46-34"),
-                placeholder="C:/Users/TuUsuario/Downloads/XML",
-                key="carga_ruta_carpeta_input",
-                label_visibility="collapsed"
-            )
-        with col_r_btn:
-            _do_ruta = st.button("🚀 Escanear y Procesar", type="primary", key="btn_proc_ruta", use_container_width=True)
-
-        incluir_sub = st.checkbox("Incluir subcarpetas", value=True, key="carga_incluir_sub")
-
-        _inbox = os.path.join(DATA_DIR, "inbox_cfdi")
-        try:
-            os.makedirs(_inbox, exist_ok=True)
-        except Exception:
-            pass
-        st.caption(f"📁 Bandeja fija alternativa: `{_inbox}`")
-        _do_inbox = st.button("Procesar bandeja inbox_cfdi", key="btn_proc_inbox")
-
-        def _escanear_xml(ruta: str, sub: bool):
-            hallados, errores = [], []
-            ruta = (ruta or "").strip().strip('"').strip("'")
-            if not ruta:
-                errores.append("Ruta vacía.")
-                return hallados, errores
-            if not os.path.isdir(ruta):
-                errores.append(f"No existe la carpeta especificada: {ruta}")
-                return hallados, errores
-            try:
-                if sub:
-                    for root_d, _dirs, files in os.walk(ruta):
-                        for fn in files:
-                            if fn.lower().endswith(".xml"):
-                                hallados.append(os.path.join(root_d, fn))
-                else:
-                    for fn in os.listdir(ruta):
-                        fp = os.path.join(ruta, fn)
-                        if os.path.isfile(fp) and fn.lower().endswith(".xml"):
-                            hallados.append(fp)
-                hallados.sort()
-            except Exception as e:
-                errores.append(f"Error al leer carpeta: {e}")
-            if not hallados and not errores:
-                errores.append(f"La carpeta no contiene archivos .xml: {ruta}")
-            return hallados, errores
-
-        def _procesar_lista_paths(paths, periodo_ref, sobrescribir):
-            resultados, errores_parse = [], []
-            total = len(paths)
-            if total == 0:
-                return resultados, errores_parse, "No hay archivos para procesar."
-            barra = st.progress(0.0, text=f"0/{total}")
-            log = st.empty()
-            uuids_en_lote = {}
-            reglas = get_reglas_concepto()
-            cache_lote = {}
-            alias_map = cargar_alias_contrato()
-            usos_alias = {}
-            for i, fp in enumerate(paths):
-                nombre = os.path.basename(fp)
-                barra.progress((i + 1) / total, text=f"Procesando {i+1}/{total}: {nombre}")
-                log.caption(f"⚙️ Analizando: `{nombre}`")
-                try:
-                    with open(fp, "rb") as fh:
-                        raw = fh.read()
-                    if not raw:
-                        errores_parse.append(f"**{nombre}**: archivo vacío (0 bytes)")
-                        continue
-                    if len(raw) > MAX_XML_BYTES:
-                        errores_parse.append(f"**{nombre}**: demasiado grande (supera 10MB)")
-                        continue
-                    fact = parse_cfdi(raw, reglas)
-                    if not fact.get("periodo"):
-                        fact["periodo"] = periodo_ref.strftime("%Y-%m")
-                    if fact.get("uuid") and fact["uuid"] in uuids_en_lote:
-                        errores_parse.append(f"**{nombre}**: UUID duplicado en el mismo lote")
-                        continue
-                    if fact.get("uuid"):
-                        uuids_en_lote[fact["uuid"]] = nombre
-                    detectado = fact.get("id_contrato")
-                    id_final, se_aplico = resolver_numero_contrato(detectado, alias_map)
-                    fact["id_contrato"] = id_final
-                    fact["alias_aplicado"] = 1 if se_aplico else 0
-                    if se_aplico and detectado:
-                        usos_alias[detectado] = usos_alias.get(detectado, 0) + 1
-                    res = conciliar_factura(fact, cache_lote)
-                    merged = {**fact, **res}
-                    merged["status"] = res.get("status")
-                    resultados.append(merged)
-                except Exception as e:
-                    errores_parse.append(f"**{nombre}**: {e}")
-            barra.progress(1.0, text=f"¡Completado! {total}/{total}")
-            log.empty()
-            try:
-                marcar_alias_usado_lote(usos_alias)
-            except Exception:
-                pass
-            msg = f"Se procesaron con éxito **{len(resultados)}** factura(s) de **{total}** analizadas."
-            if resultados:
-                try:
-                    omitidas = guardar_facturas_batch(resultados, sobrescribir_existentes=sobrescribir)
-                    registrar_corrida_conciliacion(
-                        periodo_ref.strftime("%Y-%m"), resultados, omitidas=len(omitidas)
-                    )
-                    if omitidas:
-                        msg += f" Omitidas ({len(omitidas)} ya existían en BD)."
-                    st.session_state["conciliacion_omitidas"] = omitidas
-                    st.session_state["_refresh"] = True
-                except Exception as e:
-                    msg += f" Error al guardar en base de datos: {e}"
-                    errores_parse.append(f"Guardado: {e}")
-            st.session_state["conciliacion_resultados"] = resultados if resultados else None
-            st.session_state["conciliacion_errores_parse"] = errores_parse
-            st.session_state["conciliacion_periodo_lote"] = periodo_ref.strftime("%Y-%m")
-            st.session_state["carga_ultimo_msg"] = msg
-            return resultados, errores_parse, msg
-
-        if _do_ruta or _do_inbox:
-            _ruta_usar = _inbox if _do_inbox else (ruta_carpeta or "").strip().strip('"').strip("'")
-            st.session_state["carga_ruta_carpeta"] = _ruta_usar
-            with st.status("🔍 Buscando y procesando XML...", expanded=True) as _st_status:
-                st.write(f"Carpeta: `{_ruta_usar}`")
-                _paths, _err_e = _escanear_xml(_ruta_usar, incluir_sub if not _do_inbox else True)
-                for e in _err_e:
-                    st.write(e)
-                st.write(f"Archivos XML encontrados: **{len(_paths)}**")
-                if _paths:
-                    _res, _errp, _msg = _procesar_lista_paths(_paths, periodo_ref, sobrescribir)
-                    st.write(_msg)
-                    if _errp:
-                        with st.expander(f"Detalle de observaciones ({len(_errp)})", expanded=True):
-                            for e in _errp[:50]:
-                                st.write(e)
-                    _st_status.update(label="✅ Carga y Conciliación Completada", state="complete")
-                else:
-                    st.write("No hay XML para procesar.")
-                    st.session_state["carga_ultimo_msg"] = "No se encontró ningún XML en la carpeta."
-                    st.session_state["conciliacion_errores_parse"] = _err_e
-                    _st_status.update(label="Sin archivos XML", state="error")
-
-        # Panel de estado SIEMPRE visible
-        st.markdown("##### 📊 Estado del Último Procesamiento")
-        _umsg = st.session_state.get("carga_ultimo_msg")
-        if _umsg:
-            st.success(_umsg)
-        else:
-            st.info("Aún no has procesado ninguna carpeta o lote en esta sesión.")
-        _uerr = st.session_state.get("conciliacion_errores_parse") or []
-        if _uerr:
-            with st.expander(f"Errores u observaciones ({len(_uerr)})", expanded=True):
-                for e in _uerr[:50]:
-                    st.markdown(str(e))
-
-        st.markdown("---")
-        st.subheader("Método 2 — Subir archivos directamente con el navegador")
-        st.caption("Arrastra tus archivos `.xml` o un archivo `.zip` con todos los XML aquí. **El sistema procesa automáticamente al soltar los archivos.**")
         archivos = st.file_uploader(
-            "Selecciona o arrastra tus XML o ZIP aquí",
+            "Arrastra tus archivos XML o ZIP aquí",
             type=["xml", "zip", "xlsx", "csv"],
             accept_multiple_files=True,
-            key="carga_cfdi_uploader",
+            key="carga_cfdi_uploader_unico",
         )
 
         def _expandir_archivos_subidos(lista):
@@ -3442,32 +3274,21 @@ def _render_conciliacion():
                     errores.append(f"{name}: error al leer ({e})")
             return out, errores
 
-
-        if not archivos:
-            st.info("Sube XML (o un ZIP con XML) para comenzar. Si el botón de archivos no responde, prueba con un ZIP o con menos archivos por lote.")
-        else:
+        if archivos:
             items, err_prev = _expandir_archivos_subidos(archivos)
             n_xml = sum(1 for n, _ in items if n.lower().endswith(".xml"))
             n_xls = sum(1 for n, _ in items if n.lower().endswith((".xlsx", ".csv")))
             peso_kb = sum(len(b) for _, b in items) / 1024.0
-            st.success(
-                f"Listos para procesar: **{len(items)}** archivo(s) "
-                f"({n_xml} XML, {n_xls} Excel/CSV) — {peso_kb:,.0f} KB en total."
-            )
+
+            st.info(f"📂 **{len(items)} archivo(s) recibidos** ({n_xml} XML, {n_xls} Excel/CSV) — {peso_kb:,.0f} KB total")
+
             if err_prev:
-                with st.expander(f"{len(err_prev)} archivo(s) no se pudieron preparar", expanded=True):
+                with st.expander(f"⚠️ Observaciones previas ({len(err_prev)})", expanded=True):
                     for msg in err_prev:
                         st.warning(msg)
-            if not items:
-                st.error(
-                    "No quedó ningún archivo válido para procesar. "
-                    "Revisa que sean .xml reales (o un .zip con XML adentro), no PDF ni carpetas sueltas."
-                )
-            else:
-                with st.expander("Ver nombres del lote", expanded=False):
-                    st.write([n for n, _ in items[:200]] + (["…"] if len(items) > 200 else []))
 
-                if st.button("Procesar y Conciliar", type="primary", key="btn_procesar_cfdi"):
+            if items:
+                if st.button("🚀 PROCESAR Y CONCILIAR AHORA", type="primary", key="btn_procesar_cfdi_directo", use_container_width=True):
                     resultados = []
                     errores_parse = list(err_prev)
                     total = len(items)
@@ -3483,15 +3304,14 @@ def _render_conciliacion():
                         for i, (nombre, raw) in enumerate(items):
                             pct = (i + 1) / total
                             barra.progress(pct, text=f"Procesando {nombre} ({i+1}/{total})")
-                            estado.caption(f"Archivo {i+1} de {total}: {nombre}")
+                            estado.caption(f"⚙️ Archivo {i+1} de {total}: `{nombre}`")
                             try:
                                 name_lower = nombre.lower()
                                 facts = []
                                 if name_lower.endswith(".xml"):
                                     if len(raw) > MAX_XML_BYTES:
                                         raise ValueError(
-                                            f"pesa {len(raw)/1024:.0f} KB (límite {MAX_XML_BYTES//1024//1024} MB). "
-                                            "No parece un CFDI normal."
+                                            f"pesa {len(raw)/1024:.0f} KB (límite {MAX_XML_BYTES//1024//1024} MB)."
                                         )
                                     facts = [parse_cfdi(raw, reglas)]
                                 elif name_lower.endswith(".xlsx"):
@@ -3546,8 +3366,7 @@ def _render_conciliacion():
                                         fact["periodo"] = periodo_ref.strftime("%Y-%m")
                                     if fact.get("uuid") and fact["uuid"] in uuids_en_lote:
                                         errores_parse.append(
-                                            f"**{nombre}**: UUID duplicado en el mismo lote "
-                                            f"(también en {uuids_en_lote[fact['uuid']]})"
+                                            f"**{nombre}**: UUID duplicado en el mismo lote ({uuids_en_lote[fact['uuid']]})"
                                         )
                                         continue
                                     if fact.get("uuid"):
@@ -3561,10 +3380,6 @@ def _render_conciliacion():
                                     res = conciliar_factura(fact, cache_lote)
                                     merged = {**fact, **res}
                                     merged["status"] = res["status"]
-                                    if fact.get("alias_aplicado"):
-                                        merged["msg"] = (
-                                            f"{merged.get('msg', '')} -> Se aplicó alias ({detectado} -> {id_final})"
-                                        ).strip(" ->")
                                     resultados.append(merged)
                             except Exception as e:
                                 errores_parse.append(f"**{nombre}**: {e}")
@@ -3575,17 +3390,10 @@ def _render_conciliacion():
                         st.session_state["conciliacion_errores_parse"] = errores_parse
 
                         if not resultados:
-                            st.error(
-                                "No se procesó ningún XML correctamente. "
-                                "Abre la lista de errores abajo para ver el motivo de cada archivo."
-                            )
+                            st.error("No se procesó ningún XML correctamente.")
                             st.session_state["conciliacion_resultados"] = None
-                            if errores_parse:
-                                with st.expander(f"Ver {len(errores_parse)} error(es)", expanded=True):
-                                    for msg in errores_parse:
-                                        st.markdown(msg)
                         else:
-                            with st.spinner("Guardando en base de datos…"):
+                            with st.spinner("Guardando en la base de datos..."):
                                 omitidas = guardar_facturas_batch(resultados, sobrescribir_existentes=sobrescribir)
                             registrar_corrida_conciliacion(
                                 periodo_ref.strftime("%Y-%m"), resultados, omitidas=len(omitidas)
@@ -3594,30 +3402,18 @@ def _render_conciliacion():
                             st.session_state["conciliacion_omitidas"] = omitidas
                             st.session_state["conciliacion_periodo_lote"] = periodo_ref.strftime("%Y-%m")
                             st.success(
-                                f"Procesados **{len(resultados)}** factura(s). "
-                                f"Omitidas (ya existían): **{len(omitidas)}**. "
-                                f"Errores de parseo: **{len(errores_parse)}**."
+                                f"✅ ¡Procesados con éxito **{len(resultados)}** factura(s)! "
+                                f"Omitidas: **{len(omitidas)}**. Errores: **{len(errores_parse)}**."
                             )
-                            if errores_parse:
-                                with st.expander(f"{len(errores_parse)} archivo(s) con error"):
-                                    for msg in errores_parse:
-                                        st.markdown(msg)
+                            st.session_state["_refresh"] = True
                     except Exception as e_lote:
                         barra.empty()
                         estado.empty()
-                        st.error(
-                            "La carga se detuvo por un error general (no de un XML suelto). "
-                            f"Detalle: {e_lote}"
-                        )
+                        st.error(f"La carga se detuvo por un error general: {e_lote}")
                         st.session_state["conciliacion_errores_parse"] = errores_parse + [str(e_lote)]
 
-        # --- Resultados guardados: todos los meses y años, siempre desde la
-        # base de datos, nunca solo en memoria de la sesión. ---
-        _errores_parse = st.session_state.get('conciliacion_errores_parse') or []
-        if _errores_parse:
-            with st.expander(f"{len(_errores_parse)} archivo(s) con error de parseo o duplicado"):
-                for msg in _errores_parse:
-                    st.markdown(msg)
+        st.markdown("---")
+        # Resultados guardados permanentemente
 
         _omitidas_ultima = st.session_state.get('conciliacion_omitidas') or []
         if _omitidas_ultima:
