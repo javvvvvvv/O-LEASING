@@ -3187,10 +3187,12 @@ def _render_conciliacion():
         "Las facturas de seguro, gestoría y otros servicios no relacionados con leasing se registran como 'NO APLICA'."
     )
 
-    tab_carga, tab_historial, tab_resolver, tab_conceptos, tab_faltantes, tab_audit, tab_reporte = st.tabs([
+    NOMBRES_TABS = [
         "Carga y Conciliación", "Historial", "Resolver Pendientes",
         "Conceptos sin Reconocer", "Avance de Pago", "Auditoría por Contrato", "Reporte"
-    ])
+    ]
+    
+    tab_carga, tab_historial, tab_resolver, tab_conceptos, tab_faltantes, tab_audit, tab_reporte = st.tabs(NOMBRES_TABS)
 
     # ===================================================================
     # TAB 1 – CARGA Y CONCILIACIÓN
