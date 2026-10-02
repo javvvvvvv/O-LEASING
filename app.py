@@ -3609,16 +3609,24 @@ def _render_conciliacion():
         if not _periodos_todos:
             st.info("Aún no has procesado ningún XML.")
         else:
+            _opciones_periodos = ["TODOS LOS MESES (VER ACUMULADO ANUAL)"] + _periodos_todos
             _periodo_default = st.session_state.get('conciliacion_periodo_lote')
-            _idx_default = _periodos_todos.index(_periodo_default) if _periodo_default in _periodos_todos else 0
-            periodo_ver = st.selectbox("Mes a revisar", _periodos_todos, index=_idx_default, key="periodo_ver_resultados")
+            _idx_default = _opciones_periodos.index(_periodo_default) if _periodo_default in _opciones_periodos else 0
+            periodo_ver = st.selectbox("Mes / Período a revisar", _opciones_periodos, index=_idx_default, key="periodo_ver_resultados")
 
-            filas = conn_res.execute(
-                """SELECT uuid, folio, id_contrato, tipo, mes_contrato, subtotal, total,
-                          estatus, observaciones, esperado, facturado, diferencia, cancelada
-                   FROM facturas WHERE periodo=? ORDER BY estatus, id_contrato""",
-                (periodo_ver,)
-            ).fetchall()
+            if periodo_ver == "TODOS LOS MESES (VER ACUMULADO ANUAL)":
+                filas = conn_res.execute(
+                    """SELECT uuid, folio, id_contrato, tipo, mes_contrato, subtotal, total,
+                              estatus, observaciones, esperado, facturado, diferencia, cancelada, periodo
+                       FROM facturas ORDER BY periodo DESC, estatus, id_contrato"""
+                ).fetchall()
+            else:
+                filas = conn_res.execute(
+                    """SELECT uuid, folio, id_contrato, tipo, mes_contrato, subtotal, total,
+                              estatus, observaciones, esperado, facturado, diferencia, cancelada, periodo
+                       FROM facturas WHERE periodo=? ORDER BY estatus, id_contrato""",
+                    (periodo_ver,)
+                ).fetchall()
 
             if not filas:
                 st.info(f"No hay facturas guardadas para {periodo_ver}.")
