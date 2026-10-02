@@ -4407,15 +4407,68 @@ def _render_conciliacion():
                 else:
                     st.caption("Sin facturas por Indemnización de seguro registradas para este contrato.")
             
+            # Resumen Ejecutivo y Certificación de Auditoría para Dirección / Ventas / Administración
+            st.markdown("---")
+            st.markdown("#### 🛡️ Certificación de Estado de Facturación y Cumplimiento")
+            
+            # Evaluar estatus global
+            hay_alertas_venta = (not fact_venta.empty and str(row_aud['Estatus']).upper() != 'BAJA')
+            hay_alertas_indem = (not fact_indem.empty and str(row_aud['Estatus']).upper() != 'BAJA')
+            meses_atrasados_cont = len(df_audit_table[df_audit_table['Estatus Audit'].str.contains('SIN FACTURA') & (pd.to_datetime(df_audit_table['Período'] + '-01') <= pd.Timestamp(hoy_ref()))])
+            
+            c_cert1, c_cert2, c_cert3 = st.columns(3)
+            with c_cert1:
+                st.markdown("**🏢 Para Administración / Contabilidad**")
+                st.write(f"• Meses transcurridos al corte: **{min(plazo_num, (pd.Timestamp(hoy_ref()).year - fa_dt.year)*12 + pd.Timestamp(hoy_ref()).month - fa_dt.month + 1)} de {plazo_num}**")
+                st.write(f"• Meses con facturación omitida: **{meses_atrasados_cont}**")
+                st.write(f"• Acumulado Facturado (con IVA): **${total_facturado_rentas:,.2f}**")
+            
+            with c_cert2:
+                st.markdown("**💼 Para Ventas / Atención a Clientes**")
+                if pct_cob >= 99.0:
+                    st.success("🟢 Cliente al corriente en facturación de rentas.")
+                elif pct_cob >= 80.0:
+                    st.warning(f"🟡 Facturación al {pct_cob:.1f}% (Revisar facturas pendientes).")
+                else:
+                    st.error(f"🔴 Facturación retrasada ({pct_cob:.1f}% de avance).")
+                st.write(f"• Próxima fecha de corte: **01/{(pd.Timestamp(hoy_ref()) + relativedelta(months=1)).strftime('%m/%Y')}**")
+
+            with c_cert3:
+                st.markdown("**👑 Para Dirección General / Auditoría**")
+                if hay_alertas_venta:
+                    st.error("🚨 ALERTA DIRECCIÓN: Cobro de Residual realizado pero contrato figura ACTIVO.")
+                elif hay_alertas_indem:
+                    st.error("🚨 ALERTA DIRECCIÓN: Indemnización de seguro recibida sin evento de baja/siniestro.")
+                elif meses_atrasados_cont > 0:
+                    st.warning(f"⚠️ ATENCIÓN: {meses_atrasados_cont} mes(es) pendientes de facturar.")
+                else:
+                    st.success("✅ EXPEDIENTE 100% CERTIFICADO Y SIN ANOMALÍAS")
+
             # Descargar reporte de auditoría en Excel
             buf_aud = excel_con_formato(
-                {'Auditoría_Contrato': df_audit_table},
+                {
+                    'Auditoría_Contrato': df_audit_table,
+                    'Resumen_Ejecutivo': pd.DataFrame([
+                        {'Indicador': 'ID Contrato', 'Valor': sel_aud},
+                        {'Indicador': 'Cliente', 'Valor': row_aud['Cliente']},
+                        {'Indicador': 'Vehículo', 'Valor': row_aud['Vehiculo']},
+                        {'Indicador': 'Estatus Contrato', 'Valor': row_aud['Estatus']},
+                        {'Indicador': 'Plazo', 'Valor': f"{plazo_num} meses"},
+                        {'Indicador': 'Renta Mensual (Sin IVA)', 'Valor': f"${float(row_aud['Mensualidad_Sin_IVA']):,.2f}"},
+                        {'Indicador': 'Facturación Esperada Total', 'Valor': f"${total_esperado_rentas:,.2f}"},
+                        {'Indicador': 'Facturación Registrada Total', 'Valor': f"${total_facturado_rentas:,.2f}"},
+                        {'Indicador': 'Diferencia Acumulada', 'Valor': f"${total_facturado_rentas - total_esperado_rentas:+,.2f}"},
+                        {'Indicador': 'Porcentaje de Cumplimiento', 'Valor': f"{pct_cob:.1f}%"},
+                        {'Indicador': 'Factura Venta Vehículo', 'Valor': f"${float(fact_venta.iloc[0]['total']):,.2f}" if not fact_venta.empty else "No"},
+                        {'Indicador': 'Factura Indemnización', 'Valor': f"${float(fact_indem.iloc[0]['total']):,.2f}" if not fact_indem.empty else "No"}
+                    ])
+                },
                 currency_cols=['Renta Esperada (c/IVA)', 'Facturado (c/IVA)', 'Diferencia']
             )
             st.download_button(
-                f"📄 Descargar Expediente Auditado de {sel_aud} (Excel)",
+                f"📄 Descargar Expediente Auditado Completo de {sel_aud} (Excel)",
                 buf_aud,
-                file_name=f"auditoria_facturacion_{sel_aud}.xlsx",
+                file_name=f"auditoria_expediente_{sel_aud}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 
