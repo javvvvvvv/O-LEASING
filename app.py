@@ -2826,7 +2826,44 @@ def _conciliar_factura_interna(fact: dict, _cache: dict | None = None) -> dict:
     renta_pura_esp = round(fila['Interes'] + fila['Capital'], 2)
     renta_total_esp = round(con['Mensualidad_Sin_IVA'], 2)
 
-    if fact['tipo'] == 'MENSUAL':
+    if fact['tipo'] == 'VENTA_VEHICULO':
+        res_esp = round(con.get('Residual_Monto', 0.0), 2)
+        res_fac = round(fact.get('subtotal', fact.get('total', 0.0)), 2)
+        dif_res = round(res_fac - res_esp, 2)
+        errores = []
+        if abs(dif_res) > TOLERANCIA:
+            errores.append(f"Residual/Venta: esperado ${res_esp:,.2f}, facturado ${res_fac:,.2f} (dif ${dif_res:+,.2f})")
+        
+        estatus_con = str(con.get('Estatus', '')).upper()
+        if estatus_con != 'BAJA':
+            errores.append("⚠️ ATENCIÓN: Factura por Venta de Vehículo (cobro de residual), pero el contrato figura como ACTIVO en el sistema. Se sugiere procesar la Baja en Gestor de Bajas.")
+        
+        status = 'CONCILIADO' if not errores else 'DISCREPANCIA'
+        return _res(status, '; '.join(errores) if errores else 'OK (Venta de Vehículo / Residual)',
+                    esperado=res_esp, facturado=res_fac, dif=dif_res, detalle=errores)
+
+    elif fact['tipo'] == 'INDEMNIZACION':
+        total_fac = round(fact.get('total', 0.0), 2)
+        errores = []
+        
+        # Check if contract has special events or is BAJA
+        estatus_con = str(con.get('Estatus', '')).upper()
+        has_evento = False
+        try:
+            ev_count = conn.execute("SELECT COUNT(*) FROM eventos_especiales WHERE id_contrato=?", (id_c,)).fetchone()[0]
+            if ev_count > 0:
+                has_evento = True
+        except Exception:
+            pass
+
+        if estatus_con != 'BAJA' and not has_evento:
+            errores.append("⚠️ ATENCIÓN: Factura por Indemnización de Seguro recibida, pero el contrato figura ACTIVO y no existe evento especial de Siniestro/Baja registrado.")
+
+        status = 'CONCILIADO' if not errores else 'DISCREPANCIA'
+        return _res(status, '; '.join(errores) if errores else 'OK (Indemnización por Siniestro)',
+                    esperado=total_fac, facturado=total_fac, dif=0.0, detalle=errores)
+
+    elif fact['tipo'] == 'MENSUAL':
         renta_fac   = round(conceptos['RENTA'] + conceptos['ADMIN'] + conceptos['GEOLOC'], 2)
         dif         = round(renta_fac - renta_total_esp, 2)
         errores     = []
@@ -3150,9 +3187,9 @@ def _render_conciliacion():
         "Las facturas de seguro, gestoría y otros servicios no relacionados con leasing se registran como 'NO APLICA'."
     )
 
-    tab_carga, tab_historial, tab_resolver, tab_conceptos, tab_faltantes, tab_reporte = st.tabs([
+    tab_carga, tab_historial, tab_resolver, tab_conceptos, tab_faltantes, tab_audit, tab_reporte = st.tabs([
         "Carga y Conciliación", "Historial", "Resolver Pendientes",
-        "Conceptos sin Reconocer", "Avance de Pago", "Reporte"
+        "Conceptos sin Reconocer", "Avance de Pago", "Auditoría por Contrato", "Reporte"
     ])
 
     # ===================================================================
@@ -4211,6 +4248,176 @@ def _render_conciliacion():
                         marcar_factura_cancelada(p['uuid'], True)
                         st.success("Factura marcada como cancelada.")
                         st.session_state['_refresh'] = True
+
+    # ===================================================================
+    # TAB AUDITORÍA Y CERTIFICACIÓN DE FACTURACIÓN POR CONTRATO
+    # ===================================================================
+    with tab_audit:
+        st.subheader("Auditoría y Certificación de Facturación por Contrato")
+        st.caption("Revisa el expediente completo de facturación de cualquier contrato mes a mes, comparando la renta esperada contra los CFDIs emitidos y detectando cobros de residual (Venta de Vehículo) o indemnizaciones por siniestro.")
+        
+        df_contratos_aud = obtener()
+        if df_contratos_aud.empty:
+            st.info("No hay contratos registrados.")
+        else:
+            opts_aud = df_contratos_aud['ID_Contrato'].tolist()
+            sel_aud = st.selectbox(
+                "Selecciona un contrato para auditar",
+                opts_aud,
+                format_func=lambda x: f"{x} — {df_contratos_aud.loc[df_contratos_aud['ID_Contrato']==x, 'Cliente'].values[0]} ({df_contratos_aud.loc[df_contratos_aud['ID_Contrato']==x, 'Vehiculo'].values[0]})",
+                key="sel_contrato_audit"
+            )
+            
+            row_aud = df_contratos_aud[df_contratos_aud['ID_Contrato'] == sel_aud].iloc[0]
+            conn_aud = get_db()
+            
+            # Consultar facturas del contrato
+            facts_con = conn_aud.execute(
+                """SELECT uuid, folio, fecha_emision, periodo, mes_contrato, tipo, subtotal, total, estatus, observaciones, cancelada
+                   FROM facturas WHERE id_contrato=? AND (cancelada IS NULL OR cancelada=0)
+                   ORDER BY fecha_emision""",
+                (sel_aud,)
+            ).fetchall()
+            
+            # Header del Contrato
+            estatus_badge_color = "#1C7A4D" if str(row_aud['Estatus']).upper() == 'ACTIVO' else "#B3261E"
+            st.markdown(f"""
+            <div style="background:#FFFFFF;border:1px solid #DCE0E5;border-left:5px solid {estatus_badge_color};border-radius:4px;padding:12px 16px;margin-bottom:12px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <div>
+                        <span style="font-size:1.1rem;font-weight:700;color:#20242B;">Contrato: {row_aud['ID_Contrato']}</span>
+                        <span style="background:{estatus_badge_color};color:#fff;border-radius:4px;padding:2px 8px;font-size:0.75rem;font-weight:700;margin-left:8px;">{row_aud['Estatus']}</span>
+                    </div>
+                    <div style="font-size:0.85rem;color:#565E68;">Alta: <b>{str(row_aud['Fecha_Alta'])[:10]}</b> | Plazo: <b>{row_aud['Plazo']} meses</b></div>
+                </div>
+                <div style="font-size:0.9rem;color:#565E68;margin-top:4px;">
+                    Cliente: <b>{row_aud['Cliente']}</b> | Vehículo: <b>{row_aud['Vehiculo']}</b>
+                </div>
+                <div style="font-size:0.85rem;color:#20242B;margin-top:6px;">
+                    Renta Mensual: <b>${float(row_aud['Mensualidad_Sin_IVA']):,.2f}</b> | Residual Pactado: <b>${float(row_aud['Residual_Monto']):,.2f}</b>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Auditoría Mes a Mes (Plazo)
+            plazo_num = int(row_aud['Plazo'])
+            renta_esperada = round(float(row_aud['Mensualidad_Sin_IVA']), 2)
+            fa_dt = pd.to_datetime(row_aud['Fecha_Alta'])
+            
+            # Mapear facturas mensuales por mes de contrato o período
+            df_facts_con = pd.DataFrame([dict(f) for f in facts_con]) if facts_con else pd.DataFrame()
+            
+            audit_rows = []
+            total_esperado_rentas = 0.0
+            total_facturado_rentas = 0.0
+            
+            for m_num in range(1, plazo_num + 1):
+                f_mes_dt = fa_dt + relativedelta(months=m_num-1)
+                f_mes_str = f_mes_dt.strftime('%Y-%m')
+                
+                # Buscar factura correspondiente
+                fact_match = None
+                if not df_facts_con.empty:
+                    # Coincidencia por mes_contrato
+                    match1 = df_facts_con[(df_facts_con['tipo'] == 'MENSUAL') & (df_facts_con['mes_contrato'] == m_num)]
+                    if not match1.empty:
+                        fact_match = match1.iloc[0]
+                    else:
+                        # Coincidencia por periodo
+                        match2 = df_facts_con[(df_facts_con['tipo'] == 'MENSUAL') & (df_facts_con['periodo'] == f_mes_str)]
+                        if not match2.empty:
+                            fact_match = match2.iloc[0]
+                
+                if fact_match is not None:
+                    monto_fac = float(fact_match['total'])
+                    dif_mes = round(monto_fac - (renta_esperada * 1.16), 2)
+                    total_facturado_rentas += monto_fac
+                    if abs(dif_mes) <= TOLERANCIA:
+                        est_audit = "🟢 CONCILIADO"
+                    else:
+                        est_audit = f"🟡 DISCREPANCIA (${dif_mes:+,.2f})"
+                    folio_str = fact_match['folio'] or fact_match['uuid'][:8]
+                    obs_str = fact_match['observaciones'] or "OK"
+                else:
+                    monto_fac = 0.0
+                    dif_mes = -round(renta_esperada * 1.16, 2)
+                    est_audit = "🔴 SIN FACTURA"
+                    folio_str = "—"
+                    obs_str = "Mes transcurrido sin CFDI registrado" if f_mes_dt <= pd.Timestamp(hoy_ref()) else "Mes futuro"
+                
+                total_esperado_rentas += (renta_esperada * 1.16)
+                audit_rows.append({
+                    'Mes': m_num,
+                    'Período': f_mes_str,
+                    'Renta Esperada (c/IVA)': round(renta_esperada * 1.16, 2),
+                    'Facturado (c/IVA)': monto_fac,
+                    'Diferencia': dif_mes,
+                    'Folio CFDI': folio_str,
+                    'Estatus Audit': est_audit,
+                    'Observaciones': obs_str
+                })
+            
+            df_audit_table = pd.DataFrame(audit_rows)
+            
+            kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
+            kpi_col1.metric("Facturación Esperada Total", f"${total_esperado_rentas:,.2f}")
+            kpi_col2.metric("Facturación Registrada Total", f"${total_facturado_rentas:,.2f}")
+            kpi_col3.metric("Diferencia Acumulada", f"${total_facturado_rentas - total_esperado_rentas:+,.2f}")
+            pct_cob = (total_facturado_rentas / total_esperado_rentas * 100) if total_esperado_rentas > 0 else 0.0
+            kpi_col4.metric("Cumplimiento de Facturación", f"{pct_cob:.1f}%")
+            
+            st.markdown("---")
+            st.markdown("#### 📅 Auditoría Mes a Mes del Plazo del Contrato")
+            st.dataframe(
+                df_audit_table.style.format({
+                    'Renta Esperada (c/IVA)': '${:,.2f}',
+                    'Facturado (c/IVA)': '${:,.2f}',
+                    'Diferencia': '${:+,.2f}'
+                }),
+                width='stretch',
+                height=320,
+                key="df_audit_contract_table"
+            )
+            
+            # Auditoría Especial (Venta de Vehículo / Residual e Indemnización)
+            st.markdown("---")
+            st.markdown("#### 🚗 Eventos Especiales y Cierre de Contrato (Residual / Indemnización)")
+            
+            fact_venta = df_facts_con[df_facts_con['tipo'] == 'VENTA_VEHICULO'] if not df_facts_con.empty else pd.DataFrame()
+            fact_indem = df_facts_con[df_facts_con['tipo'] == 'INDEMNIZACION'] if not df_facts_con.empty else pd.DataFrame()
+            
+            ac1, ac2 = st.columns(2)
+            with ac1:
+                st.markdown("**1. Cobro de Residual / Venta de Vehículo**")
+                if not fact_venta.empty:
+                    fv_row = fact_venta.iloc[0]
+                    st.success(f"Factura de Venta de Vehículo detectada: Folio **{fv_row['folio']}** | Monto: **${float(fv_row['total']):,.2f}**")
+                    if str(row_aud['Estatus']).upper() != 'BAJA':
+                        st.warning("⚠️ **ALERTA:** Existe factura por Venta de Vehículo pero el contrato figura como **ACTIVO**. Procesa la baja en Gestor de Bajas.")
+                    else:
+                        st.info(f"Contrato dado de BAJA el {str(row_aud.get('Fecha_Baja'))[:10]}. Residual liquidado.")
+                else:
+                    st.caption(f"Residual pactado: **${float(row_aud['Residual_Monto']):,.2f}** (Sin IVA). No se ha recibido CFDI de Venta de Vehículo.")
+                    
+            with ac2:
+                st.markdown("**2. Reclamaciones / Indemnización de Seguro**")
+                if not fact_indem.empty:
+                    fi_row = fact_indem.iloc[0]
+                    st.success(f"Factura por Indemnización recibida: Folio **{fi_row['folio']}** | Monto: **${float(fi_row['total']):,.2f}**")
+                else:
+                    st.caption("Sin facturas por Indemnización de seguro registradas para este contrato.")
+            
+            # Descargar reporte de auditoría en Excel
+            buf_aud = excel_con_formato(
+                {'Auditoría_Contrato': df_audit_table},
+                currency_cols=['Renta Esperada (c/IVA)', 'Facturado (c/IVA)', 'Diferencia']
+            )
+            st.download_button(
+                f"📄 Descargar Expediente Auditado de {sel_aud} (Excel)",
+                buf_aud,
+                file_name=f"auditoria_facturacion_{sel_aud}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
 
     # ===================================================================
     # TAB 5 – REPORTE DE CONCILIACIÓN (NUEVO)

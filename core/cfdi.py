@@ -56,16 +56,18 @@ _PAT_RFC  = re.compile(r'^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$')
 # Los valores por default viven aquí; la versión configurable por el usuario
 # se guarda en la BD y la resuelve app.py (esta capa no sabe de eso).
 REGLAS_CONCEPTO_DEFAULT = {
-    "COMISION": ["COMISION", "COMISIÓN"],
-    "ANTICIPO": ["ANTICIPO", "APORTACION", "APORTACIÓN", "MONTO FINANCIADO"],
-    "GEOLOC":   ["GEOLOCAL", "GEOLOC"],
-    "ADMIN":    ["ADMINISTR", "COBRANZA"],
-    "RENTA":    ["RENTA"],
+    "VENTA_VEHICULO": ["VENTA DE VEHICULO", "VENTA VEHICULO", "VENTA DE UNIDAD", "VENTA UNIDAD", "ENAJENACION"],
+    "INDEMNIZACION":  ["INDEMNIZACION", "INDEMNIZACIÓN", "RECUPERACION SEGURO", "REEMBOLSO SEGURO", "SINIESTRO"],
+    "COMISION":       ["COMISION", "COMISIÓN"],
+    "ANTICIPO":       ["ANTICIPO", "APORTACION", "APORTACIÓN", "MONTO FINANCIADO"],
+    "GEOLOC":         ["GEOLOCAL", "GEOLOC"],
+    "ADMIN":          ["ADMINISTR", "COBRANZA"],
+    "RENTA":          ["RENTA"],
 }
 # Orden en que se revisan las claves — si un texto pudiera coincidir con más
 # de una (p. ej. trae "RENTA" y "COMISION" a la vez), gana la primera de
 # esta lista.
-_ORDEN_CLAVES_CONCEPTO = ["COMISION", "ANTICIPO", "GEOLOC", "ADMIN", "RENTA"]
+_ORDEN_CLAVES_CONCEPTO = ["VENTA_VEHICULO", "INDEMNIZACION", "COMISION", "ANTICIPO", "GEOLOC", "ADMIN", "RENTA"]
 
 
 def normalizar_contrato(raw_num: str, raw_suf: str) -> str:
@@ -191,21 +193,32 @@ def parse_cfdi(xml_bytes: bytes, reglas: dict) -> dict:
     if m_per:
         mes_contrato = int(m_per.group(1))
 
-    conceptos_claves = ['RENTA', 'ADMIN', 'GEOLOC', 'ANTICIPO', 'COMISION']
-    tiene_concepto_lease = any(c['clave'] in conceptos_claves for c in conceptos_raw)
-    if not tiene_concepto_lease:
-        tipo = 'OTRO'
-    else:
-        es_anticipo = any(c['clave'] in ('ANTICIPO', 'COMISION') for c in conceptos_raw)
-        tipo = 'ANTICIPO' if es_anticipo else 'MENSUAL'
+    es_venta = any(c['clave'] == 'VENTA_VEHICULO' for c in conceptos_raw)
+    es_indemn = any(c['clave'] == 'INDEMNIZACION' for c in conceptos_raw)
 
-    if tipo == 'ANTICIPO' and mes_contrato is None:
+    if es_venta:
+        tipo = 'VENTA_VEHICULO'
+    elif es_indemn:
+        tipo = 'INDEMNIZACION'
+    else:
+        conceptos_claves = ['RENTA', 'ADMIN', 'GEOLOC', 'ANTICIPO', 'COMISION']
+        tiene_concepto_lease = any(c['clave'] in conceptos_claves for c in conceptos_raw)
+        if not tiene_concepto_lease:
+            tipo = 'OTRO'
+        else:
+            es_anticipo = any(c['clave'] in ('ANTICIPO', 'COMISION') for c in conceptos_raw)
+            tipo = 'ANTICIPO' if es_anticipo else 'MENSUAL'
+
+    if tipo in ('ANTICIPO', 'VENTA_VEHICULO', 'INDEMNIZACION') and mes_contrato is None:
         mes_contrato = 1
 
     totales = {'RENTA': 0.0, 'ADMIN': 0.0, 'GEOLOC': 0.0,
-               'ANTICIPO': 0.0, 'COMISION': 0.0, 'OTRO': 0.0}
+               'ANTICIPO': 0.0, 'COMISION': 0.0, 'VENTA_VEHICULO': 0.0, 'INDEMNIZACION': 0.0, 'OTRO': 0.0}
     for c in conceptos_raw:
-        totales[c['clave']] += c['importe']
+        if c['clave'] in totales:
+            totales[c['clave']] += c['importe']
+        else:
+            totales['OTRO'] += c['importe']
 
     periodo = fecha[:7] if fecha else ''
 
