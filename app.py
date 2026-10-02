@@ -3236,41 +3236,40 @@ def _render_conciliacion():
                 key="carga_sobrescribir",
             )
 
-        st.subheader("Metodo 1 — Carpeta en este equipo (recomendado)")
+        st.subheader("Método 1 — Carga rápida por carpeta en este equipo")
         st.caption(
-            "Pega la ruta completa de la carpeta (ej. C:/CFDI/2024). "
-            "Un solo boton busca y procesa. Si no ves mensajes, revisa el panel de estado abajo."
+            "Ingresa la ruta completa de la carpeta donde tienes tus archivos XML (por ejemplo: `C:\\Users\\cynti\\Downloads\\tre\\XML_Exportados_24-09-2026 12-46-34`)."
         )
-        ruta_carpeta = st.text_input(
-            "Ruta de la carpeta con XML",
-            value=st.session_state.get("carga_ruta_carpeta", ""),
-            placeholder="C:/Users/TuUsuario/Documents/CFDI/2024",
-            key="carga_ruta_carpeta_input",
-        )
+        col_r_in, col_r_btn = st.columns([3, 1])
+        with col_r_in:
+            ruta_carpeta = st.text_input(
+                "Ruta de la carpeta con XML",
+                value=st.session_state.get("carga_ruta_carpeta", "C:\\Users\\cynti\\Downloads\\tre\\XML_Exportados_24-09-2026 12-46-34"),
+                placeholder="C:/Users/TuUsuario/Downloads/XML",
+                key="carga_ruta_carpeta_input",
+                label_visibility="collapsed"
+            )
+        with col_r_btn:
+            _do_ruta = st.button("🚀 Escanear y Procesar", type="primary", key="btn_proc_ruta", use_container_width=True)
+
         incluir_sub = st.checkbox("Incluir subcarpetas", value=True, key="carga_incluir_sub")
 
-        # Bandeja fija de la app (siempre funciona si copias XML ahi)
         _inbox = os.path.join(DATA_DIR, "inbox_cfdi")
         try:
             os.makedirs(_inbox, exist_ok=True)
         except Exception:
             pass
-        st.caption(f"Opcional: copia tus XML a esta carpeta y procesala: `{_inbox}`")
-
-        col_p1, col_p2 = st.columns(2)
-        with col_p1:
-            _do_ruta = st.button("Procesar carpeta de la ruta", type="primary", key="btn_proc_ruta")
-        with col_p2:
-            _do_inbox = st.button("Procesar bandeja inbox_cfdi", key="btn_proc_inbox")
+        st.caption(f"📁 Bandeja fija alternativa: `{_inbox}`")
+        _do_inbox = st.button("Procesar bandeja inbox_cfdi", key="btn_proc_inbox")
 
         def _escanear_xml(ruta: str, sub: bool):
             hallados, errores = [], []
             ruta = (ruta or "").strip().strip('"').strip("'")
             if not ruta:
-                errores.append("Ruta vacia.")
+                errores.append("Ruta vacía.")
                 return hallados, errores
             if not os.path.isdir(ruta):
-                errores.append(f"No existe o no es carpeta: {ruta}")
+                errores.append(f"No existe la carpeta especificada: {ruta}")
                 return hallados, errores
             try:
                 if sub:
@@ -3287,7 +3286,7 @@ def _render_conciliacion():
             except Exception as e:
                 errores.append(f"Error al leer carpeta: {e}")
             if not hallados and not errores:
-                errores.append(f"La carpeta no tiene archivos .xml: {ruta}")
+                errores.append(f"La carpeta no contiene archivos .xml: {ruta}")
             return hallados, errores
 
         def _procesar_lista_paths(paths, periodo_ref, sobrescribir):
@@ -3304,22 +3303,22 @@ def _render_conciliacion():
             usos_alias = {}
             for i, fp in enumerate(paths):
                 nombre = os.path.basename(fp)
-                barra.progress((i + 1) / total, text=f"{i+1}/{total} {nombre}")
-                log.info(f"Procesando: {fp}")
+                barra.progress((i + 1) / total, text=f"Procesando {i+1}/{total}: {nombre}")
+                log.caption(f"⚙️ Analizando: `{nombre}`")
                 try:
                     with open(fp, "rb") as fh:
                         raw = fh.read()
                     if not raw:
-                        errores_parse.append(f"**{nombre}**: vacio")
+                        errores_parse.append(f"**{nombre}**: archivo vacío (0 bytes)")
                         continue
                     if len(raw) > MAX_XML_BYTES:
-                        errores_parse.append(f"**{nombre}**: demasiado grande")
+                        errores_parse.append(f"**{nombre}**: demasiado grande (supera 10MB)")
                         continue
                     fact = parse_cfdi(raw, reglas)
                     if not fact.get("periodo"):
                         fact["periodo"] = periodo_ref.strftime("%Y-%m")
                     if fact.get("uuid") and fact["uuid"] in uuids_en_lote:
-                        errores_parse.append(f"**{nombre}**: UUID duplicado en lote")
+                        errores_parse.append(f"**{nombre}**: UUID duplicado en el mismo lote")
                         continue
                     if fact.get("uuid"):
                         uuids_en_lote[fact["uuid"]] = nombre
@@ -3335,23 +3334,25 @@ def _render_conciliacion():
                     resultados.append(merged)
                 except Exception as e:
                     errores_parse.append(f"**{nombre}**: {e}")
-            barra.progress(1.0, text=f"Listo {total}/{total}")
+            barra.progress(1.0, text=f"¡Completado! {total}/{total}")
             log.empty()
             try:
                 marcar_alias_usado_lote(usos_alias)
             except Exception:
                 pass
-            msg = f"Procesados {len(resultados)} de {total}. Errores: {len(errores_parse)}."
+            msg = f"Se procesaron con éxito **{len(resultados)}** factura(s) de **{total}** analizadas."
             if resultados:
                 try:
                     omitidas = guardar_facturas_batch(resultados, sobrescribir_existentes=sobrescribir)
                     registrar_corrida_conciliacion(
                         periodo_ref.strftime("%Y-%m"), resultados, omitidas=len(omitidas)
                     )
-                    msg += f" Omitidas (ya existian): {len(omitidas)}."
+                    if omitidas:
+                        msg += f" Omitidas ({len(omitidas)} ya existían en BD)."
                     st.session_state["conciliacion_omitidas"] = omitidas
+                    st.session_state["_refresh"] = True
                 except Exception as e:
-                    msg += f" Error al guardar: {e}"
+                    msg += f" Error al guardar en base de datos: {e}"
                     errores_parse.append(f"Guardado: {e}")
             st.session_state["conciliacion_resultados"] = resultados if resultados else None
             st.session_state["conciliacion_errores_parse"] = errores_parse
@@ -3362,57 +3363,50 @@ def _render_conciliacion():
         if _do_ruta or _do_inbox:
             _ruta_usar = _inbox if _do_inbox else (ruta_carpeta or "").strip().strip('"').strip("'")
             st.session_state["carga_ruta_carpeta"] = _ruta_usar
-            with st.status("Buscando y procesando XML…", expanded=True) as _st_status:
+            with st.status("🔍 Buscando y procesando XML...", expanded=True) as _st_status:
                 st.write(f"Carpeta: `{_ruta_usar}`")
                 _paths, _err_e = _escanear_xml(_ruta_usar, incluir_sub if not _do_inbox else True)
                 for e in _err_e:
                     st.write(e)
-                st.write(f"Archivos encontrados: {len(_paths)}")
+                st.write(f"Archivos XML encontrados: **{len(_paths)}**")
                 if _paths:
                     _res, _errp, _msg = _procesar_lista_paths(_paths, periodo_ref, sobrescribir)
                     st.write(_msg)
                     if _errp:
-                        st.write(f"Detalle errores ({len(_errp)}):")
-                        for e in _errp[:30]:
-                            st.write(e)
-                    _st_status.update(label="Carga terminada", state="complete")
+                        with st.expander(f"Detalle de observaciones ({len(_errp)})", expanded=True):
+                            for e in _errp[:50]:
+                                st.write(e)
+                    _st_status.update(label="✅ Carga y Conciliación Completada", state="complete")
                 else:
                     st.write("No hay XML para procesar.")
-                    st.session_state["carga_ultimo_msg"] = "No se encontro ningun XML en la carpeta."
+                    st.session_state["carga_ultimo_msg"] = "No se encontró ningún XML en la carpeta."
                     st.session_state["conciliacion_errores_parse"] = _err_e
-                    _st_status.update(label="Sin archivos", state="error")
+                    _st_status.update(label="Sin archivos XML", state="error")
 
-        # Panel de estado SIEMPRE visible (aunque no hayas pulsado el boton ahora)
-        st.markdown("##### Estado de la ultima carga")
+        # Panel de estado SIEMPRE visible
+        st.markdown("##### 📊 Estado del Último Procesamiento")
         _umsg = st.session_state.get("carga_ultimo_msg")
         if _umsg:
             st.success(_umsg)
         else:
-            st.info("Aun no has procesado ninguna carpeta en esta sesion.")
+            st.info("Aún no has procesado ninguna carpeta o lote en esta sesión.")
         _uerr = st.session_state.get("conciliacion_errores_parse") or []
         if _uerr:
-            with st.expander(f"Errores de la ultima carga ({len(_uerr)})", expanded=True):
+            with st.expander(f"Errores u observaciones ({len(_uerr)})", expanded=True):
                 for e in _uerr[:50]:
                     st.markdown(str(e))
-        _ures = st.session_state.get("conciliacion_resultados")
-        if _ures:
-            st.caption(f"Ultimo lote en memoria: {len(_ures)} facturas — periodo {st.session_state.get('conciliacion_periodo_lote', '')}")
 
         st.markdown("---")
-        st.subheader("Metodo 2 — Subir archivos con el navegador")
-        st.caption(
-            "Si este metodo no muestra nada al elegir archivos, usa el Metodo 1. "
-            "En algunos equipos (HTTPS local o app de escritorio) el uploader falla sin mensaje."
-        )
+        st.subheader("Método 2 — Subir archivos directamente con el navegador")
+        st.caption("Arrastra tus archivos `.xml` o un archivo `.zip` con todos los XML aquí. **El sistema procesa automáticamente al soltar los archivos.**")
         archivos = st.file_uploader(
-            "XML, ZIP con XML, o Excel",
+            "Selecciona o arrastra tus XML o ZIP aquí",
             type=["xml", "zip", "xlsx", "csv"],
             accept_multiple_files=True,
             key="carga_cfdi_uploader",
         )
 
         def _expandir_archivos_subidos(lista):
-            """Convierte ZIP en lista de (nombre, bytes). XML/Excel se leen tal cual."""
             import zipfile
             out = []
             errores = []
@@ -3432,21 +3426,22 @@ def _render_conciliacion():
                                 xml_names = [n for n in zf.namelist()
                                              if n.lower().endswith(".xml") and not n.startswith("__MACOSX")]
                                 if not xml_names:
-                                    errores.append(f"{name}: el ZIP no contiene ningún .xml")
+                                    errores.append(f"{name}: el ZIP no contiene ningún archivo .xml")
                                     continue
                                 for n in xml_names:
                                     out.append((os.path.basename(n.replace("\\", "/")) or n, zf.read(n)))
                         except zipfile.BadZipFile:
-                            errores.append(f"{name}: ZIP dañado o no es un ZIP válido.")
+                            errores.append(f"{name}: archivo ZIP dañado o inválido.")
                     elif name_l.endswith(".xml"):
                         out.append((name, raw))
                     elif name_l.endswith((".xlsx", ".csv")):
                         out.append((name, raw))
                     else:
-                        errores.append(f"{name}: extensión no soportada (usa .xml, .zip, .xlsx o .csv).")
+                        errores.append(f"{name}: extensión no soportada.")
                 except Exception as e:
-                    errores.append(f"{name}: no se pudo leer ({e})")
+                    errores.append(f"{name}: error al leer ({e})")
             return out, errores
+
 
         if not archivos:
             st.info("Sube XML (o un ZIP con XML) para comenzar. Si el botón de archivos no responde, prueba con un ZIP o con menos archivos por lote.")
