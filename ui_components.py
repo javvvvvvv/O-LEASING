@@ -62,10 +62,8 @@ def inyectar_componentes_css(theme_name: Optional[str] = None) -> None:
     CardContainer y FormInput sincronizadas con el tema activo.
     """
     if theme_name:
-        try:
-            cfg = theme.get_current_theme(theme_name)
-        except TypeError:
-            cfg = getattr(theme, "THEMES", {}).get(theme.normalizar_nombre_tema(theme_name), getattr(theme, "DARK_CONFIG", {}))
+        nombre = getattr(theme, "normalizar_nombre_tema", lambda x: "Dark")(theme_name)
+        cfg = getattr(theme, "THEMES", {}).get(nombre, getattr(theme, "DARK_CONFIG", {}))
     else:
         cfg = theme.get_current_theme()
     accent = cfg.get("Accent", "#FF6B35")
