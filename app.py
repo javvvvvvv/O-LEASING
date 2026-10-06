@@ -323,8 +323,10 @@ CMAP_CORAL  = LinearSegmentedColormap.from_list("ledger_coral",  ["#161B2200", "
 CMAP_TEAL   = LinearSegmentedColormap.from_list("ledger_teal",   ["#161B2200", "#23863666", "#238636"])
 
 import theme
+from ui.layout import inyectar_layout_css, render_topbar, render_sidebar_navigation
 theme.inicializar_tema(default="Dark")
 theme.inyectar_css()
+inyectar_layout_css()
 
 # ============================================================================
 # BIENVENIDA (video de arranque) Y LOGIN — pantallas independientes
@@ -7106,30 +7108,14 @@ for _qi, (_label, _target, _grupo_t, _tip) in enumerate(_QUICKNAV):
         st.session_state['menu_grupo'] = _grupo_t
         st.rerun()
 
-st.sidebar.markdown('<div class="nav-hint">MENÚ · toca una sección para ver sus páginas</div>', unsafe_allow_html=True)
-
-for grupo, items in GRUPOS.items():
-    abierto = (st.session_state['menu_grupo'] == grupo)
-    if st.sidebar.button(
-        grupo,
-        key=f"grp_{grupo}",
-        width='stretch',
-        type="primary" if abierto else "secondary",
-        help=DESCRIPCIONES_GRUPO.get(grupo, "")
-    ):
-        st.session_state['menu_grupo'] = grupo
-        st.session_state['menu_item']  = items[0]
-        st.session_state['_refresh'] = True
-    if abierto:
-        for item in items:
-            activo = (st.session_state['menu_item'] == item)
-            if st.sidebar.button(item, key=f"item_{item}", width='stretch',
-                                 type="primary" if activo else "secondary",
-                                 help=DESCRIPCIONES.get(item, "")):
-                st.session_state['menu_item'] = item
-                st.session_state['_refresh'] = True
-
-menu = st.session_state['menu_item']
+menu, _grupo_sel = render_sidebar_navigation(
+    grupos=GRUPOS,
+    menu_actual=st.session_state['menu_item'],
+    grupo_actual=st.session_state['menu_grupo'],
+    pantallas_permitidas=_pantallas_usr if ROL_ACTUAL not in ("admin", "super_usuario") else None,
+    descripciones=DESCRIPCIONES,
+    descripciones_grupo=DESCRIPCIONES_GRUPO
+)
 
 # Si el usuario no tiene permiso a la pantalla actual, redirigir a la primera permitida
 if ROL_ACTUAL not in ("admin", "super_usuario") and _pantallas_usr is not None:
@@ -7231,31 +7217,15 @@ elif _LOGO_WORDMARK_B64:
     _thb_logo_html = f'<img src="data:image/svg+xml;base64,{_LOGO_WORDMARK_B64}" alt="O-Leasing">'
 else:
     _thb_logo_html = '<div class="thb-seal">O</div>'
-st.markdown(f"""
-<div class="top-header-bar">
-  <div class="thb-brand">
-    {_thb_logo_html}
-    <span class="thb-empresa"><span class="thb-tag">Empresa activa</span>{nombre_empresa}</span>
-  </div>
-</div>
-""", unsafe_allow_html=True)
-
-st.markdown(f"""
-<div class="nav-breadcrumb-card">
-  <div>
-    <div style="font-size:.68rem;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.7px;">
-      {_grupo_nombre} {'›' if _grupo_nombre else ''} <span style="color:var(--brand);">{menu}</span>
-    </div>
-    {f'<div style="font-size:.85rem;color:var(--text-secondary);margin-top:3px;">{_desc_actual}</div>' if _desc_actual else ''}
-  </div>
-  <div title="Todos los cálculos, gráficas y proyecciones de esta pantalla toman esta fecha como 'hoy'.{' Estás viendo un cierre pasado, no el día de hoy.' if viendo_fecha_pasada() else ''}"
-       style="background:{'#96660C' if viendo_fecha_pasada() else 'var(--brand)'};
-              color:#fff;font-size:.72rem;font-weight:700;
-              padding:.3rem .8rem;border-radius:4px;white-space:nowrap;">
-    {'Viendo cierre al' if viendo_fecha_pasada() else 'Cálculos al'} {_hoy_ref_txt}
-  </div>
-</div>
-""", unsafe_allow_html=True)
+render_topbar(
+    empresa_nombre=nombre_empresa,
+    menu_actual=menu,
+    grupo_actual=_grupo_nombre or _grupo_actual,
+    descripcion=_desc_actual,
+    fecha_texto=_hoy_ref_txt,
+    viendo_pasada=viendo_fecha_pasada(),
+    logo_html=_thb_logo_html
+)
 
 # --- BÚSQUEDA GLOBAL / COMMAND CENTER ---
 with st.expander("Búsqueda Global — Buscar Contratos, Clientes, Series o Facturas", expanded=st.session_state.get("_open_search", False)):

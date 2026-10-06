@@ -402,9 +402,10 @@ def generar_css(theme_name: Optional[str] = None) -> str:
 }}
 
 .main .block-container {{
-  padding: 2rem !important;
+  padding: 24px !important;
   max-width: 1440px !important;
   overflow-x: hidden !important;
+  transition: padding 300ms ease-in-out, background-color var(--ease-std) !important;
 }}
 
 /* Tipografia */
@@ -432,12 +433,21 @@ a:hover {{ text-decoration: underline; }}
   color: var(--text-secondary) !important;
 }}
 
-/* Sidebar y Top-Bar */
+/* Sidebar moderno, altura completa, bordes redondeados y transicion 300ms ease-in-out */
 [data-testid="stSidebar"] {{
   background: var(--sidebar-bg) !important;
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
   border-right: 1px solid var(--border) !important;
+  height: 100vh !important;
+  border-top-right-radius: 16px !important;
+  border-bottom-right-radius: 16px !important;
+  box-shadow: 4px 0 20px rgba(0, 0, 0, 0.08) !important;
+  transition: all 300ms ease-in-out !important;
+}}
+[data-testid="stSidebarCollapseButton"] button,
+button[kind="header"] {{
+  transition: all 300ms ease-in-out !important;
 }}
 [data-testid="stSidebar"] p, [data-testid="stSidebar"] span, [data-testid="stSidebar"] label {{
   color: var(--text-primary);
