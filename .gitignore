@@ -7,6 +7,12 @@
 *.db
 *.db-journal
 *.bak
+*.bak*
+scratch/
+patch_upload.py
+test_form.py
+test_full_flow.py
+test_render.py
 data/
 respaldos_auto/
 */respaldos_auto/

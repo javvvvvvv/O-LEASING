@@ -37,6 +37,18 @@ def resolver_numero_contrato(id_contrato_detectado, alias_map: dict):
     """
     if not id_contrato_detectado:
         return id_contrato_detectado, False
+    if ',' in id_contrato_detectado:
+        partes = [p.strip() for p in id_contrato_detectado.split(',') if p.strip()]
+        nuevas_partes = []
+        se_aplico_alguno = False
+        for p in partes:
+            real = alias_map.get(p)
+            if real and real != p:
+                nuevas_partes.append(real)
+                se_aplico_alguno = True
+            else:
+                nuevas_partes.append(p)
+        return ', '.join(nuevas_partes), se_aplico_alguno
     real = alias_map.get(id_contrato_detectado)
     if real and real != id_contrato_detectado:
         return real, True

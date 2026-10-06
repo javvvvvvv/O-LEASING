@@ -33,7 +33,7 @@
 import streamlit as st
 from ui.components import sfig, explain, estado_vacio, sz, titled_chart, titled_table
 import pandas as pd
-from core.cfdi import clasificar_concepto
+from core.cfdi import clasificar_concepto, normalizar_contrato, normalizar_folio, _PAT_CONTRATO, _PAT_MES
 from core.cotizador import simular_cotizacion, generar_pdf_cotizacion
 from reports.cierre_mensual_pdf import generar_pdf_cierre_mensual
 import numpy as np
@@ -61,6 +61,7 @@ from models.auth import (
     get_auth_db_path, init_auth_db, hay_usuarios, crear_usuario,
     verificar_login, listar_usuarios, cambiar_estado_usuario,
     cambiar_rol_usuario, resetear_password, ROLES, ROL_LABELS,
+    crear_sesion, validar_sesion, cerrar_sesion,
 )
 
 def _asegurar_tabla_pantallas(db_path):
@@ -399,6 +400,17 @@ def _video_duracion_segundos(ruta: str) -> float:
         return _SPLASH_DURACION_DEFAULT
 
 
+# Validar sesion persistente si existe token en query params
+if not st.session_state.get('auth_user'):
+    _token_persistente = st.query_params.get('st_auth')
+    if _token_persistente:
+        try:
+            _usr_recuperado = validar_sesion(AUTH_DB, _token_persistente)
+            if _usr_recuperado:
+                st.session_state['auth_user'] = _usr_recuperado
+        except Exception:
+            pass
+
 # Bienvenida y login: el video se reproduce desenfocado en el fondo
 if not st.session_state.get('auth_user'):
     st.markdown(
@@ -524,6 +536,11 @@ if not st.session_state.get('auth_user'):
                             _user = verificar_login(AUTH_DB, _lu, _lp)
                             if _user:
                                 st.session_state['auth_user'] = _user
+                                try:
+                                    _tok_ses = crear_sesion(AUTH_DB, _user['id'], dias=30)
+                                    st.query_params['st_auth'] = _tok_ses
+                                except Exception:
+                                    pass
                                 st.rerun()
                             else:
                                 st.error('Usuario o contraseña incorrectos.')
@@ -1431,9 +1448,9 @@ def _obtener_cached(db_path, estatus, _version):
     if estatus: q+=" WHERE Estatus=?"; p.append(estatus)
     df=pd.read_sql_query(q,conn,params=p)
     if not df.empty:
-        df['Fecha_Alta']=pd.to_datetime(df['Fecha_Alta'])
-        df['Fecha_Vencimiento']=pd.to_datetime(df['Fecha_Vencimiento'])
-        df['Fecha_Baja']=pd.to_datetime(df['Fecha_Baja'],errors='coerce')
+        df['Fecha_Alta']=pd.to_datetime(df['Fecha_Alta'], format='mixed', errors='coerce')
+        df['Fecha_Vencimiento']=pd.to_datetime(df['Fecha_Vencimiento'], format='mixed', errors='coerce')
+        df['Fecha_Baja']=pd.to_datetime(df['Fecha_Baja'], format='mixed', errors='coerce')
         for col,val in [('residual_transferred',0),('Nivel_Morosidad',0),('VP_Residual',0.0)]:
             df[col]=df[col].fillna(val) if col in df.columns else val
         for col in ['Tipo_Baja','Motivo_Baja']:
@@ -2205,7 +2222,7 @@ def gen_contpaqi():
 # probado con pytest en test_cfdi.py). Aquí solo queda lo que sí depende de
 # la app: resolver las reglas configurables desde la BD de la empresa activa.
 from core.cfdi import (
-    parse_cfdi, clasificar_concepto, normalizar_contrato,
+    parse_cfdi, parse_sat_excel, clasificar_concepto, normalizar_contrato, normalizar_folio,
     REGLAS_CONCEPTO_DEFAULT, MAX_XML_BYTES, NS,
 )
 from core.alias import resolver_numero_contrato, decidir_accion_alias, sugerir_contrato_similar
@@ -2440,6 +2457,259 @@ def asignar_contrato_manual(uuid: str, contrato_real: str, numero_detectado: str
         registrar_alias_contrato(numero_detectado, contrato_real)
     return re_conciliar_factura(uuid)
 
+def obtener_resumen_contratos_no_vigentes(fecha_corte='2025-12'):
+    """
+    Obtiene el listado agrupado de contratos detectados en facturas que no están
+    registrados en la tabla contratos, junto con sus clientes del SAT, fechas y montos.
+    """
+    conn = get_db()
+    query = """
+        WITH agrupados AS (
+            SELECT 
+                COALESCE(NULLIF(f.id_contrato_detectado, ''), NULLIF(f.id_contrato, '')) as num_contrato,
+                MAX(f.rfc_receptor) as rfc_receptor,
+                COUNT(*) as cant_facturas,
+                MIN(f.periodo) as min_periodo,
+                MAX(f.periodo) as max_periodo,
+                SUM(f.total) as total_monto,
+                AVG(CASE WHEN f.tipo = 'MENSUAL' THEN f.subtotal ELSE NULL END) as renta_promedio,
+                MAX(CASE WHEN f.periodo >= ? THEN 1 ELSE 0 END) as tiene_recientes
+            FROM facturas f
+            WHERE (f.id_contrato IS NULL OR TRIM(SUBSTR(f.id_contrato, 1, INSTR(f.id_contrato || ',', ',') - 1)) NOT IN (SELECT ID_Contrato FROM contratos))
+              AND f.estatus IN ('SIN_CONTRATO', 'DISCREPANCIA')
+              AND (f.cancelada IS NULL OR f.cancelada = 0)
+              AND COALESCE(NULLIF(f.id_contrato_detectado, ''), NULLIF(f.id_contrato, '')) IS NOT NULL
+            GROUP BY num_contrato
+        )
+        SELECT 
+            a.num_contrato,
+            a.rfc_receptor,
+            COALESCE(c.nombre, a.rfc_receptor, 'CLIENTE DESCONOCIDO') as cliente_nombre,
+            a.cant_facturas,
+            a.min_periodo,
+            a.max_periodo,
+            a.total_monto,
+            a.renta_promedio,
+            a.tiene_recientes
+        FROM agrupados a
+        LEFT JOIN clientes_sat c ON a.rfc_receptor = c.rfc
+        ORDER BY a.cant_facturas DESC
+    """
+    return pd.read_sql_query(query, conn, params=[fecha_corte])
+
+def archivar_contratos_historicos_lote(contratos_ids=None, fecha_corte='2025-12', marcar_conciliado=True):
+    """
+    Registra contratos concluidos en la tabla `contratos` con estatus 'BAJA' (Liquidado)
+    y concilia sus facturas históricas para eliminar falsos negativos manteniendo
+    la integridad de los reportes por cliente y contrato.
+    """
+    conn = get_db()
+    clausula_contratos = ""
+    params = []
+    if contratos_ids:
+        placeholders = ','.join(['?'] * len(contratos_ids))
+        clausula_contratos = f"AND COALESCE(NULLIF(f.id_contrato_detectado, ''), NULLIF(f.id_contrato, '')) IN ({placeholders})"
+        params.extend(contratos_ids)
+    elif fecha_corte:
+        clausula_contratos = "AND f.periodo < ?"
+        params.append(fecha_corte)
+        
+    query = f"""
+        WITH agrupados AS (
+            SELECT 
+                COALESCE(NULLIF(f.id_contrato_detectado, ''), NULLIF(f.id_contrato, '')) as num_contrato,
+                MAX(f.rfc_receptor) as rfc_receptor,
+                COUNT(*) as cant_facturas,
+                MIN(f.periodo) as min_periodo,
+                MAX(f.periodo) as max_periodo,
+                SUM(f.total) as total_monto,
+                AVG(CASE WHEN f.tipo = 'MENSUAL' THEN f.subtotal ELSE 0 END) as renta_promedio
+            FROM facturas f
+            WHERE (f.id_contrato IS NULL OR TRIM(SUBSTR(f.id_contrato, 1, INSTR(f.id_contrato || ',', ',') - 1)) NOT IN (SELECT ID_Contrato FROM contratos))
+              AND f.estatus IN ('SIN_CONTRATO', 'DISCREPANCIA')
+              AND COALESCE(NULLIF(f.id_contrato_detectado, ''), NULLIF(f.id_contrato, '')) IS NOT NULL
+              {clausula_contratos}
+            GROUP BY num_contrato
+        )
+        SELECT 
+            a.*,
+            COALESCE(c.nombre, a.rfc_receptor, 'CLIENTE NO IDENTIFICADO') as cliente_nombre
+        FROM agrupados a
+        LEFT JOIN clientes_sat c ON a.rfc_receptor = c.rfc
+    """
+    filas = conn.execute(query, params).fetchall()
+    if not filas:
+        return 0, 0
+        
+    contratos_creados = 0
+    facturas_actualizadas = 0
+    c_procesados = []
+    
+    for r in filas:
+        num_c = r['num_contrato']
+        c_procesados.append(num_c)
+        cliente = r['cliente_nombre']
+        min_p = (r['min_periodo'] or '2022-01') + '-01T00:00:00'
+        max_p = (r['max_periodo'] or '2025-11') + '-28T00:00:00'
+        renta = round(float(r['renta_promedio'] or 0.0), 2)
+        plazo = int(r['cant_facturas'] or 1)
+        valor_estimado = round(renta * plazo, 2)
+        
+        existe = conn.execute("SELECT 1 FROM contratos WHERE ID_Contrato=?", (num_c,)).fetchone()
+        if not existe:
+            conn.execute("""
+                INSERT INTO contratos (
+                    ID_Contrato, Cliente, Vehiculo, Fecha_Alta, Fecha_Vencimiento, Fecha_Baja,
+                    Valor_Sin_IVA, Mensualidad_Sin_IVA, Plazo, Comision_Apertura_Pct, Comision_Monto,
+                    Anticipo_Pct, Anticipo_Monto, Residual_Pct, Residual_Monto, Tasa_Calculada,
+                    Estatus, Tipo_Baja, Motivo_Baja, Anotaciones
+                ) VALUES (
+                    ?, ?, 'Arrendamiento Concluido', ?, ?, ?,
+                    ?, ?, ?, 0.0, 0.0,
+                    0.0, 0.0, 0.0, 0.0, 0.0,
+                    'BAJA', 'NATURAL', 'Contrato liquidado previo a Dic 2025 (Histórico)',
+                    'Contrato archivado automáticamente a partir del repositorio fiscal histórico.'
+                )
+            """, (num_c, cliente, min_p, max_p, max_p, valor_estimado, renta, plazo))
+            contratos_creados += 1
+
+    # Actualizar facturas en lotes
+    if c_procesados:
+        for i in range(0, len(c_procesados), 200):
+            batch = c_procesados[i:i+200]
+            ph = ','.join(['?'] * len(batch))
+            if marcar_conciliado:
+                q_up = f"""
+                    UPDATE facturas 
+                    SET id_contrato = COALESCE(NULLIF(id_contrato_detectado, ''), id_contrato),
+                        estatus = 'CONCILIADO',
+                        observaciones = 'Histórico liquidado (Pre-Dic 2025)',
+                        esperado = total,
+                        facturado = total,
+                        diferencia = 0.0
+                    WHERE COALESCE(NULLIF(id_contrato_detectado, ''), NULLIF(id_contrato, '')) IN ({ph})
+                      AND estatus = 'SIN_CONTRATO'
+                """
+                p_up = list(batch)
+                if fecha_corte and not contratos_ids:
+                    q_up += " AND periodo < ?"
+                    p_up.append(fecha_corte)
+                res_up = conn.execute(q_up, p_up)
+                facturas_actualizadas += res_up.rowcount
+            else:
+                q_up = f"""
+                    UPDATE facturas 
+                    SET id_contrato = COALESCE(NULLIF(id_contrato_detectado, ''), id_contrato)
+                    WHERE COALESCE(NULLIF(id_contrato_detectado, ''), NULLIF(id_contrato, '')) IN ({ph})
+                      AND estatus = 'SIN_CONTRATO'
+                """
+                p_up = list(batch)
+                if fecha_corte and not contratos_ids:
+                    q_up += " AND periodo < ?"
+                    p_up.append(fecha_corte)
+                res_up = conn.execute(q_up, p_up)
+                facturas_actualizadas += res_up.rowcount
+
+    conn.commit()
+    _tocar_datos()
+    return contratos_creados, facturas_actualizadas
+
+def marcar_facturas_historicas_no_aplica(contratos_ids=None, fecha_corte='2025-12'):
+    """
+    Marca facturas de contratos no vigentes como NO_APLICA para limpiar alertas
+    sin crear registros de contratos, conservando la descripción del concepto del CFDI.
+    """
+    conn = get_db()
+    if contratos_ids:
+        placeholders = ','.join(['?'] * len(contratos_ids))
+        q = f"""
+            UPDATE facturas 
+            SET estatus = 'NO_APLICA',
+                observaciones = COALESCE(
+                    (SELECT 'No Aplica Leasing | Concepto: ' || GROUP_CONCAT(fc.descripcion, ' | ') FROM factura_conceptos fc WHERE fc.uuid = facturas.uuid),
+                    'No Aplica Leasing | Histórico no vigente (Pre-Dic 2025)'
+                )
+            WHERE estatus IN ('SIN_CONTRATO', 'DISCREPANCIA')
+              AND COALESCE(NULLIF(id_contrato_detectado, ''), NULLIF(id_contrato, '')) IN ({placeholders})
+        """
+        params = list(contratos_ids)
+    else:
+        q = """
+            UPDATE facturas 
+            SET estatus = 'NO_APLICA',
+                observaciones = COALESCE(
+                    (SELECT 'No Aplica Leasing | Concepto: ' || GROUP_CONCAT(fc.descripcion, ' | ') FROM factura_conceptos fc WHERE fc.uuid = facturas.uuid),
+                    'No Aplica Leasing | Histórico no vigente (Pre-Dic 2025)'
+                )
+            WHERE estatus IN ('SIN_CONTRATO', 'DISCREPANCIA')
+              AND periodo < ?
+        """
+        params = [fecha_corte]
+        
+    res = conn.execute(q, params)
+    n = res.rowcount
+    conn.commit()
+    _tocar_datos()
+    return n
+
+def borrar_facturas_lote(contratos_ids=None, fecha_corte='2025-12'):
+    """
+    Borra físicamente facturas y conceptos de contratos no vigentes.
+    """
+    conn = get_db()
+    if contratos_ids:
+        placeholders = ','.join(['?'] * len(contratos_ids))
+        filas = conn.execute(f"""
+            SELECT uuid FROM facturas 
+            WHERE COALESCE(NULLIF(id_contrato_detectado, ''), NULLIF(id_contrato, '')) IN ({placeholders})
+        """, list(contratos_ids)).fetchall()
+    else:
+        filas = conn.execute("""
+            SELECT uuid FROM facturas 
+            WHERE estatus IN ('SIN_CONTRATO', 'DISCREPANCIA')
+              AND periodo < ?
+              AND (id_contrato IS NULL OR TRIM(SUBSTR(id_contrato, 1, INSTR(id_contrato || ',', ',') - 1)) NOT IN (SELECT ID_Contrato FROM contratos))
+        """, [fecha_corte]).fetchall()
+        
+    if not filas:
+        return 0
+    uuids = [f['uuid'] for f in filas]
+    
+    for i in range(0, len(uuids), 500):
+        lote = uuids[i:i+500]
+        ph = ','.join(['?'] * len(lote))
+        conn.execute(f"DELETE FROM factura_conceptos WHERE uuid IN ({ph})", lote)
+        conn.execute(f"DELETE FROM facturas WHERE uuid IN ({ph})", lote)
+    conn.commit()
+    _tocar_datos()
+    return len(uuids)
+
+def reasignar_facturas_contrato_lote(id_origen: str, id_destino: str, guardar_alias: bool = True):
+    """
+    Reasigna en lote todas las facturas de un contrato origen a un contrato destino,
+    guardando opcionalmente la regla de alias y re-conciliando las facturas.
+    """
+    conn = get_db()
+    filas = conn.execute("""
+        SELECT uuid FROM facturas 
+        WHERE COALESCE(NULLIF(id_contrato_detectado, ''), NULLIF(id_contrato, '')) = ?
+    """, (id_origen,)).fetchall()
+    
+    if not filas:
+        return 0
+        
+    for f in filas:
+        u = f['uuid']
+        conn.execute("UPDATE facturas SET id_contrato=? WHERE uuid=?", (id_destino, u))
+        re_conciliar_factura(u)
+        
+    if guardar_alias and id_origen != id_destino:
+        registrar_alias_contrato(id_origen, id_destino)
+        
+    conn.commit()
+    _tocar_datos()
+    return len(filas)
+
 
 # ---------------------------------------------------------------------
 # Comparación contra analíticas contables (Excel del contador)
@@ -2673,6 +2943,35 @@ def _res(status, msg, esperado=0.0, facturado=0.0, dif=0.0, detalle=None, **extr
     r.update(extra)
     return r
 
+def _extraer_concepto_descriptivo(fact: dict) -> str:
+    """Extrae las descripciones reales de los conceptos de la factura para
+    mostrarlas en la columna de concepto y en observaciones cuando es NO_APLICA."""
+    descs = []
+    c_raw = fact.get('conceptos_raw') or []
+    if isinstance(c_raw, list):
+        for c in c_raw:
+            if isinstance(c, dict) and c.get('desc'):
+                d = re.sub(r'\s+', ' ', str(c['desc'])).strip()
+                if d and d not in descs:
+                    descs.append(d)
+    if not descs and fact.get('uuid'):
+        try:
+            conn = get_db()
+            rows_c = conn.execute(
+                "SELECT descripcion FROM factura_conceptos WHERE uuid=? ORDER BY id",
+                (fact['uuid'],)
+            ).fetchall()
+            for r in rows_c:
+                d = re.sub(r'\s+', ' ', str(r[0] or '')).strip()
+                if d and d not in descs:
+                    descs.append(d)
+        except Exception:
+            pass
+    if descs:
+        res = " | ".join(descs)
+        return res[:217] + "..." if len(res) > 220 else res
+    return "Servicios no relacionados con leasing"
+
 def _conciliar_factura_interna(fact: dict, _cache: dict | None = None) -> dict:
     """`_cache` es opcional: cuando se procesa un lote completo (ver
     conciliar_factura), guarda ahí el contrato y su tabla de amortización
@@ -2705,10 +3004,10 @@ def _conciliar_factura_interna(fact: dict, _cache: dict | None = None) -> dict:
     tipo_comp = (fact.get('tipo_comprobante') or 'I').upper()
     if tipo_comp != 'I':
         _nombres_comp = {'E': 'nota de crédito / egreso', 'N': 'nómina', 'T': 'traslado', 'P': 'complemento de pago'}
+        c_desc = _extraer_concepto_descriptivo(fact)
         return _res('NO_APLICA',
-                    f"Este CFDI es de tipo {_nombres_comp.get(tipo_comp, tipo_comp)}, no una factura de "
-                    f"ingreso — no se compara automáticamente contra la renta esperada.",
-                    esperado=0.0, facturado=fact.get('total', 0.0), dif=0.0, detalle=[])
+                    f"No Aplica Leasing ({_nombres_comp.get(tipo_comp, tipo_comp)}) | Concepto: {c_desc}",
+                    esperado=0.0, facturado=fact.get('total', 0.0), dif=0.0, detalle=[c_desc])
 
     # Blindaje: si el CFDI no está en pesos, comparar los montos tal cual
     # contra la renta (que sí está en MXN) daría una discrepancia falsa o,
@@ -2720,23 +3019,66 @@ def _conciliar_factura_interna(fact: dict, _cache: dict | None = None) -> dict:
                     f"directamente contra la renta pactada sin convertir primero. Revísalo a mano.",
                     esperado=0.0, facturado=fact.get('total', 0.0), dif=0.0, detalle=[])
 
-    id_c = fact.get('id_contrato')
-    if not id_c:
-        return _res('SIN_CONTRATO', 'No se pudo extraer el número de contrato del XML')
-
-    # Si la factura es de tipo OTRO, no se concilia
-    if fact.get('tipo') == 'OTRO':
-        return _res('NO_APLICA', 'Factura de servicios no relacionados con leasing (seguro, gestoría, etc.)',
-                    esperado=0.0, facturado=fact.get('total', 0.0), dif=0.0, detalle=[])
+    # Si la factura es de tipo OTRO o INDEMNIZACION, no requiere contrato de leasing
+    if fact.get('tipo') in ('OTRO', 'INDEMNIZACION'):
+        c_desc = _extraer_concepto_descriptivo(fact)
+        return _res('NO_APLICA', f"No Aplica Leasing | Concepto: {c_desc}",
+                    esperado=0.0, facturado=fact.get('total', 0.0), dif=0.0, detalle=[c_desc])
 
     conn = get_db()
-    con = _cache.get('contratos', {}).get(id_c)
-    if con is None:
-        row = conn.execute("SELECT * FROM contratos WHERE ID_Contrato=?", (id_c,)).fetchone()
-        if not row:
-            return _res('SIN_CONTRATO', f'Contrato {id_c} no encontrado en la base de datos')
-        con = dict(row)
-        _cache.setdefault('contratos', {})[id_c] = con
+    # Detección exhaustiva de contratos (soporta contratos individuales y multi-contrato)
+    contratos_detectados = list(fact.get('contratos_detectados') or [])
+    for c in (fact.get('conceptos_raw') or []):
+        if isinstance(c, dict) and c.get('desc'):
+            for m in _PAT_CONTRATO.findall(str(c['desc'])):
+                norm_c = normalizar_contrato(m[0], m[1])
+                if norm_c not in contratos_detectados:
+                    contratos_detectados.append(norm_c)
+    if fact.get('uuid'):
+        try:
+            rows_desc = conn.execute("SELECT descripcion FROM factura_conceptos WHERE uuid=?", (fact['uuid'],)).fetchall()
+            for rd in rows_desc:
+                for m in _PAT_CONTRATO.findall(str(rd[0] or '')):
+                    norm_c = normalizar_contrato(m[0], m[1])
+                    if norm_c not in contratos_detectados:
+                        contratos_detectados.append(norm_c)
+        except Exception:
+            pass
+    for raw_txt in [fact.get('id_contrato_detectado'), fact.get('id_contrato')]:
+        if raw_txt:
+            for m in _PAT_CONTRATO.findall(str(raw_txt)):
+                norm_c = normalizar_contrato(m[0], m[1])
+                if norm_c not in contratos_detectados:
+                    contratos_detectados.append(norm_c)
+
+    if not contratos_detectados:
+        return _res('SIN_CONTRATO', 'No se pudo extraer el número de contrato del XML')
+
+    contratos_validos = []
+    contratos_info = []
+    contratos_no_encontrados = []
+    for cid in contratos_detectados:
+        con_obj = _cache.get('contratos', {}).get(cid)
+        if con_obj is None:
+            row = conn.execute("SELECT * FROM contratos WHERE ID_Contrato=?", (cid,)).fetchone()
+            if row:
+                con_obj = dict(row)
+                _cache.setdefault('contratos', {})[cid] = con_obj
+        if con_obj:
+            contratos_validos.append(cid)
+            contratos_info.append(con_obj)
+        else:
+            contratos_no_encontrados.append(cid)
+
+    if not contratos_validos:
+        cids_faltantes = ', '.join(contratos_detectados)
+        return _res('SIN_CONTRATO', f'Contrato(s) {cids_faltantes} no encontrado(s) en la base de datos')
+
+    es_multi = len(contratos_validos) > 1
+    contratos_str = ', '.join(contratos_validos)
+    n_contratos = len(contratos_validos)
+    id_c = contratos_validos[0]
+    con = contratos_info[0]
 
     # Fecha de referencia de esta factura (para todas las validaciones de
     # vigencia de aquí en adelante): el período detectado del XML si se
@@ -2753,6 +3095,90 @@ def _conciliar_factura_interna(fact: dict, _cache: dict | None = None) -> dict:
             fecha_factura = pd.to_datetime(fact['fecha']).replace(day=1)
         except Exception:
             fecha_factura = None
+
+    conceptos = fact.get('conceptos') or {}
+
+    # =========================================================================
+    # LÓGICA ESPECIAL PARA FACTURAS MULTI-CONTRATO (CONSOLIDACIÓN DE RENTAS/APERTURAS)
+    # =========================================================================
+    if es_multi:
+        if fact.get('tipo') == 'MENSUAL':
+            renta_pura_fac = round(float(conceptos.get('RENTA') or 0.0), 2)
+            admin_fac      = round(float(conceptos.get('ADMIN') or 0.0), 2)
+            geoloc_fac     = round(float(conceptos.get('GEOLOC') or 0.0), 2)
+            renta_fac      = round(renta_pura_fac + admin_fac + geoloc_fac, 2)
+            
+            renta_total_esp = round(sum(float(c.get('Mensualidad_Sin_IVA') or 0.0) for c in contratos_info), 2)
+            dif = round(renta_fac - renta_total_esp, 2)
+            
+            errores = []
+            obs_lista = []
+            obs_multi = f"Factura multi-contrato ({n_contratos} contratos: {contratos_str})"
+            
+            if abs(dif) <= TOLERANCIA:
+                status = 'CONCILIADO'
+                obs_lista.append(f"{obs_multi} conciliada. Renta combinada esperada ${renta_total_esp:,.2f} coincide con lo facturado ${renta_fac:,.2f}.")
+            else:
+                status = 'DISCREPANCIA'
+                errores.append(f"{obs_multi}: esperado combinado ${renta_total_esp:,.2f}, facturado ${renta_fac:,.2f} (dif ${dif:+,.2f})")
+                
+            if contratos_no_encontrados:
+                obs_lista.append(f"Aviso: contrato(s) {', '.join(contratos_no_encontrados)} en el texto no existen en el sistema")
+                
+            todas_obs = errores + obs_lista
+            return _res(status, '; '.join(todas_obs) if todas_obs else 'OK',
+                        esperado=renta_total_esp, facturado=renta_fac, dif=dif, detalle=todas_obs,
+                        es_multi_contrato=True,
+                        contratos_considerados=contratos_validos,
+                        contratos_str=contratos_str,
+                        renta_esp=renta_total_esp, renta_fac=renta_fac, dif_renta=dif,
+                        renta_pura_fac=renta_pura_fac, admin_fac=admin_fac, geoloc_fac=geoloc_fac)
+
+        elif fact.get('tipo') == 'ANTICIPO':
+            tot_ant_esp = round(sum(float(c.get('Anticipo_Monto') or 0.0) for c in contratos_info), 2)
+            tot_com_esp = round(sum(float(c.get('Comision_Monto') or 0.0) for c in contratos_info), 2)
+            tot_apertura_esp = round(tot_ant_esp + tot_com_esp, 2)
+
+            ant_fac = round(float(conceptos.get('ANTICIPO') or 0.0), 2)
+            com_fac = round(float(conceptos.get('COMISION') or 0.0), 2)
+            tot_apertura_fac = round(ant_fac + com_fac, 2)
+            dif_apertura = round(tot_apertura_fac - tot_apertura_esp, 2)
+
+            renta_mes1_fac = round(float(conceptos.get('RENTA') or 0.0) + float(conceptos.get('ADMIN') or 0.0) + float(conceptos.get('GEOLOC') or 0.0), 2)
+            renta_mes1_esp = round(sum(float(c.get('Mensualidad_Sin_IVA') or 0.0) for c in contratos_info), 2) if renta_mes1_fac > 0 else 0.0
+            dif_r1 = round(renta_mes1_fac - renta_mes1_esp, 2) if renta_mes1_fac > 0 else 0.0
+
+            total_esp = round(tot_apertura_esp + renta_mes1_esp, 2)
+            total_fac = round(tot_apertura_fac + renta_mes1_fac, 2)
+            dif_total = round(total_fac - total_esp, 2)
+
+            errores = []
+            obs_lista = []
+            obs_multi = f"Factura multi-contrato de apertura ({n_contratos} contratos: {contratos_str})"
+
+            apertura_ok = (abs(dif_apertura) <= TOLERANCIA)
+            renta_ok = (renta_mes1_fac == 0 or abs(dif_r1) <= TOLERANCIA)
+
+            if apertura_ok and renta_ok:
+                status = 'CONCILIADO'
+                obs_lista.append(f"{obs_multi} conciliada. Apertura combinada esperada ${tot_apertura_esp:,.2f} coincide con lo facturado ${tot_apertura_fac:,.2f}.")
+            else:
+                status = 'DISCREPANCIA'
+                if not apertura_ok:
+                    errores.append(f"{obs_multi}: apertura esperada ${tot_apertura_esp:,.2f}, facturada ${tot_apertura_fac:,.2f} (dif ${dif_apertura:+,.2f})")
+                if not renta_ok:
+                    errores.append(f"{obs_multi}: renta mes 1 esperada ${renta_mes1_esp:,.2f}, facturada ${renta_mes1_fac:,.2f} (dif ${dif_r1:+,.2f})")
+
+            todas_obs = errores + obs_lista
+            return _res(status, '; '.join(todas_obs) if todas_obs else 'OK',
+                        esperado=total_esp, facturado=total_fac, dif=dif_total, detalle=todas_obs,
+                        es_multi_contrato=True,
+                        contratos_considerados=contratos_validos,
+                        contratos_str=contratos_str,
+                        ant_esp=tot_ant_esp, ant_fac=ant_fac,
+                        com_esp=tot_com_esp, com_fac=com_fac,
+                        tot_apertura_esp=tot_apertura_esp, tot_apertura_fac=tot_apertura_fac, dif_apertura=dif_apertura,
+                        renta_esp=renta_mes1_esp, renta_fac=renta_mes1_fac, dif_renta=dif_r1)
 
     # Blindaje: ¿el contrato ya estaba dado de baja cuando se emitió esta
     # factura, o la factura es de ANTES de que el contrato siquiera
@@ -2773,16 +3199,17 @@ def _conciliar_factura_interna(fact: dict, _cache: dict | None = None) -> dict:
                         esperado=0.0, facturado=fact.get('total', 0.0), dif=fact.get('total', 0.0), detalle=[])
             except Exception:
                 pass  # si la fecha de baja está mal capturada, no se bloquea la conciliación por esto
-        try:
-            fa_chk = pd.to_datetime(con['Fecha_Alta'])
-            if pd.Timestamp(fa_chk.year, fa_chk.month, 1) > fecha_factura:
-                return _res('FUERA_DE_VIGENCIA',
-                    f"Este contrato no inicia hasta {fa_chk.strftime('%m/%Y')} — esta factura es de "
-                    f"{fecha_factura.strftime('%m/%Y')}, anterior al alta. No debería existir renta para "
-                    f"un período previo al inicio del contrato.",
-                    esperado=0.0, facturado=fact.get('total', 0.0), dif=fact.get('total', 0.0), detalle=[])
-        except Exception:
-            pass
+        if fact.get('tipo') == 'MENSUAL':
+            try:
+                fa_chk = pd.to_datetime(con['Fecha_Alta'])
+                if pd.Timestamp(fa_chk.year, fa_chk.month, 1) > fecha_factura:
+                    return _res('FUERA_DE_VIGENCIA',
+                        f"Este contrato no inicia hasta {fa_chk.strftime('%m/%Y')} — esta factura es de "
+                        f"{fecha_factura.strftime('%m/%Y')}, anterior al alta. No debería existir renta para "
+                        f"un período previo al inicio del contrato.",
+                        esperado=0.0, facturado=fact.get('total', 0.0), dif=fact.get('total', 0.0), detalle=[])
+            except Exception:
+                pass
 
     inv  = round(con['Valor_Sin_IVA'] - con['Anticipo_Monto'], 4)
     pl   = int(con['Plazo'])
@@ -2798,25 +3225,89 @@ def _conciliar_factura_interna(fact: dict, _cache: dict | None = None) -> dict:
             return _res('ERROR', f'Error al calcular amortización: {e}')
         _cache.setdefault('amortizaciones', {})[id_c] = dfa
 
-    mes = fact.get('mes_contrato')
-    if not mes or mes < 1 or mes > pl:
-        return _res('ERROR', f'Mes del contrato ({mes}) fuera de rango 1-{pl}')
+    # Deteccion exhaustiva de meses del contrato (soporta facturas con pago acumulado de multiples meses)
+    meses_detectados = list(fact.get('meses_detectados') or [])
+    for c in (fact.get('conceptos_raw') or []):
+        if isinstance(c, dict):
+            desc_c = str(c.get('desc') or '')
+            clv_c = str(c.get('clave') or '')
+            if clv_c in ('OTRO', 'SEGURO', 'GESTORIA') and 'RENTA' not in desc_c.upper():
+                continue
+            for m_str, pl_str in _PAT_MES.findall(desc_c):
+                try:
+                    m_val = int(m_str)
+                    if 1 <= m_val <= pl and m_val not in meses_detectados:
+                        meses_detectados.append(m_val)
+                except Exception:
+                    pass
+    if fact.get('uuid'):
+        try:
+            rows_c = conn.execute("SELECT descripcion, clave FROM factura_conceptos WHERE uuid=?", (fact['uuid'],)).fetchall()
+            for rc in rows_c:
+                desc_c = str(rc[0] or '')
+                clv_c = str(rc[1] or '')
+                if clv_c in ('OTRO', 'SEGURO', 'GESTORIA') and 'RENTA' not in desc_c.upper():
+                    continue
+                for m_str, pl_str in _PAT_MES.findall(desc_c):
+                    try:
+                        m_val = int(m_str)
+                        if 1 <= m_val <= pl and m_val not in meses_detectados:
+                            meses_detectados.append(m_val)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    if fact.get('mes_contrato'):
+        for part in str(fact['mes_contrato']).split(','):
+            part = part.strip().replace('.0', '')
+            if part.isdigit():
+                m_val = int(part)
+                if 1 <= m_val <= pl and m_val not in meses_detectados:
+                    meses_detectados.append(m_val)
 
-    # Blindaje: ¿el "mes X de Y" que trae el texto del concepto coincide con
-    # el mes que le tocaría según la fecha real de la factura? Si alguien se
-    # equivocó al capturar el folio/concepto (p. ej. puso "14/60" cuando por
-    # fecha le tocaba el mes 15), la comparación de montos usaría la fila
-    # equivocada de la tabla de amortización sin que nadie se diera cuenta.
-    aviso_mes = None
+    meses_detectados = sorted(meses_detectados)
+    es_multi_mes = len(meses_detectados) > 1
+    cant_meses = len(meses_detectados) if es_multi_mes else 1
+    mes_str = ', '.join(str(m) for m in meses_detectados) if es_multi_mes else (str(meses_detectados[0]) if meses_detectados else (str(fact.get('mes_contrato') or 1)))
+
+    mes = meses_detectados[0] if meses_detectados else None
+    if mes is None:
+        try:
+            mes = int(str(fact.get('mes_contrato', '')).split(',')[0].strip().replace('.0', ''))
+        except Exception:
+            mes = None
+
+    if not mes or mes < 1 or mes > pl:
+        if fact.get('tipo') == 'ANTICIPO':
+            mes = 1
+        else:
+            return _res('ERROR', f'Mes del contrato ({fact.get("mes_contrato")}) fuera de rango 1-{pl}')
+
+    # Correspondencia operativa entre mes de concepto y fecha calendario de la factura
+    aviso_mes_info = None
     if fecha_factura is not None and fact.get('tipo') == 'MENSUAL':
         try:
             fa_ref = pd.to_datetime(con['Fecha_Alta'])
             mes_por_fecha = (fecha_factura.year - fa_ref.year) * 12 + (fecha_factura.month - fa_ref.month) + 1
-            if 1 <= mes_por_fecha <= pl and abs(mes_por_fecha - mes) >= 1:
-                aviso_mes = (
-                    f"El concepto de la factura dice que es el mes {mes} de {pl}, pero por su fecha "
-                    f"({fecha_factura.strftime('%m/%Y')}) debería ser el mes {mes_por_fecha} — revisa si el "
-                    f"folio o el concepto tienen un error de captura."
+            dif_meses = mes_por_fecha - mes
+            if dif_meses == 1:
+                # Desfase operativo estandar: Firma + Anticipo + Renta 1 en Mes 1, Mes 2 sin factura, Mes 3 factura Renta 2
+                aviso_mes_info = (
+                    f"Desfase operativo de 1 mes (renta inicial anticipada al inicio del contrato; "
+                    f"concepto mes {mes} de {pl} vs calendario mes {mes_por_fecha})."
+                )
+            elif dif_meses < 0:
+                # Pago adelantado: el cliente facturo mensualidades por adelantado
+                adelanto = abs(dif_meses)
+                aviso_mes_info = (
+                    f"Pago adelantado de {adelanto} mensualidad(es) respecto al calendario normal del contrato "
+                    f"(concepto indica mes {mes} de {pl} en periodo de mes {mes_por_fecha})."
+                )
+            elif dif_meses > 1:
+                # Desfase mayor a 1 mes
+                aviso_mes_info = (
+                    f"Desfase de {dif_meses} meses respecto al calendario "
+                    f"(concepto indica mes {mes} de {pl} en periodo de mes {mes_por_fecha})."
                 )
         except Exception:
             pass
@@ -2836,17 +3327,16 @@ def _conciliar_factura_interna(fact: dict, _cache: dict | None = None) -> dict:
         
         estatus_con = str(con.get('Estatus', '')).upper()
         if estatus_con != 'BAJA':
-            errores.append("⚠️ ATENCIÓN: Factura por Venta de Vehículo (cobro de residual), pero el contrato figura como ACTIVO en el sistema. Se sugiere procesar la Baja en Gestor de Bajas.")
+            errores.append("ATENCION: Factura por Venta de Vehiculo (cobro de residual), pero el contrato figura como ACTIVO en el sistema. Se sugiere procesar la Baja en Gestor de Bajas.")
         
         status = 'CONCILIADO' if not errores else 'DISCREPANCIA'
-        return _res(status, '; '.join(errores) if errores else 'OK (Venta de Vehículo / Residual)',
+        return _res(status, '; '.join(errores) if errores else 'OK (Venta de Vehiculo / Residual)',
                     esperado=res_esp, facturado=res_fac, dif=dif_res, detalle=errores)
 
     elif fact['tipo'] == 'INDEMNIZACION':
         total_fac = round(fact.get('total', 0.0), 2)
         errores = []
         
-        # Check if contract has special events or is BAJA
         estatus_con = str(con.get('Estatus', '')).upper()
         has_evento = False
         try:
@@ -2857,58 +3347,160 @@ def _conciliar_factura_interna(fact: dict, _cache: dict | None = None) -> dict:
             pass
 
         if estatus_con != 'BAJA' and not has_evento:
-            errores.append("⚠️ ATENCIÓN: Factura por Indemnización de Seguro recibida, pero el contrato figura ACTIVO y no existe evento especial de Siniestro/Baja registrado.")
+            errores.append("ATENCION: Factura por Indemnizacion de Seguro recibida, pero el contrato figura ACTIVO y no existe evento especial de Siniestro/Baja registrado.")
 
         status = 'CONCILIADO' if not errores else 'DISCREPANCIA'
-        return _res(status, '; '.join(errores) if errores else 'OK (Indemnización por Siniestro)',
+        return _res(status, '; '.join(errores) if errores else 'OK (Indemnizacion por Siniestro)',
                     esperado=total_fac, facturado=total_fac, dif=0.0, detalle=errores)
 
     elif fact['tipo'] == 'MENSUAL':
-        renta_fac   = round(conceptos['RENTA'] + conceptos['ADMIN'] + conceptos['GEOLOC'], 2)
-        dif         = round(renta_fac - renta_total_esp, 2)
-        errores     = []
+        renta_pura_fac = round(float(conceptos.get('RENTA') or 0.0), 2)
+        admin_fac      = round(float(conceptos.get('ADMIN') or 0.0), 2)
+        geoloc_fac     = round(float(conceptos.get('GEOLOC') or 0.0), 2)
+        renta_fac      = round(renta_pura_fac + admin_fac + geoloc_fac, 2)
+        
+        renta_mensual_esp = round(con['Mensualidad_Sin_IVA'], 2)
+        renta_total_esp   = round(renta_mensual_esp * cant_meses, 2)
+        
+        subtotal_fac = round(float(fact.get('subtotal') or 0.0), 2)
+        if es_multi_mes:
+            if abs(renta_fac - renta_total_esp) > TOLERANCIA and abs(subtotal_fac - renta_total_esp) <= TOLERANCIA:
+                renta_fac = subtotal_fac
+        
+        dif            = round(renta_fac - renta_total_esp, 2)
+        errores        = []
+        observaciones_lista = []
+        
+        # Validar equivalencia de IVA (16%): renta capturada con IVA o doble deduccion de IVA
         if abs(dif) > TOLERANCIA:
-            errores.append(
-                f"Renta+Admin+Geoloc: esperado ${renta_total_esp:,.2f}, "
-                f"facturado ${renta_fac:,.2f} (dif ${dif:+,.2f})"
-            )
-        if aviso_mes:
-            errores.append(aviso_mes)
+            # Caso A: Renta en contrato se capturo con IVA incluido (dif negativa)
+            renta_fac_civa = round(renta_fac * 1.16, 2)
+            subtot_fac_civa = round(subtotal_fac * 1.16, 2) if subtotal_fac > 0 else 0.0
+            if abs(renta_fac_civa - renta_total_esp) <= 10.0 or abs(subtot_fac_civa - renta_total_esp) <= 10.0:
+                dif = 0.0
+                renta_total_esp = renta_fac
+                observaciones_lista.append(
+                    f"OK (Equivalencia IVA 16%: renta capturada con IVA ${con['Mensualidad_Sin_IVA']:,.2f} vs subtotal CFDI ${renta_fac:,.2f})"
+                )
+            else:
+                # Caso B: Renta en contrato con doble deduccion de IVA (dif positiva)
+                renta_esp_civa = round(renta_total_esp * 1.16, 2)
+                if abs(renta_esp_civa - renta_fac) <= 10.0 or abs(renta_esp_civa - subtotal_fac) <= 10.0:
+                    dif = 0.0
+                    renta_total_esp = renta_fac
+                    observaciones_lista.append(
+                        f"OK (Equivalencia IVA 16%: deduccion doble de IVA en contrato ${con['Mensualidad_Sin_IVA']:,.2f} vs subtotal CFDI ${renta_fac:,.2f})"
+                    )
+        
+        if es_multi_mes:
+            obs_multi_mes = f"Factura con pago acumulado de {cant_meses} mensualidades (meses {mes_str} de {pl})"
+            if abs(dif) <= TOLERANCIA:
+                observaciones_lista.append(f"{obs_multi_mes} conciliada. Renta combinada esperada ${renta_total_esp:,.2f} coincide con lo facturado ${renta_fac:,.2f}.")
+            else:
+                errores.append(f"{obs_multi_mes}: esperado combinado ${renta_total_esp:,.2f}, facturado ${renta_fac:,.2f} (dif ${dif:+,.2f})")
+        else:
+            if abs(dif) > TOLERANCIA:
+                errores.append(
+                    f"Renta (Renta+Admin+GPS): esperado ${renta_total_esp:,.2f}, "
+                    f"facturado ${renta_fac:,.2f} (dif ${dif:+,.2f})"
+                )
+            if aviso_mes_info:
+                observaciones_lista.append(aviso_mes_info)
+
         status = 'CONCILIADO' if not errores else 'DISCREPANCIA'
-        return _res(status, '; '.join(errores) if errores else 'OK',
-                    esperado=renta_total_esp, facturado=renta_fac, dif=dif, detalle=errores)
+        todas_obs = errores + observaciones_lista
+        return _res(status, '; '.join(todas_obs) if todas_obs else 'OK',
+                    esperado=renta_total_esp, facturado=renta_fac, dif=dif, detalle=todas_obs,
+                    es_multi_mes=es_multi_mes, cant_meses=cant_meses,
+                    meses_detectados=meses_detectados, mes_contrato_str=mes_str,
+                    renta_esp=renta_total_esp, renta_fac=renta_fac, dif_renta=dif,
+                    renta_pura_fac=renta_pura_fac,
+                    admin_fac=admin_fac,
+                    geoloc_fac=geoloc_fac)
     else:  # ANTICIPO
         errores = []
-        ant_esp = round(con['Anticipo_Monto'], 2)
-        ant_fac = round(conceptos['ANTICIPO'], 2)
+        obs_informativas = []
+
+        # 1. Canal Apertura: Anticipo y Comision por Apertura
+        ant_esp = round(float(con.get('Anticipo_Monto') or 0.0), 2)
+        com_esp = round(float(con.get('Comision_Monto') or 0.0), 2)
+        tot_apertura_esp = round(ant_esp + com_esp, 2)
+
+        ant_fac = round(float(conceptos.get('ANTICIPO') or 0.0), 2)
+        com_fac = round(float(conceptos.get('COMISION') or 0.0), 2)
+        tot_apertura_fac = round(ant_fac + com_fac, 2)
+        dif_apertura = round(tot_apertura_fac - tot_apertura_esp, 2)
+
         dif_ant = round(ant_fac - ant_esp, 2)
-        if abs(dif_ant) > TOLERANCIA:
-            errores.append(f"Anticipo: esperado ${ant_esp:,.2f}, facturado ${ant_fac:,.2f} (dif ${dif_ant:+,.2f})")
-
-        com_esp = round(con['Comision_Monto'], 2)
-        com_fac = round(conceptos['COMISION'], 2)
         dif_com = round(com_fac - com_esp, 2)
-        if abs(dif_com) > TOLERANCIA:
-            errores.append(f"Comisión: esperado ${com_esp:,.2f}, facturado ${com_fac:,.2f} (dif ${dif_com:+,.2f})")
 
-        renta_mes1_esp = renta_total_esp
-        renta_mes1_fac = round(conceptos['RENTA'] + conceptos['ADMIN'] + conceptos['GEOLOC'], 2)
-        dif_r1 = round(renta_mes1_fac - renta_mes1_esp, 2)
-        if abs(dif_r1) > TOLERANCIA:
-            errores.append(f"Renta mes 1: esperado ${renta_mes1_esp:,.2f}, facturado ${renta_mes1_fac:,.2f} (dif ${dif_r1:+,.2f})")
+        # Diagnostico de agrupacion entre anticipo y comision
+        es_agrupado_comision = (ant_fac == 0 and com_fac > 0 and ant_esp > 0)
+        es_agrupado_anticipo = (com_fac == 0 and ant_fac > 0 and com_esp > 0)
 
-        total_esp = round(ant_esp + com_esp + renta_mes1_esp, 2)
-        total_fac = round(ant_fac + com_fac + renta_mes1_fac, 2)
+        if abs(dif_apertura) <= TOLERANCIA:
+            if es_agrupado_comision:
+                obs_informativas.append("Anticipo facturado agrupado bajo concepto de comision por apertura")
+            elif es_agrupado_anticipo:
+                obs_informativas.append("Comision por apertura facturada agrupada bajo concepto de anticipo")
+        else:
+            nota_agrup = ""
+            if es_agrupado_comision:
+                nota_agrup = " [Anticipo facturado en comision]"
+            elif es_agrupado_anticipo:
+                nota_agrup = " [Comision facturada en anticipo]"
+            errores.append(
+                f"Apertura (Anticipo+Comision): esperado ${tot_apertura_esp:,.2f}, "
+                f"facturado ${tot_apertura_fac:,.2f} (dif ${dif_apertura:+,.2f}){nota_agrup}"
+            )
+
+        # 2. Canal Renta Mes 1: Renta + Admin + GPS (solo si viene en la factura inicial)
+        renta_mes1_fac = round(float(conceptos.get('RENTA') or 0.0) + float(conceptos.get('ADMIN') or 0.0) + float(conceptos.get('GEOLOC') or 0.0), 2)
+        renta_mes1_esp = renta_total_esp if renta_mes1_fac > 0 else 0.0
+        dif_r1 = round(renta_mes1_fac - renta_mes1_esp, 2) if renta_mes1_fac > 0 else 0.0
+
+        if renta_mes1_fac > 0 and abs(dif_r1) > TOLERANCIA:
+            errores.append(
+                f"Renta mes 1 (Renta+Admin+GPS): esperado ${renta_mes1_esp:,.2f}, "
+                f"facturado ${renta_mes1_fac:,.2f} (dif ${dif_r1:+,.2f})"
+            )
+
+        # 3. Totales consolidados de la factura
+        total_esp = round(tot_apertura_esp + renta_mes1_esp, 2)
+        total_fac = round(tot_apertura_fac + renta_mes1_fac, 2)
         dif_total = round(total_fac - total_esp, 2)
 
         status = 'CONCILIADO' if not errores else 'DISCREPANCIA'
-        return _res(status, '; '.join(errores) if errores else 'OK',
-                    esperado=total_esp, facturado=total_fac, dif=dif_total, detalle=errores,
-                    ant_esp=ant_esp, ant_fac=ant_fac,
-                    com_esp=com_esp, com_fac=com_fac,
-                    renta_esp=renta_total_esp, renta_fac=renta_mes1_fac)
+        todas_obs = errores + obs_informativas
+        obs_texto = '; '.join(todas_obs) if todas_obs else 'OK'
+
+        return _res(status, obs_texto,
+                    esperado=total_esp, facturado=total_fac, dif=dif_total, detalle=todas_obs,
+                    ant_esp=ant_esp, ant_fac=ant_fac, dif_ant=dif_ant,
+                    com_esp=com_esp, com_fac=com_fac, dif_com=dif_com,
+                    tot_apertura_esp=tot_apertura_esp, tot_apertura_fac=tot_apertura_fac, dif_apertura=dif_apertura,
+                    renta_esp=renta_mes1_esp, renta_fac=renta_mes1_fac, dif_renta=dif_r1)
 
 def conciliar_factura(fact: dict, _cache: dict | None = None) -> dict:
+    # Si la factura viene cancelada del repositorio o SAT, no se concilia y no cuenta para ningún cálculo
+    if fact.get('cancelada') == 1 or str(fact.get('status')).upper() == 'CANCELADA':
+        fec_c = str(fact.get('fecha_cancelacion') or '')[:10]
+        msg_c = f"Comprobante fiscal cancelado en repositorio/SAT ({fec_c})" if fec_c else "Comprobante fiscal cancelado en repositorio/SAT"
+        return {
+            'status': 'CANCELADA',
+            'msg': msg_c,
+            'esperado': 0.0,
+            'facturado': 0.0,
+            'dif': 0.0,
+            'id_contrato': fact.get('id_contrato'),
+            'id_contrato_detectado': fact.get('id_contrato_detectado'),
+            'mes_contrato': fact.get('mes_contrato'),
+            'tipo': fact.get('tipo', 'MENSUAL'),
+            'periodo': fact.get('periodo', ''),
+            'cancelada': 1,
+            'fecha_cancelacion': fact.get('fecha_cancelacion'),
+        }
+
     res = _conciliar_factura_interna(fact, _cache)
 
     def _agregar_aviso(texto):
@@ -2942,21 +3534,34 @@ def conciliar_factura(fact: dict, _cache: dict | None = None) -> dict:
                 (fact['id_contrato'], fact['periodo'], fact.get('tipo', ''), fact.get('uuid', ''))
             ).fetchall()
             if otras:
-                folios = ', '.join(o['folio'] or o['uuid'][:8] for o in otras)
-                _agregar_aviso(f"Ojo: ya existe otra factura para este contrato en {fact['periodo']} (folio(s): {folios}) — revisa que no sea una doble facturación.")
+                fol_actual_norm = normalizar_folio(fact.get('folio'))
+                otras_distintas = [
+                    o for o in otras
+                    if not (fol_actual_norm and normalizar_folio(o['folio']) == fol_actual_norm)
+                ]
+                if otras_distintas:
+                    folios = ', '.join(o['folio'] or o['uuid'][:8] for o in otras_distintas)
+                    _agregar_aviso(f"Ojo: ya existe otra factura para este contrato en {fact['periodo']} (folio(s): {folios}) — revisa que no sea una doble facturación.")
         except Exception:
             pass
     if res['status'] in ('CONCILIADO', 'DISCREPANCIA') and fact.get('folio') and fact.get('uuid'):
         try:
             conn = get_db()
-            mismo_folio = conn.execute(
-                """SELECT uuid, id_contrato FROM facturas
-                   WHERE folio=? AND uuid != ? AND (cancelada IS NULL OR cancelada=0)""",
-                (fact['folio'], fact['uuid'])
-            ).fetchall()
-            if mismo_folio:
-                otros_c = ', '.join(f"{m['id_contrato'] or '—'} ({m['uuid'][:8]}…)" for m in mismo_folio)
-                _agregar_aviso(f"Ojo: el folio {fact['folio']} ya existe en otra factura con distinto UUID ({otros_c}) — revisa que no sea un folio reutilizado o una factura duplicada.")
+            fol_actual_norm = normalizar_folio(fact.get('folio'))
+            if fol_actual_norm:
+                todos_folios = conn.execute(
+                    """SELECT uuid, folio, id_contrato FROM facturas
+                       WHERE uuid != ? AND (cancelada IS NULL OR cancelada=0)""",
+                    (fact['uuid'],)
+                ).fetchall()
+                mismo_folio = [
+                    m for m in todos_folios
+                    if normalizar_folio(m['folio']) == fol_actual_norm
+                       and (m['id_contrato'] or '') != (fact.get('id_contrato') or '')
+                ]
+                if mismo_folio:
+                    otros_c = ', '.join(f"{m['id_contrato'] or '—'} ({m['uuid'][:8]}…)" for m in mismo_folio)
+                    _agregar_aviso(f"Ojo: el folio {fact['folio']} ya existe en otra factura de otro contrato ({otros_c}) — revisa si es un folio reutilizado.")
         except Exception:
             pass
     return res
@@ -2974,16 +3579,28 @@ def calcular_avance_pago(con: dict, facturas_dict: dict = None) -> dict:
     mes_esperado_hoy = min(mes_esperado_hoy, pl)
 
     if facturas_dict is not None:
-        meses_facturados = facturas_dict.get(con['ID_Contrato'], set())
+        meses_facturados = set()
+        for m_val in facturas_dict.get(con['ID_Contrato'], set()):
+            for m_chunk in str(m_val).split(','):
+                m_chunk = m_chunk.strip().replace('.0', '')
+                if m_chunk.isdigit():
+                    meses_facturados.add(int(m_chunk))
     else:
         conn = get_db()
         rows = conn.execute(
             """SELECT DISTINCT mes_contrato FROM facturas
-               WHERE id_contrato=? AND tipo='MENSUAL' AND estatus IN ('CONCILIADO','DISCREPANCIA')
+               WHERE (id_contrato=? OR instr(id_contrato, ?) > 0 OR instr(coalesce(id_contrato_detectado,''), ?) > 0)
+                 AND tipo='MENSUAL' AND estatus IN ('CONCILIADO','DISCREPANCIA')
                  AND (cancelada IS NULL OR cancelada=0)""",
-            (con['ID_Contrato'],)
+            (con['ID_Contrato'], con['ID_Contrato'], con['ID_Contrato'])
         ).fetchall()
-        meses_facturados = {r['mes_contrato'] for r in rows if r['mes_contrato']}
+        meses_facturados = set()
+        for r in rows:
+            if r['mes_contrato']:
+                for m_chunk in str(r['mes_contrato']).split(','):
+                    m_chunk = m_chunk.strip().replace('.0', '')
+                    if m_chunk.isdigit():
+                        meses_facturados.add(int(m_chunk))
     mes_max_facturado = max(meses_facturados) if meses_facturados else 0
 
     tope = min(mes_esperado_hoy, pl)
@@ -3006,18 +3623,42 @@ def calcular_avance_pago(con: dict, facturas_dict: dict = None) -> dict:
     }
 
 def detectar_duplicados(lista: list) -> set:
-    """UUIDs de la lista que YA existen en la base de datos — para avisar
-    antes de sobrescribir una factura que ya había sido procesada (y que tal
-    vez ya se resolvió manualmente: contrato asignado, comisión ajustada)."""
+    """Identificadores (UUIDs) de la lista que YA existen en la base de datos
+    (por UUID exacto o por folio numérico idéntico en comprobantes activos)."""
     if not lista:
         return set()
     conn = get_db()
     uuids = [r['uuid'] for r in lista if r.get('uuid')]
-    if not uuids:
-        return set()
-    placeholders = ','.join('?' * len(uuids))
-    rows = conn.execute(f"SELECT uuid FROM facturas WHERE uuid IN ({placeholders})", uuids).fetchall()
-    return {r[0] for r in rows}
+    duplicados_uuids = set()
+
+    # 1. Coincidencia por UUID exacto en comprobantes vigentes
+    if uuids:
+        placeholders = ','.join('?' * len(uuids))
+        rows = conn.execute(
+            f"SELECT uuid FROM facturas WHERE uuid IN ({placeholders}) AND (cancelada IS NULL OR cancelada=0)",
+            uuids
+        ).fetchall()
+        for r in rows:
+            duplicados_uuids.add(r[0])
+
+    # 2. Coincidencia por folio numérico (la F- o serie no cuenta)
+    folios_in = {}
+    for r in lista:
+        f_norm = normalizar_folio(r.get('folio'))
+        if f_norm and r.get('uuid'):
+            folios_in.setdefault(f_norm, []).append(r['uuid'])
+
+    if folios_in:
+        rows_fol = conn.execute(
+            "SELECT uuid, folio FROM facturas WHERE folio IS NOT NULL AND (cancelada IS NULL OR cancelada=0)"
+        ).fetchall()
+        for r_u, r_fol in rows_fol:
+            rf_norm = normalizar_folio(r_fol)
+            if rf_norm in folios_in:
+                for in_u in folios_in[rf_norm]:
+                    duplicados_uuids.add(in_u)
+
+    return duplicados_uuids
 
 def guardar_facturas_batch(lista: list, sobrescribir_existentes: bool = True):
     conn = get_db()
@@ -3027,29 +3668,73 @@ def guardar_facturas_batch(lista: list, sobrescribir_existentes: bool = True):
     uuids_guardadas = []
     conceptos_por_uuid = {}
     omitidas = []
+    folios_en_batch = set()
+
+    # Si se permite sobrescribir, desactivamos comprobantes previos activos que tengan
+    # el mismo folio numérico bajo distinto UUID para evitar duplicar registros en BD
+    if sobrescribir_existentes and lista:
+        try:
+            db_activos = conn.execute(
+                "SELECT uuid, folio FROM facturas WHERE folio IS NOT NULL AND (cancelada IS NULL OR cancelada=0)"
+            ).fetchall()
+            db_fol_map = {}
+            for db_u, db_fol in db_activos:
+                fn = normalizar_folio(db_fol)
+                if fn:
+                    db_fol_map.setdefault(fn, set()).add(db_u)
+
+            for r in lista:
+                fn = normalizar_folio(r.get('folio'))
+                u_in = r.get('uuid')
+                if fn and fn in db_fol_map:
+                    for old_u in db_fol_map[fn]:
+                        if old_u != u_in:
+                            cur.execute(
+                                "UPDATE facturas SET cancelada=1, fecha_cancelacion=CURRENT_TIMESTAMP WHERE uuid=?",
+                                (old_u,)
+                            )
+        except Exception:
+            pass
+
     for r in lista:
-        if r['uuid'] in existentes:
+        fn = normalizar_folio(r.get('folio'))
+        if r['uuid'] in existentes or (fn and fn in folios_en_batch):
             omitidas.append(r.get('folio', r['uuid']))
             continue
+
+        if fn:
+            folios_en_batch.add(fn)
+
+        folio_guardar = fn if fn else (r.get('folio') or '')
+        idc_guardar = r.get('contratos_str') or r.get('id_contrato_detectado') or r.get('id_contrato')
+        es_canc = 1 if (r.get('cancelada') == 1 or str(r.get('status')).upper() == 'CANCELADA') else 0
+        fec_canc = str(r.get('fecha_cancelacion') or '')[:10] if es_canc else None
+        st_guardar = 'CANCELADA' if es_canc else r['status']
+        esp_guardar = 0.0 if es_canc else (r.get('esperado', 0) or 0)
+        fac_guardar = 0.0 if es_canc else (r.get('facturado', 0) or 0)
+        dif_guardar = 0.0 if es_canc else (r.get('dif', 0) or 0)
+
         rows_fact.append((
             r['uuid'],
-            r['id_contrato'],
+            idc_guardar,
             r['fecha'],
-            r.get('folio', ''),
+            folio_guardar,
             r['subtotal'],
             r['total'],
             r['tipo'],
             r['periodo'],
-            r['mes_contrato'],
-            r['status'],
+            r.get('mes_contrato_str') or r.get('mes_contrato'),
+            st_guardar,
             r.get('msg', ''),
             r.get('rfc_emisor'),
             r.get('rfc_receptor'),
-            r.get('esperado', 0) or 0,
-            r.get('facturado', 0) or 0,
-            r.get('dif', 0) or 0,
-            r.get('id_contrato_detectado') or r.get('id_contrato'),
+            esp_guardar,
+            fac_guardar,
+            dif_guardar,
+            idc_guardar,
             1 if r.get('alias_aplicado') else 0,
+            es_canc,
+            fec_canc,
         ))
         uuids_guardadas.append(r['uuid'])
         conceptos_por_uuid[r['uuid']] = r.get('conceptos_raw', [])
@@ -3059,8 +3744,8 @@ def guardar_facturas_batch(lista: list, sobrescribir_existentes: bool = True):
             (uuid, id_contrato, fecha_emision, folio, subtotal, total,
              tipo, periodo, mes_contrato, estatus, observaciones,
              rfc_emisor, rfc_receptor, esperado, facturado, diferencia,
-             id_contrato_detectado, alias_aplicado)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             id_contrato_detectado, alias_aplicado, cancelada, fecha_cancelacion)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, rows_fact)
         # Se borran los renglones de concepto anteriores de estas facturas
         # antes de volver a insertarlos — si no, al reprocesar/sobrescribir
@@ -3156,6 +3841,8 @@ def re_conciliar_factura(uuid: str):
     try:
         fact = dict(row)
         fact['conceptos'] = _totales_desde_conceptos(uuid)
+        rows_c = conn.execute("SELECT descripcion, clave, importe FROM factura_conceptos WHERE uuid=?", (uuid,)).fetchall()
+        fact['conceptos_raw'] = [{'desc': rc['descripcion'], 'clave': rc['clave'], 'importe': rc['importe']} for rc in rows_c]
         # Si al reclasificar a mano un concepto la factura pasó de "ningún
         # concepto de leasing reconocido" a "sí tiene alguno", se actualiza
         # el tipo (igual que se hace al leer el XML por primera vez) — si
@@ -3167,43 +3854,192 @@ def re_conciliar_factura(uuid: str):
             es_anticipo = fact['conceptos'].get('ANTICIPO', 0) or fact['conceptos'].get('COMISION', 0)
             fact['tipo'] = 'ANTICIPO' if es_anticipo else 'MENSUAL'
         res = conciliar_factura(fact)
+        nuevo_idc = res.get('contratos_str') or fact.get('id_contrato')
+        nuevo_idd = res.get('contratos_str') or fact.get('id_contrato_detectado') or fact.get('id_contrato')
+        nuevo_mes = res.get('mes_contrato_str') or res.get('mes_contrato') or fact.get('mes_contrato')
         conn.execute(
-            "UPDATE facturas SET estatus=?, observaciones=?, tipo=?, esperado=?, facturado=?, diferencia=? WHERE uuid=?",
+            """UPDATE facturas
+               SET estatus=?, observaciones=?, tipo=?, esperado=?, facturado=?, diferencia=?,
+                   id_contrato=?, id_contrato_detectado=?, mes_contrato=?
+               WHERE uuid=?""",
             (res['status'], res['msg'], fact['tipo'],
-             res.get('esperado', 0) or 0, res.get('facturado', 0) or 0, res.get('dif', 0) or 0, uuid)
+             res.get('esperado', 0) or 0, res.get('facturado', 0) or 0, res.get('dif', 0) or 0,
+             nuevo_idc, nuevo_idd, nuevo_mes, uuid)
         )
         conn.commit()
         return res
     except Exception as e:
         return {'status':'ERROR', 'msg':str(e)}
 
+
+def es_contrato_nuevo(con_or_id) -> bool:
+    """Determina si un contrato es nuevo (iniciado a partir de septiembre 2026),
+    por lo que no pertenece al histórico cerrado de enero a agosto 2026."""
+    if not con_or_id:
+        return False
+    fa_val = None
+    if isinstance(con_or_id, str):
+        conn = get_db()
+        row = conn.execute("SELECT Fecha_Alta FROM contratos WHERE ID_Contrato=?", (con_or_id.strip(),)).fetchone()
+        if not row:
+            return False
+        fa_val = row['Fecha_Alta']
+    elif isinstance(con_or_id, dict) or hasattr(con_or_id, 'get'):
+        fa_val = con_or_id.get('Fecha_Alta')
+    else:
+        try:
+            fa_val = con_or_id['Fecha_Alta']
+        except Exception:
+            return False
+    if not fa_val or pd.isna(fa_val):
+        return False
+    try:
+        fa = pd.to_datetime(fa_val)
+        return fa >= pd.Timestamp('2026-09-01')
+    except Exception:
+        return False
+
+
+def detectar_descuadre_iva_contrato(renta_contrato: float, renta_facturada: float) -> dict | None:
+    """Analiza si la diferencia entre la renta del contrato y la facturada
+    se debe a captura con IVA (+16%) o a deducción errónea de IVA (-13.8%).
+    Retorna un diccionario con el diagnóstico o None si no es por IVA."""
+    try:
+        rc = float(renta_contrato or 0.0)
+        rf = float(renta_facturada or 0.0)
+    except Exception:
+        return None
+    if rc <= 0 or rf <= 0:
+        return None
+    if abs(rc - rf) <= 1.0:
+        return None
+    
+    # Caso 1: Renta en contrato capturada con IVA (renta contrato es ~16% mayor que facturado sin IVA)
+    # rf * 1.16 ~= rc
+    rf_civa = round(rf * 1.16, 2)
+    if abs(rf_civa - rc) <= 10.0:
+        pct = round(((rc - rf) / rf) * 100, 1)
+        return {
+            'tipo': 'CON_IVA',
+            'mensaje': f"Renta capturada con IVA en contrato (${rc:,.2f}) vs subtotal CFDI sin IVA (${rf:,.2f})",
+            'detalle': f"Diferencia de +{pct}% (equivale exactamente al 16% de IVA trasladado).",
+            'renta_correcta': rf,
+            'renta_actual': rc
+        }
+    
+    # Caso 2: Renta en contrato con deducción errónea de IVA (se restó IVA dos veces, renta contrato es ~13.8% menor)
+    # rc * 1.16 ~= rf
+    rc_civa = round(rc * 1.16, 2)
+    if abs(rc_civa - rf) <= 10.0:
+        pct = round(((rf - rc) / rf) * 100, 1)
+        return {
+            'tipo': 'DOBLE_DEDUCCION',
+            'mensaje': f"Deducción errónea de IVA en contrato (${rc:,.2f}) vs subtotal CFDI real sin IVA (${rf:,.2f})",
+            'detalle': f"Diferencia de -{pct}% (se restó IVA a un valor que ya venía sin IVA).",
+            'renta_correcta': rf,
+            'renta_actual': rc
+        }
+    return None
+
+
+def corregir_renta_contrato_nuevo(id_contrato: str, nueva_renta: float) -> tuple[bool, str]:
+    """Corrige la mensualidad sin IVA y recalcula la corrida para un contrato NUEVO.
+    Protege inmutablemente cualquier contrato del periodo cerrado (< 2026-09-01)."""
+    conn = get_db()
+    c = conn.execute("SELECT * FROM contratos WHERE ID_Contrato=?", (id_contrato.strip(),)).fetchone()
+    if not c:
+        return False, f"Contrato {id_contrato} no encontrado."
+    if not es_contrato_nuevo(dict(c)):
+        fa_str = str(c['Fecha_Alta'])[:10]
+        return False, f"El contrato {id_contrato} inició el {fa_str} (periodo cerrado). No se puede alterar directamente para proteger los saldos auditados."
+    
+    pl = int(c['Plazo'])
+    inv = float(c['Valor_Sin_IVA']) - float(c['Anticipo_Monto'])
+    res = float(c['Residual_Monto'])
+    t_nueva = calc_tasa(pl, float(nueva_renta), inv, res)
+    if t_nueva is None:
+        return False, "No se pudo calcular una tasa financiera válida con la nueva renta."
+    
+    vpr = float(vp_res(res, t_nueva, pl))
+    conn.execute(
+        "UPDATE contratos SET Mensualidad_Sin_IVA=?, Tasa_Calculada=?, VP_Residual=? WHERE ID_Contrato=?",
+        (round(float(nueva_renta), 2), t_nueva, vpr, id_contrato.strip())
+    )
+    conn.commit()
+    _tocar_datos()
+    
+    # Re-conciliar facturas del contrato
+    facs = conn.execute(
+        "SELECT uuid FROM facturas WHERE (id_contrato=? OR id_contrato_detectado=?) AND (cancelada IS NULL OR cancelada=0)",
+        (id_contrato.strip(), id_contrato.strip())
+    ).fetchall()
+    reconciliadas = 0
+    for f in facs:
+        re_conciliar_factura(f['uuid'])
+        reconciliadas += 1
+        
+    return True, f"Contrato {id_contrato} actualizado: Renta sin IVA ajustada a ${nueva_renta:,.2f}, tasa recalculada a {t_nueva*100:.2f}% mensual. Se re-conciliaron {reconciliadas} factura(s)."
+
+
 # --- Pantalla de conciliación de facturas ---
 def _render_conciliacion():
+    from reports.excel import excel_con_formato
     st.title("Conciliación de Facturas CFDI")
-    st.caption(
-        "Sube los XMLs del mes. El sistema detecta el contrato, clasifica los conceptos, "
-        "compara contra la tabla de amortización y marca diferencias. "
-        "Puedes resolver discrepancias en comisiones y asignar contratos a facturas sin contrato. "
-        "Las facturas de seguro, gestoría y otros servicios no relacionados con leasing se registran como 'NO APLICA'."
-    )
+    st.caption("Revisa y cuadra las facturas emitidas contra lo programado en tus contratos.")
 
-    NOMBRES_TABS = [
-        "Carga y Conciliación", "Historial", "Resolver Pendientes",
-        "Conceptos sin Reconocer", "Avance de Pago", "Auditoría por Contrato", "Reporte"
+    TABS_CONCIL = [
+        "Carga y Conciliación",
+        "Historial",
+        "Comparativo de Cifras",
+        "Resolver Pendientes",
+        "Conceptos sin Reconocer",
+        "Avance de Pago",
+        "Auditoría por Contrato",
+        "Reporte Consolidado"
     ]
-    
-    tab_carga, tab_historial, tab_resolver, tab_conceptos, tab_faltantes, tab_audit, tab_reporte = st.tabs(NOMBRES_TABS)
+
+    st.markdown("""
+        <style>
+        div[data-testid="stSegmentedControl"] {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            background: #F8F9FA;
+            padding: 6px;
+            border-radius: 8px;
+            border: 1px solid #E5E7EB;
+            margin-bottom: 1.2rem;
+        }
+        div[data-testid="stSegmentedControl"] button {
+            border: none !important;
+            border-radius: 6px !important;
+            font-weight: 600 !important;
+            font-size: 0.88rem !important;
+            padding: 7px 15px !important;
+            transition: all 0.15s ease-in-out !important;
+        }
+        div[data-testid="stSegmentedControl"] button[aria-selected="true"] {
+            background-color: #0E7090 !important;
+            color: #FFFFFF !important;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.12) !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
+    tab_activa = st.segmented_control(
+        "Navegación de Conciliación",
+        options=TABS_CONCIL,
+        default=st.session_state.get("concil_tab_activa", TABS_CONCIL[0]),
+        key="concil_tab_activa",
+        label_visibility="collapsed"
+    ) or TABS_CONCIL[0]
 
     # ===================================================================
     # TAB 1 – CARGA Y CONCILIACIÓN
     # ===================================================================
-    with tab_carga:
-        with st.expander("Configuración de blindaje (RFC de tu arrendadora)", expanded=not (get_cfg('rfc_arrendadora', '') or '').strip()):
-            st.caption(
-                "Si capturas aquí el RFC de tu empresa (la que emite las facturas de renta), el sistema "
-                "rechaza automáticamente cualquier XML cuyo RFC emisor no coincida — así una factura de "
-                "otra empresa nunca se compara contra un contrato que no le corresponde."
-            )
+    if tab_activa == "Carga y Conciliación":
+        with st.expander("RFC emisor de tu empresa", expanded=not (get_cfg('rfc_arrendadora', '') or '').strip()):
+            st.caption("Solo se procesarán facturas emitidas por este RFC.")
             _rfc_actual = get_cfg('rfc_arrendadora', '') or ''
             _rfc_nuevo = st.text_input("RFC de tu arrendadora", value=_rfc_actual, max_chars=13,
                                         placeholder="Ej. ABC010101AB1").strip().upper()
@@ -3211,206 +4047,443 @@ def _render_conciliacion():
                 set_cfg('rfc_arrendadora', _rfc_nuevo)
                 st.success("RFC guardado. Se aplicará a partir de la próxima carga.")
 
-        st.subheader("Carga e Importación de Facturas CFDI (XML)")
-        st.caption("Selecciona o arrastra directamente tus archivos `.xml` (o un archivo `.zip` que contenga tus XMLs) para procesar e ingresar a la base de datos.")
+        # ===================================================================
+        # PIPELINE DE CONCILIACIÓN REUTILIZABLE
+        # ===================================================================
+        def _ejecutar_conciliacion_lote(facts_lote, sobrescribir=True, barra=None, estado=None, label_lote="Procesando"):
+            total = len(facts_lote)
+            if total == 0:
+                return [], [], []
+            reglas = get_reglas_concepto()
+            cache_lote = {}
+            alias_map = cargar_alias_contrato()
+            usos_alias = {}
+            resultados = []
+            errores = []
+            uuids_en_lote = set()
+            folios_en_lote = set()
+            step_update = max(1, total // 40)
 
-        col_per, col_over = st.columns(2)
-        with col_per:
-            periodo_ref = st.date_input(
-                "Mes de referencia",
-                value=hoy_ref().replace(day=1),
-                help="Se usa como período predeterminado si algún XML no trae fecha legible",
-                key="carga_periodo_ref",
-            )
-        with col_over:
-            st.write("")
-            sobrescribir = st.checkbox(
-                "Sobrescribir / Actualizar facturas ya cargadas",
-                value=True,
-                help="Si el UUID ya existe en la base de datos, se actualizarán sus montos y conceptos.",
-                key="carga_sobrescribir",
-            )
+            for i, fact in enumerate(facts_lote):
+                if barra and (i % step_update == 0 or i == total - 1):
+                    pct = (i + 1) / total
+                    fol = str(fact.get("folio") or fact.get("uuid", "")[:8])
+                    barra.progress(pct, text=f"{label_lote} ({i+1}/{total}) - Folio {fol}")
+                    if estado:
+                        c_id = fact.get("id_contrato") or "Sin contrato"
+                        estado.caption(f"Conciliando {i+1} de {total}: Folio `{fol}` | Contrato `{c_id}` | Periodo `{fact.get('periodo', '-')}`")
 
-        archivos = st.file_uploader(
-            "Arrastra tus archivos XML o ZIP aquí",
-            type=["xml", "zip", "xlsx", "csv"],
-            accept_multiple_files=True,
-            key="carga_cfdi_uploader_unico",
+                u = fact.get("uuid")
+                fn = normalizar_folio(fact.get("folio"))
+                if (u and u in uuids_en_lote) or (fn and fn in folios_en_lote):
+                    continue
+                if u:
+                    uuids_en_lote.add(u)
+                if fn:
+                    folios_en_lote.add(fn)
+
+                try:
+                    detectado = fact.get("id_contrato")
+                    id_final, se_aplico = resolver_numero_contrato(detectado, alias_map)
+                    fact["id_contrato"] = id_final
+                    fact["alias_aplicado"] = 1 if se_aplico else 0
+                    if se_aplico and detectado:
+                        usos_alias[detectado] = usos_alias.get(detectado, 0) + 1
+
+                    res = conciliar_factura(fact, cache_lote)
+                    merged = {**fact, **res, "status": res["status"]}
+                    resultados.append(merged)
+                except Exception as e:
+                    errores.append(f"Factura {fact.get('folio', i)}: {e}")
+
+            if barra:
+                barra.progress(1.0, text=f"Guardando {len(resultados)} facturas en base de datos...")
+            if estado:
+                estado.caption("Guardando registros en SQLite...")
+
+            marcar_alias_usado_lote(usos_alias)
+            omitidas = guardar_facturas_batch(resultados, sobrescribir_existentes=sobrescribir)
+
+            pers = sorted(list({r.get("periodo") for r in resultados if r.get("periodo")}))
+            per_corrida = f"{pers[0]} a {pers[-1]}" if len(pers) > 1 else (pers[0] if pers else "Varios")
+            registrar_corrida_conciliacion(per_corrida, resultados, omitidas=len(omitidas))
+
+            return resultados, omitidas, errores
+
+        def _mostrar_resumen_lote(resultados, omitidas, errores, titulo="Lote Procesado"):
+            if not resultados:
+                st.error("No se procesó ninguna factura correctamente.")
+                st.session_state["conciliacion_resultados"] = None
+                return
+
+            st.session_state["conciliacion_resultados"] = resultados
+            st.session_state["conciliacion_omitidas"] = omitidas
+            n_conc = sum(1 for r in resultados if r.get('status') == 'CONCILIADO')
+            n_disc = sum(1 for r in resultados if r.get('status') == 'DISCREPANCIA')
+            n_sin  = sum(1 for r in resultados if r.get('status') == 'SIN_CONTRATO')
+            n_canc = sum(1 for r in resultados if (r.get('status') == 'CANCELADA' or r.get('cancelada') == 1))
+            n_otro = sum(1 for r in resultados if r.get('status') in ('NO_APLICA', 'RFC_INCORRECTO', 'ERROR'))
+            monto_proc = sum(float(r.get('total') or 0) for r in resultados if not (r.get('status') == 'CANCELADA' or r.get('cancelada') == 1))
+            pers = sorted(list({r.get('periodo') for r in resultados if r.get('periodo') and not (r.get('status') == 'CANCELADA' or r.get('cancelada') == 1)}))
+            rango_per = f"{pers[0]} a {pers[-1]}" if len(pers) > 1 else (pers[0] if pers else "-")
+
+            st.success(
+                f"**¡{titulo} exitosamente!** Se procesaron **{len(resultados):,}** comprobante(s) "
+                f"cubriendo el período **{rango_per}** por un total vigente de **${monto_proc:,.2f}**."
+            )
+            c_k1, c_k2, c_k3, c_k4, c_k5, c_k6 = st.columns(6)
+            c_k1.metric("Conciliadas", f"{n_conc:,}")
+            c_k2.metric("Discrepancia", f"{n_disc:,}")
+            c_k3.metric("Sin Contrato", f"{n_sin:,}")
+            c_k4.metric("Canceladas (SAT)", f"{n_canc:,}")
+            c_k5.metric("Otros / No Aplica", f"{n_otro:,}")
+            c_k6.metric("Omitidas (ya en BD)", f"{len(omitidas):,}")
+
+            if n_sin > 0:
+                st.info(f"Nota: Hay **{n_sin:,}** facturas sin contrato asignado. Ve a la pestaña **'Resolver Pendientes'** para vincularlas.")
+
+            if errores:
+                with st.expander(f"{len(errores)} observación(es) durante el proceso", expanded=False):
+                    for em in errores[:30]:
+                        st.warning(em)
+                    if len(errores) > 30:
+                        st.caption(f"... y {len(errores)-30} más.")
+            st.session_state["_refresh"] = True
+
+        metodo_carga = st.radio(
+            "Modalidad de carga:",
+            [
+                "Carga desde carpeta (Repositorio Y:)",
+                "Subida manual (Archivos o ZIP)",
+            ],
+            horizontal=True,
+            key="radio_metodo_carga_cfdi",
         )
 
-        def _expandir_archivos_subidos(lista):
-            import zipfile
-            out = []
-            errores = []
-            if not lista:
-                return out, errores
-            for arch in lista:
-                name = arch.name or "sin_nombre"
-                name_l = name.lower()
-                try:
-                    raw = arch.getvalue() if hasattr(arch, "getvalue") else arch.read()
-                    if not raw:
-                        errores.append(f"{name}: archivo vacío (0 bytes).")
-                        continue
-                    if name_l.endswith(".zip"):
-                        try:
-                            with zipfile.ZipFile(io.BytesIO(raw)) as zf:
-                                xml_names = [n for n in zf.namelist()
-                                             if n.lower().endswith(".xml") and not n.startswith("__MACOSX")]
-                                if not xml_names:
-                                    errores.append(f"{name}: el ZIP no contiene ningún archivo .xml")
-                                    continue
-                                for n in xml_names:
-                                    out.append((os.path.basename(n.replace("\\", "/")) or n, zf.read(n)))
-                        except zipfile.BadZipFile:
-                            errores.append(f"{name}: archivo ZIP dañado o inválido.")
-                    elif name_l.endswith(".xml"):
-                        out.append((name, raw))
-                    elif name_l.endswith((".xlsx", ".csv")):
-                        out.append((name, raw))
+        # ===================================================================
+        # MODALIDAD 1: CARGA DIRECTA DESDE REPOSITORIO EN DISCO
+        # ===================================================================
+        if "Carga desde carpeta" in metodo_carga:
+            c_btn1, c_btn2 = st.columns(2)
+            with c_btn1:
+                if st.button("Usar Repositorio Excel (Normas Internacionales)", use_container_width=True, key="btn_path_excel"):
+                    st.session_state["repo_dir_val"] = r"Y:\Leasy Arrendamientos\NORMAS INTERNACIONALES\REPOSITORIOS"
+                    st.rerun()
+            with c_btn2:
+                if st.button("Usar Repositorio XMLs (REPOSITORIOS SAT)", use_container_width=True, key="btn_path_xml"):
+                    st.session_state["repo_dir_val"] = r"Y:\Leasy Arrendamientos\REPOSITORIOS SAT"
+                    st.rerun()
+
+            default_repo = st.session_state.get("repo_dir_val", r"Y:\Leasy Arrendamientos\NORMAS INTERNACIONALES\REPOSITORIOS")
+            repo_dir = st.text_input("Ruta de la carpeta del repositorio:", value=default_repo, key="txt_repo_dir")
+
+            if not os.path.exists(repo_dir):
+                st.warning(f"La ruta `{repo_dir}` no fue encontrada o no está accesible. Verifica que la unidad de red esté conectada.")
+            else:
+                carpetas_anios = sorted([d for d in os.listdir(repo_dir) if os.path.isdir(os.path.join(repo_dir, d)) and d.isdigit()])
+                
+                c_sel_a, c_tipo_f = st.columns([2, 1])
+                with c_sel_a:
+                    anios_sel = st.multiselect(
+                        "Años a procesar:",
+                        options=carpetas_anios,
+                        default=carpetas_anios,
+                        help="Selecciona los años que deseas cargar a la base de datos",
+                        key="ms_anios_disco"
+                    )
+                with c_tipo_f:
+                    es_repo_excel = "NORMAS INTERNACIONALES" in repo_dir.upper() or any("emitid" in f.lower() for _, _, files in os.walk(repo_dir) for f in files[:2])
+                    tipo_rep = st.radio(
+                        "Tipo de archivo a buscar:",
+                        ["Archivos Excel Emitidos (*.xlsx)", "Archivos XML (*.xml)"],
+                        index=0 if es_repo_excel else 1,
+                        key="radio_tipo_disco"
+                    )
+
+                c_chk1, c_chk2 = st.columns(2)
+                with c_chk1:
+                    sobrescribir_disco = st.checkbox(
+                        "Sobrescribir facturas existentes",
+                        value=True,
+                        help="Actualiza los datos si la factura ya estaba cargada.",
+                        key="chk_sobre_disco"
+                    )
+                with c_chk2:
+                    omitir_canceladas_disco = st.checkbox(
+                        "Omitir canceladas en el SAT",
+                        value=False,
+                        help="No sube comprobantes con estatus cancelado.",
+                        key="chk_omitir_canceladas_disco"
+                    )
+
+                if st.button("Cargar y Conciliar Repositorio en Disco", type="primary", use_container_width=True, key="btn_ejecutar_disco"):
+                    if not anios_sel:
+                        st.warning("Selecciona al menos un año para procesar.")
                     else:
-                        errores.append(f"{name}: extensión no soportada.")
-                except Exception as e:
-                    errores.append(f"{name}: error al leer ({e})")
-            return out, errores
-
-        if archivos:
-            items, err_prev = _expandir_archivos_subidos(archivos)
-            n_xml = sum(1 for n, _ in items if n.lower().endswith(".xml"))
-            n_xls = sum(1 for n, _ in items if n.lower().endswith((".xlsx", ".csv")))
-            peso_kb = sum(len(b) for _, b in items) / 1024.0
-
-            st.info(f"📂 **{len(items)} archivo(s) recibidos** ({n_xml} XML, {n_xls} Excel/CSV) — {peso_kb:,.0f} KB total")
-
-            if err_prev:
-                with st.expander(f"⚠️ Observaciones previas ({len(err_prev)})", expanded=True):
-                    for msg in err_prev:
-                        st.warning(msg)
-
-            if items:
-                if st.button("🚀 PROCESAR Y CONCILIAR AHORA", type="primary", key="btn_procesar_cfdi_directo", use_container_width=True):
-                    resultados = []
-                    errores_parse = list(err_prev)
-                    total = len(items)
-                    barra = st.progress(0, text=f"Iniciando… 0/{total}")
-                    estado = st.empty()
-                    uuids_en_lote = {}
-                    try:
                         reglas = get_reglas_concepto()
-                        cache_lote = {}
-                        alias_map = cargar_alias_contrato()
-                        usos_alias = {}
+                        barra_d = st.progress(0, text="Buscando archivos en el repositorio...")
+                        estado_d = st.empty()
+                        facts_totales = []
+                        archivos_encontrados = []
 
-                        for i, (nombre, raw) in enumerate(items):
-                            pct = (i + 1) / total
-                            barra.progress(pct, text=f"Procesando {nombre} ({i+1}/{total})")
-                            estado.caption(f"⚙️ Archivo {i+1} de {total}: `{nombre}`")
+                        # Escanear archivos
+                        if "Excel" in tipo_rep:
+                            estado_d.caption("Localizando archivos Excel de comprobantes emitidos...")
+                            for yr in anios_sel:
+                                y_path = os.path.join(repo_dir, yr)
+                                if os.path.exists(y_path):
+                                    for fname in os.listdir(y_path):
+                                        fl = fname.lower()
+                                        if fl.endswith((".xlsx", ".csv")) and "emitid" in fl and "egreso" not in fl and "pago" not in fl:
+                                            archivos_encontrados.append(os.path.join(y_path, fname))
+                            
+                            # Si no se encontraron por "emitid", agregar todos los xlsx del año
+                            if not archivos_encontrados:
+                                for yr in anios_sel:
+                                    y_path = os.path.join(repo_dir, yr)
+                                    if os.path.exists(y_path):
+                                        for fname in os.listdir(y_path):
+                                            if fname.lower().endswith((".xlsx", ".csv")):
+                                                archivos_encontrados.append(os.path.join(y_path, fname))
+
+                            total_arch = len(archivos_encontrados)
+                            if total_arch == 0:
+                                st.warning("No se encontraron archivos Excel para los años seleccionados.")
+                            else:
+                                for idx_a, f_path in enumerate(archivos_encontrados):
+                                    f_name = os.path.basename(f_path)
+                                    estado_d.caption(f"Leyendo Excel {idx_a+1} de {total_arch}: `{f_name}`...")
+                                    try:
+                                        facts_arch = parse_sat_excel(f_path, reglas)
+                                        facts_totales.extend(facts_arch)
+                                    except Exception as e_p:
+                                        st.warning(f"Error al leer `{f_name}`: {e_p}")
+
+                        else:
+                            estado_d.caption("Buscando archivos XML en las carpetas de los años seleccionados...")
+                            for yr in anios_sel:
+                                y_path = os.path.join(repo_dir, yr)
+                                if os.path.exists(y_path):
+                                    for root, _, files in os.walk(y_path):
+                                        for f in files:
+                                            if f.lower().endswith(".xml"):
+                                                archivos_encontrados.append(os.path.join(root, f))
+
+                            total_arch = len(archivos_encontrados)
+                            if total_arch == 0:
+                                st.warning("No se encontraron archivos XML para los años seleccionados.")
+                            else:
+                                step_xml = max(1, total_arch // 50)
+                                for idx_x, x_path in enumerate(archivos_encontrados):
+                                    if idx_x % step_xml == 0 or idx_x == total_arch - 1:
+                                        pct = (idx_x + 1) / total_arch
+                                        barra_d.progress(pct, text=f"Leyendo XMLs: {idx_x+1}/{total_arch}")
+                                    try:
+                                        with open(x_path, "rb") as xf:
+                                            raw_x = xf.read()
+                                        fact_x = parse_cfdi(raw_x, reglas)
+                                        facts_totales.append(fact_x)
+                                    except Exception as e_x:
+                                        pass
+
+                        if facts_totales:
+                            if omitir_canceladas_disco:
+                                facts_totales = [f for f in facts_totales if f.get("cancelada") != 1 and f.get("status") != "CANCELADA"]
+                            res_d, omit_d, err_d = _ejecutar_conciliacion_lote(
+                                facts_totales,
+                                sobrescribir=sobrescribir_disco,
+                                barra=barra_d,
+                                estado=estado_d,
+                                label_lote="Conciliando comprobantes"
+                            )
+                            barra_d.empty()
+                            estado_d.empty()
+                            _mostrar_resumen_lote(res_d, omit_d, err_d, titulo="Repositorio Procesado")
+                        else:
+                            barra_d.empty()
+                            estado_d.empty()
+                            st.warning("No se extrajeron comprobantes de las rutas seleccionadas.")
+
+        # ===================================================================
+        # MODALIDAD 2: SUBIDA MANUAL POR NAVEGADOR
+        # ===================================================================
+        else:
+            col_per, col_over = st.columns(2)
+            with col_per:
+                periodo_ref = st.date_input(
+                    "Período de respaldo",
+                    value=hoy_ref().replace(day=1),
+                    help="Solo se usará si un comprobante no incluye fecha legible.",
+                    key="carga_periodo_ref",
+                )
+            with col_over:
+                st.write("")
+                sobrescribir = st.checkbox(
+                    "Sobrescribir facturas existentes",
+                    value=True,
+                    help="Actualiza los datos si el UUID ya existe en la base de datos.",
+                    key="carga_sobrescribir",
+                )
+                omitir_canceladas_manual = st.checkbox(
+                    "Omitir canceladas en el SAT",
+                    value=False,
+                    help="No sube comprobantes con estatus cancelado.",
+                    key="carga_omitir_canceladas_manual",
+                )
+
+            archivos = st.file_uploader(
+                "Arrastra tus archivos XML, ZIP o Excel aquí",
+                type=["xml", "zip", "xlsx", "csv"],
+                accept_multiple_files=True,
+                key="carga_cfdi_uploader_unico",
+            )
+
+            def _expandir_archivos_subidos(lista):
+                import zipfile
+                out = []
+                errores = []
+                if not lista:
+                    return out, errores
+                for arch in lista:
+                    name = arch.name or "sin_nombre"
+                    name_l = name.lower()
+                    try:
+                        raw = arch.getvalue() if hasattr(arch, "getvalue") else arch.read()
+                        if not raw:
+                            errores.append(f"{name}: archivo vacio (0 bytes).")
+                            continue
+                        if name_l.endswith(".zip"):
                             try:
-                                name_lower = nombre.lower()
-                                facts = []
-                                if name_lower.endswith(".xml"):
-                                    if len(raw) > MAX_XML_BYTES:
-                                        raise ValueError(
-                                            f"pesa {len(raw)/1024:.0f} KB (límite {MAX_XML_BYTES//1024//1024} MB)."
-                                        )
-                                    facts = [parse_cfdi(raw, reglas)]
-                                elif name_lower.endswith(".xlsx"):
+                                with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+                                    xml_names = [n for n in zf.namelist()
+                                                 if n.lower().endswith(".xml") and not n.startswith("__MACOSX")]
+                                    if not xml_names:
+                                        errores.append(f"{name}: el ZIP no contiene ningun archivo .xml")
+                                        continue
+                                    for n in xml_names:
+                                        out.append((os.path.basename(n.replace("\\", "/")) or n, zf.read(n)))
+                            except zipfile.BadZipFile:
+                                errores.append(f"{name}: archivo ZIP dañado o inválido.")
+                        elif name_l.endswith(".xml"):
+                            out.append((name, raw))
+                        elif name_l.endswith((".xlsx", ".csv")):
+                            out.append((name, raw))
+                        else:
+                            errores.append(f"{name}: extensión no soportada.")
+                    except Exception as e:
+                        errores.append(f"{name}: error al leer ({e})")
+                return out, errores
+
+            col_btn_up, col_inf_up = st.columns([1, 3])
+            with col_btn_up:
+                procesar_clic = st.button(
+                    "Procesar Archivos",
+                    type="primary",
+                    disabled=not bool(archivos),
+                    key="btn_procesar_cfdi",
+                    use_container_width=True,
+                )
+            with col_inf_up:
+                if archivos:
+                    st.caption(f"{len(archivos)} archivo(s) seleccionado(s). Haz clic en Procesar Archivos.")
+                else:
+                    st.caption("Arrastra o selecciona archivos XML, ZIP, XLSX o CSV arriba.")
+
+            if procesar_clic and archivos:
+                items, err_prev = _expandir_archivos_subidos(archivos)
+                n_xml = sum(1 for n, _ in items if n.lower().endswith(".xml"))
+                n_xls = sum(1 for n, _ in items if n.lower().endswith((".xlsx", ".csv")))
+                peso_kb = sum(len(b) for _, b in items) / 1024.0
+
+                st.info(f"{len(items)} archivo(s) expandidos ({n_xml} XML, {n_xls} Excel/CSV) - {peso_kb:,.0f} KB total")
+
+                if err_prev:
+                    with st.expander(f"Observaciones ({len(err_prev)})", expanded=True):
+                        for msg in err_prev:
+                            st.warning(msg)
+
+                if items:
+                    facts_navegador = []
+                    errores_parse = list(err_prev)
+                    reglas = get_reglas_concepto()
+
+                    for nombre, raw in items:
+                        name_lower = nombre.lower()
+                        try:
+                            if name_lower.endswith(".xml"):
+                                if len(raw) > MAX_XML_BYTES:
+                                    raise ValueError(f"pesa {len(raw)/1024:.0f} KB (límite {MAX_XML_BYTES//1024//1024} MB).")
+                                facts_navegador.append(parse_cfdi(raw, reglas))
+                            elif name_lower.endswith(".xlsx"):
+                                try:
+                                    facts_sat = parse_sat_excel(raw, reglas)
+                                    facts_navegador.extend(facts_sat)
+                                except Exception:
                                     df_arch = pd.read_excel(io.BytesIO(raw))
                                     df_arch.columns = [str(col).strip().upper() for col in df_arch.columns]
                                     for _, r in df_arch.iterrows():
-                                        facts.append({
+                                        fec = str(r.get("FECHA", "") or "")
+                                        facts_navegador.append({
                                             "uuid": str(r.get("UUID", "") or ""),
-                                            "fecha": str(r.get("FECHA", "") or ""),
+                                            "fecha": fec,
                                             "folio": str(r.get("FOLIO", "") or ""),
                                             "subtotal": float(r.get("SUBTOTAL", 0) or 0),
                                             "total": float(r.get("TOTAL", 0) or 0),
                                             "id_contrato": str(r.get("CONTRATO", "") or "") or None,
                                             "mes_contrato": None,
                                             "tipo": "MENSUAL",
-                                            "periodo": str(r.get("FECHA", "") or "")[:7],
+                                            "periodo": fec[:7] if fec else "",
                                             "conceptos": {"RENTA": float(r.get("SUBTOTAL", 0) or 0)},
-                                            "conceptos_raw": [],
-                                            "rfc_emisor": None,
-                                            "rfc_receptor": None,
-                                            "tipo_comprobante": "I",
-                                            "moneda": "MXN",
-                                            "avisos_xml": [],
-                                            "alias_aplicado": 0,
+                                            "conceptos_raw": [], "rfc_emisor": None, "rfc_receptor": None,
+                                            "tipo_comprobante": "I", "moneda": "MXN", "avisos_xml": [], "alias_aplicado": 0,
                                         })
-                                elif name_lower.endswith(".csv"):
-                                    df_arch = pd.read_csv(io.BytesIO(raw))
-                                    df_arch.columns = [str(col).strip().upper() for col in df_arch.columns]
-                                    for _, r in df_arch.iterrows():
-                                        facts.append({
-                                            "uuid": str(r.get("UUID", "") or ""),
-                                            "fecha": str(r.get("FECHA", "") or ""),
-                                            "folio": str(r.get("FOLIO", "") or ""),
-                                            "subtotal": float(r.get("SUBTOTAL", 0) or 0),
-                                            "total": float(r.get("TOTAL", 0) or 0),
-                                            "id_contrato": str(r.get("CONTRATO", "") or "") or None,
-                                            "mes_contrato": None,
-                                            "tipo": "MENSUAL",
-                                            "periodo": str(r.get("FECHA", "") or "")[:7],
-                                            "conceptos": {"RENTA": float(r.get("SUBTOTAL", 0) or 0)},
-                                            "conceptos_raw": [],
-                                            "rfc_emisor": None,
-                                            "rfc_receptor": None,
-                                            "tipo_comprobante": "I",
-                                            "moneda": "MXN",
-                                            "avisos_xml": [],
-                                            "alias_aplicado": 0,
-                                        })
+                            elif name_lower.endswith(".csv"):
+                                df_arch = pd.read_csv(io.BytesIO(raw))
+                                df_arch.columns = [str(col).strip().upper() for col in df_arch.columns]
+                                for _, r in df_arch.iterrows():
+                                    fec = str(r.get("FECHA", "") or "")
+                                    facts_navegador.append({
+                                        "uuid": str(r.get("UUID", "") or ""),
+                                        "fecha": fec,
+                                        "folio": str(r.get("FOLIO", "") or ""),
+                                        "subtotal": float(r.get("SUBTOTAL", 0) or 0),
+                                        "total": float(r.get("TOTAL", 0) or 0),
+                                        "id_contrato": str(r.get("CONTRATO", "") or "") or None,
+                                        "mes_contrato": None,
+                                        "tipo": "MENSUAL",
+                                        "periodo": fec[:7] if fec else "",
+                                        "conceptos": {"RENTA": float(r.get("SUBTOTAL", 0) or 0)},
+                                        "conceptos_raw": [], "rfc_emisor": None, "rfc_receptor": None,
+                                        "tipo_comprobante": "I", "moneda": "MXN", "avisos_xml": [], "alias_aplicado": 0,
+                                    })
+                        except Exception as e_arch:
+                            errores_parse.append(f"**{nombre}**: {e_arch}")
 
-                                for fact in facts:
-                                    if not fact.get("periodo"):
-                                        fact["periodo"] = periodo_ref.strftime("%Y-%m")
-                                    if fact.get("uuid") and fact["uuid"] in uuids_en_lote:
-                                        errores_parse.append(
-                                            f"**{nombre}**: UUID duplicado en el mismo lote ({uuids_en_lote[fact['uuid']]})"
-                                        )
-                                        continue
-                                    if fact.get("uuid"):
-                                        uuids_en_lote[fact["uuid"]] = nombre
-                                    detectado = fact.get("id_contrato")
-                                    id_final, se_aplico = resolver_numero_contrato(detectado, alias_map)
-                                    fact["id_contrato"] = id_final
-                                    fact["alias_aplicado"] = 1 if se_aplico else 0
-                                    if se_aplico and detectado:
-                                        usos_alias[detectado] = usos_alias.get(detectado, 0) + 1
-                                    res = conciliar_factura(fact, cache_lote)
-                                    merged = {**fact, **res}
-                                    merged["status"] = res["status"]
-                                    resultados.append(merged)
-                            except Exception as e:
-                                errores_parse.append(f"**{nombre}**: {e}")
+                    # Asegurar período de respaldo solo si falta
+                    for fact in facts_navegador:
+                        if not fact.get("periodo"):
+                            fact["periodo"] = periodo_ref.strftime("%Y-%m")
 
-                        barra.progress(1.0, text=f"Terminado {total}/{total}")
-                        estado.empty()
-                        marcar_alias_usado_lote(usos_alias)
-                        st.session_state["conciliacion_errores_parse"] = errores_parse
+                    if omitir_canceladas_manual:
+                        facts_navegador = [f for f in facts_navegador if f.get("cancelada") != 1 and f.get("status") != "CANCELADA"]
 
-                        if not resultados:
-                            st.error("No se procesó ningún XML correctamente.")
-                            st.session_state["conciliacion_resultados"] = None
-                        else:
-                            with st.spinner("Guardando en la base de datos..."):
-                                omitidas = guardar_facturas_batch(resultados, sobrescribir_existentes=sobrescribir)
-                            registrar_corrida_conciliacion(
-                                periodo_ref.strftime("%Y-%m"), resultados, omitidas=len(omitidas)
-                            )
-                            st.session_state["conciliacion_resultados"] = resultados
-                            st.session_state["conciliacion_omitidas"] = omitidas
-                            st.session_state["conciliacion_periodo_lote"] = periodo_ref.strftime("%Y-%m")
-                            st.success(
-                                f"✅ ¡Procesados con éxito **{len(resultados)}** factura(s)! "
-                                f"Omitidas: **{len(omitidas)}**. Errores: **{len(errores_parse)}**."
-                            )
-                            st.session_state["_refresh"] = True
-                    except Exception as e_lote:
-                        barra.empty()
-                        estado.empty()
-                        st.error(f"La carga se detuvo por un error general: {e_lote}")
-                        st.session_state["conciliacion_errores_parse"] = errores_parse + [str(e_lote)]
+                    barra_n = st.progress(0, text="Iniciando conciliación...")
+                    estado_n = st.empty()
+
+                    res_n, omit_n, err_n = _ejecutar_conciliacion_lote(
+                        facts_navegador,
+                        sobrescribir=sobrescribir,
+                        barra=barra_n,
+                        estado=estado_n,
+                        label_lote="Procesando archivos"
+                    )
+                    barra_n.empty()
+                    estado_n.empty()
+                    _mostrar_resumen_lote(res_n, omit_n, errores_parse + err_n, titulo="Archivos Subidos")
+                else:
+                    st.warning("No se encontraron archivos válidos en la selección.")
+
+
 
         st.markdown("---")
         # Resultados guardados permanentemente
@@ -3425,12 +4498,8 @@ def _render_conciliacion():
             )
 
         st.divider()
-        st.markdown("**Resultados guardados**")
-        st.caption(
-            "Aquí se ve el detalle completo de cualquier mes o año que ya hayas procesado, no solo el "
-            "último lote — queda guardado de forma permanente en la base de datos, así que nunca "
-            "desaparece ni depende de dejar la pantalla abierta."
-        )
+        st.markdown("**Historial de facturas procesadas**")
+        st.caption("Consulta el detalle de los períodos previamente procesados.")
         conn_res = get_db()
         _periodos_todos = [r[0] for r in conn_res.execute(
             "SELECT DISTINCT periodo FROM facturas WHERE periodo IS NOT NULL ORDER BY periodo DESC"
@@ -3464,17 +4533,19 @@ def _render_conciliacion():
                 n_ok   = sum(1 for f in filas if f['estatus'] == 'CONCILIADO')
                 n_disc = sum(1 for f in filas if f['estatus'] == 'DISCREPANCIA')
                 n_sin  = sum(1 for f in filas if f['estatus'] == 'SIN_CONTRATO')
+                n_canc = sum(1 for f in filas if f['estatus'] == 'CANCELADA' or f['cancelada'] == 1)
                 n_err  = sum(1 for f in filas if f['estatus'] == 'ERROR')
                 n_noa  = sum(1 for f in filas if f['estatus'] == 'NO_APLICA')
                 n_rfc  = sum(1 for f in filas if f['estatus'] == 'RFC_INCORRECTO')
 
-                k1, k2, k3, k4, k5, k6 = st.columns(6)
+                k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
                 k1.metric("Conciliados",   n_ok)
                 k2.metric("Discrepancia",  n_disc)
                 k3.metric("Sin contrato",  n_sin)
-                k4.metric("Error",         n_err)
-                k5.metric("No aplica",     n_noa)
-                k6.metric("RFC incorrecto", n_rfc)
+                k4.metric("Canceladas",    n_canc)
+                k5.metric("Error",         n_err)
+                k6.metric("No aplica",     n_noa)
+                k7.metric("RFC incorrecto", n_rfc)
 
                 # Tabla de resultados
                 df_res = pd.DataFrame([{
@@ -3482,7 +4553,7 @@ def _render_conciliacion():
                     'UUID':         (f['uuid'] or '')[:8] + '…',
                     'Contrato':     f['id_contrato'] or '—',
                     'Tipo':         f['tipo'] or '-',
-                    'Mes':          str(int(f['mes_contrato'])) if f['mes_contrato'] is not None else '-',
+                    'Mes':          str(f['mes_contrato']).replace('.0', '') if f['mes_contrato'] is not None else '-',
                     'Facturado $':  f['facturado'] or 0,
                     'Esperado $':   f['esperado'] or 0,
                     'Diferencia $': f['diferencia'] or 0,
@@ -3505,62 +4576,11 @@ def _render_conciliacion():
                 styled = df_res.style.format(fmt).map(colorear, subset=['Estatus'])
                 st.dataframe(styled, width='stretch', height=400, key="df_002")
 
-                # Desplegar acciones de resolución para cada resultado
-                with st.expander("Acciones de resolución (discrepancias y sin contrato)", expanded=False):
-                    for f in filas:
-                        fr = dict(f)
-                        if fr['estatus'] == 'DISCREPANCIA' and fr.get('tipo') == 'ANTICIPO':
-                            # Verificar si la discrepancia es en comisión
-                            if 'Comisión' in (fr.get('observaciones') or ''):
-                                _conc_fila = _totales_desde_conceptos(fr['uuid'])
-                                com_fac = _conc_fila.get('COMISION', 0)
-                                _con_row = conn_res.execute(
-                                    "SELECT Comision_Monto FROM contratos WHERE ID_Contrato=?", (fr['id_contrato'],)
-                                ).fetchone()
-                                com_esp = _con_row['Comision_Monto'] if _con_row else 0
-                                st.divider()
-                                st.markdown(f"**Contrato {fr.get('id_contrato','')}** · Folio {fr.get('folio','')}")
-                                st.write(f"Comisión esperada: **${com_esp:,.2f}** (del contrato)")
-                                st.write(f"Comisión facturada: **${com_fac:,.2f}**")
-                                if st.button(f"Actualizar comisión del contrato a ${com_fac:,.2f}", key=f"upd_com_{fr['uuid']}"):
-                                    conn_res.execute("UPDATE contratos SET Comision_Monto=? WHERE ID_Contrato=?", (com_fac, fr['id_contrato']))
-                                    conn_res.commit()
-                                    agregar_anotacion(fr['id_contrato'], f"Comisión actualizada de ${com_esp:,.2f} a ${com_fac:,.2f} por conciliación de factura {fr.get('folio','')}", "Ajuste contable")
-                                    res2 = re_conciliar_factura(fr['uuid'])
-                                    if res2:
-                                        st.success(f"Comisión actualizada y factura reconciliada. Nuevo estatus: {res2['status']}")
-                                    else:
-                                        st.warning("Comisión actualizada, pero no se encontró la factura para re-conciliarla.")
-                                    st.session_state['_refresh'] = True
-                        elif fr['estatus'] == 'SIN_CONTRATO':
-                            st.divider()
-                            st.markdown(f"**Factura sin contrato** · Folio {fr.get('folio','')} · UUID {fr.get('uuid','')}")
-                            df_todos = obtener()  # todos los contratos, no solo ACTIVO, para poder encontrar cualquiera
-                            if not df_todos.empty:
-                                df_todos_sorted = df_todos.sort_values('ID_Contrato')
-                                etiquetas = (df_todos_sorted['ID_Contrato'] + ' — ' + df_todos_sorted['Cliente'].fillna('') +
-                                             ' (' + df_todos_sorted['Estatus'].fillna('') + ')').tolist()
-                                mapa_etiqueta_id = dict(zip(etiquetas, df_todos_sorted['ID_Contrato']))
-                                etiqueta_sel = st.selectbox(
-                                    "Selecciona un contrato (escribe para buscar por número o cliente)",
-                                    etiquetas, key=f"asign_{fr['uuid']}"
-                                )
-                                sel_contrato = mapa_etiqueta_id[etiqueta_sel]
-                                if st.button(f"Asignar contrato {sel_contrato} y reconciliar", key=f"asign_btn_{fr['uuid']}"):
-                                    _detectado = fr.get('id_contrato_detectado') or fr.get('id_contrato')
-                                    res2 = asignar_contrato_manual(fr['uuid'], sel_contrato, _detectado)
-                                    if res2:
-                                        if _detectado and _detectado != sel_contrato:
-                                            st.success(f"Contrato asignado. Nuevo estatus: {res2['status']}. "
-                                                       f"Se guardó como regla: la próxima factura que llegue con "
-                                                       f"'{_detectado}' se asignará sola a {sel_contrato}.")
-                                        else:
-                                            st.success(f"Contrato asignado. Nuevo estatus: {res2['status']}")
-                                    else:
-                                        st.warning("Contrato asignado, pero no se encontró la factura para re-conciliarla.")
-                                    st.session_state['_refresh'] = True
-                            else:
-                                st.warning("No hay contratos disponibles en la base de datos.")
+                if n_disc > 0 or n_sin > 0:
+                    st.info(
+                        f"**Acciones pendientes:** Hay **{n_disc}** factura(s) con discrepancia y **{n_sin}** sin contrato en este período. "
+                        f"Puedes resolverlas, asignar contratos o actualizar comisiones en la pestaña **'Resolver Pendientes'**."
+                    )
 
                 csv_bytes = df_res.to_csv(index=False).encode('utf-8-sig')
                 st.download_button(
@@ -3573,7 +4593,7 @@ def _render_conciliacion():
     # ===================================================================
     # TAB 2 – HISTORIAL
     # ===================================================================
-    with tab_historial:
+    elif tab_activa == "Historial":
         st.subheader("Historial de Facturas Procesadas")
         conn = get_db()
         periodos = conn.execute(
@@ -3593,7 +4613,9 @@ def _render_conciliacion():
             placeholders = ','.join('?' * len(estatus_fil))
             rows = conn.execute(
                 f"""SELECT f.uuid, f.folio, f.id_contrato, f.tipo, f.mes_contrato,
-                           f.subtotal, f.total, f.estatus, f.observaciones, f.fecha_emision
+                           f.subtotal, f.total, f.estatus,
+                           COALESCE((SELECT GROUP_CONCAT(fc.descripcion, ' | ') FROM factura_conceptos fc WHERE fc.uuid = f.uuid), f.observaciones) as concepto,
+                           f.observaciones, f.fecha_emision
                     FROM facturas f
                     WHERE f.periodo=? AND f.estatus IN ({placeholders})
                     ORDER BY f.estatus, f.id_contrato""",
@@ -3603,7 +4625,7 @@ def _render_conciliacion():
             if rows:
                 df_hist = pd.DataFrame(rows, columns=[
                     'UUID', 'Folio', 'Contrato', 'Tipo', 'Mes',
-                    'Subtotal', 'Total', 'Estatus', 'Observación', 'Fecha'
+                    'Subtotal', 'Total', 'Estatus', 'Concepto', 'Observación', 'Fecha'
                 ])
                 df_hist['UUID'] = df_hist['UUID'].str[:8] + '…'
                 st.dataframe(df_hist, width='stretch', height=500, key="df_003")
@@ -3613,22 +4635,19 @@ def _render_conciliacion():
                     (per_sel,)
                 ).fetchall()
                 kk = {r[0]: r[1] for r in all_rows}
-                c1, c2, c3, c4, c5 = st.columns(5)
+                c1, c2, c3, c4, c5, c6 = st.columns(6)
                 c1.metric("Conciliados",  kk.get('CONCILIADO', 0))
                 c2.metric("Discrepancia", kk.get('DISCREPANCIA', 0))
                 c3.metric("Sin contrato", kk.get('SIN_CONTRATO', 0))
-                c4.metric("Error",        kk.get('ERROR', 0))
-                c5.metric("No aplica",    kk.get('NO_APLICA', 0))
+                c4.metric("Canceladas",   kk.get('CANCELADA', 0))
+                c5.metric("Error",        kk.get('ERROR', 0))
+                c6.metric("No aplica",    kk.get('NO_APLICA', 0))
             else:
                 st.info("No hay facturas con esos filtros para ese período.")
 
         st.divider()
         st.subheader("Historial de Corridas")
-        st.caption(
-            "Un renglón por cada vez que se procesó un lote de XMLs — a diferencia de la tabla de "
-            "arriba (que se puede sobreescribir si vuelves a cargar el mismo período), esto siempre "
-            "suma un registro nuevo, para tener a la mano cuándo se concilió cada lote."
-        )
+        st.caption("Registro de lotes de facturación procesados.")
         corridas = conn.execute(
             """SELECT fecha_corrida, periodo, total_facturas, conciliadas, discrepancias,
                       sin_contrato, errores, no_aplica, rfc_incorrecto, omitidas, rfc_configurado
@@ -3644,21 +4663,752 @@ def _render_conciliacion():
             st.dataframe(df_corridas, width='stretch', height=320, key="df_corridas")
 
     # ===================================================================
-    # TAB — CONCEPTOS SIN RECONOCER
+    # TAB COMPARATIVO DE CIFRAS (DISCREPANCIAS NUMÉRICAS)
     # ===================================================================
-    with tab_conceptos:
+    elif tab_activa == "Comparativo de Cifras":
+        st.subheader("Comparativo de Cifras y Análisis de Discrepancias")
+        st.caption("Facturas donde el monto facturado no coincide con lo programado en el contrato.")
+        conn = get_db()
+
+        query_comp = """
+            SELECT 
+                f.uuid, 
+                f.folio, 
+                f.id_contrato, 
+                c.Cliente, 
+                f.periodo, 
+                f.mes_contrato, 
+                f.tipo, 
+                f.esperado, 
+                f.facturado, 
+                f.diferencia,
+                (SELECT GROUP_CONCAT(fc.descripcion, ' | ') FROM factura_conceptos fc WHERE fc.uuid = f.uuid) as concepto,
+                f.observaciones,
+                f.fecha_emision,
+                f.estatus
+            FROM facturas f
+            LEFT JOIN contratos c ON c.ID_Contrato = TRIM(SUBSTR(f.id_contrato, 1, INSTR(f.id_contrato || ',', ',') - 1))
+            WHERE f.estatus IN ('CONCILIADO', 'DISCREPANCIA') AND (f.cancelada IS NULL OR f.cancelada = 0)
+            ORDER BY f.periodo DESC, ABS(f.diferencia) DESC
+        """
+        rows_comp = conn.execute(query_comp).fetchall()
+
+        if not rows_comp:
+            st.success("No hay facturas procesadas registradas en el sistema.")
+        else:
+            df_comp = pd.DataFrame(rows_comp, columns=[
+                'UUID', 'Folio', 'Contrato', 'Cliente', 'Período', 'Mes', 'Tipo',
+                'Esperado', 'Facturado', 'Diferencia', 'Concepto', 'Observación', 'Fecha Emisión', 'Estatus'
+            ])
+
+            df_comp['Cliente'] = df_comp['Cliente'].fillna('Sin Contrato / Desconocido')
+            df_comp['Contrato'] = df_comp['Contrato'].fillna('—')
+            df_comp['Folio'] = df_comp['Folio'].fillna('—')
+            df_comp['Esperado'] = pd.to_numeric(df_comp['Esperado'], errors='coerce').fillna(0.0)
+            df_comp['Facturado'] = pd.to_numeric(df_comp['Facturado'], errors='coerce').fillna(0.0)
+            df_comp['Diferencia'] = pd.to_numeric(df_comp['Diferencia'], errors='coerce').fillna(0.0)
+            df_comp['Dif_Abs'] = df_comp['Diferencia'].abs()
+            
+            df_comp['Pct_Var'] = np.where(
+                df_comp['Esperado'] > 0,
+                (df_comp['Diferencia'] / df_comp['Esperado']) * 100,
+                0.0
+            )
+
+            df_disc = df_comp[df_comp['Estatus'] == 'DISCREPANCIA'].copy()
+            df_conc = df_comp[df_comp['Estatus'] == 'CONCILIADO'].copy()
+
+            tot_facturas = len(df_comp)
+            n_conciliadas = len(df_conc)
+            n_discrepancias = len(df_disc)
+            pct_efectividad = (n_conciliadas / tot_facturas * 100) if tot_facturas else 0.0
+            tot_facturado = float(df_comp['Facturado'].sum())
+            tot_esperado = float(df_comp['Esperado'].sum())
+            tot_dif = float(df_disc['Diferencia'].sum())
+
+            cnt_redondeo = int((df_disc['Dif_Abs'] <= 5.0).sum())
+            mto_redondeo = float(df_disc.loc[df_disc['Dif_Abs'] <= 5.0, 'Diferencia'].sum())
+
+            cnt_menor = int(((df_disc['Dif_Abs'] > 5.0) & (df_disc['Dif_Abs'] <= 500.0)).sum())
+            mto_menor = float(df_disc.loc[(df_disc['Dif_Abs'] > 5.0) & (df_disc['Dif_Abs'] <= 500.0), 'Diferencia'].sum())
+
+            cnt_media = int(((df_disc['Dif_Abs'] > 500.0) & (df_disc['Dif_Abs'] <= 5000.0)).sum())
+            mto_media = float(df_disc.loc[(df_disc['Dif_Abs'] > 500.0) & (df_disc['Dif_Abs'] <= 5000.0), 'Diferencia'].sum())
+
+            cnt_mayor = int((df_disc['Dif_Abs'] > 5000.0).sum())
+            mto_mayor = float(df_disc.loc[df_disc['Dif_Abs'] > 5000.0, 'Diferencia'].sum())
+
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("Facturas Analizadas", f"{tot_facturas:,}")
+            k2.metric("Conciliadas (Correctas)", f"{n_conciliadas:,}", f"{pct_efectividad:.1f}% efectividad")
+            k3.metric("Con Discrepancia", f"{n_discrepancias:,}", delta=f"-{100-pct_efectividad:.1f}%", delta_color="inverse")
+            k4.metric("Diferencia Neta Total", f"${tot_dif:+,.2f}")
+
+            if n_discrepancias > 0:
+                st.markdown("##### Desglose de Discrepancias por Magnitud")
+                rg1, rg2, rg3, rg4 = st.columns(4)
+                rg1.metric("Redondeo (<= $5.00)", f"{cnt_redondeo} facturas", f"${mto_redondeo:+,.2f}")
+                rg2.metric("Menores ($5.01 - $500)", f"{cnt_menor} facturas", f"${mto_menor:+,.2f}")
+                rg3.metric("Medias ($500.01 - $5,000)", f"{cnt_media} facturas", f"${mto_media:+,.2f}")
+                rg4.metric("Mayores (> $5,000)", f"{cnt_mayor} facturas", f"${mto_mayor:+,.2f}")
+
+                if cnt_redondeo > 0:
+                    with st.expander(f"Conciliar {cnt_redondeo} facturas por redondeo (<= $5.00)", expanded=True):
+                        st.caption("Diferencias mínimas de centavos o IVA que puedes aprobar en bloque.")
+                        if st.button("Aceptar diferencias de redondeo (<= $5.00) como Conciliadas", type="primary", key="btn_conciliar_redondeo"):
+                            conn.execute("""
+                                UPDATE facturas
+                                SET estatus = 'CONCILIADO',
+                                    observaciones = 'Conciliado con tolerancia de redondeo (' || printf('$+%.2f', diferencia) || ') | ' || observaciones,
+                                    diferencia = 0.0
+                                WHERE estatus = 'DISCREPANCIA'
+                                  AND (cancelada IS NULL OR cancelada = 0)
+                                  AND ABS(diferencia) <= 5.0
+                            """)
+                            conn.commit()
+                            _tocar_datos()
+                            st.success(f"Se conciliaron exitosamente {cnt_redondeo} facturas con diferencias de centavos/redondeo.")
+                            st.rerun()
+
+            st.divider()
+
+            st.markdown("##### Modalidad de Comparativo")
+            sub_vista = st.radio(
+                "Selecciona la vista a consultar:",
+                [
+                    "Vista Consolidada (General)",
+                    "Contratos Faltantes por Facturar (Control de Cartera / Sin CFDI)",
+                    "Comparativa de Anticipos y Apertura",
+                    "Comparativa de Rentas (Mensualidades)"
+                ],
+                horizontal=True,
+                key="radio_subvista_comparativo"
+            )
+
+            def _color_diferencia(val):
+                if val < 0:
+                    return 'background-color:#FAE3E1;color:#8A2019;font-weight:600'
+                elif val > 0:
+                    return 'background-color:#FBF2D5;color:#785A00;font-weight:600'
+                return ''
+
+            def _color_estatus(val):
+                if val == 'CONCILIADO':
+                    return 'background-color:#EBFBF3;color:#0F5132;font-weight:600'
+                elif val == 'DISCREPANCIA':
+                    return 'background-color:#FBF0DA;color:#7A5209;font-weight:600'
+                return ''
+
+            if sub_vista == "Vista Consolidada (General)":
+                f_est, fc1, fc2, fc3 = st.columns([1.5, 1.2, 1.3, 1.8])
+                with f_est:
+                    filtro_estatus_c = st.selectbox(
+                        "Filtrar por estatus:",
+                        [
+                            "Todos los Contratos (Conciliados y Discrepancias)",
+                            "Solo Contratos Correctos (Conciliados)",
+                            "Solo Discrepancias"
+                        ],
+                        key="filtro_comp_estatus"
+                    )
+                with fc1:
+                    periodos_disc = ['TODOS'] + sorted([p for p in df_comp['Período'].dropna().unique().tolist() if p], reverse=True)
+                    filtro_per_c = st.selectbox("Filtrar por período:", periodos_disc, key="filtro_disc_periodo")
+                with fc2:
+                    filtro_mag = st.selectbox(
+                        "Filtrar por magnitud:",
+                        [
+                            "Todas las magnitudes",
+                            "Solo redondeo (<= $5.00)",
+                            "Diferencias menores ($5.01 - $500)",
+                            "Diferencias medias ($500.01 - $5,000)",
+                            "Diferencias mayores (> $5,000)"
+                        ],
+                        key="filtro_disc_magnitud"
+                    )
+                with fc3:
+                    txt_filtro_disc = st.text_input(
+                        "Buscar por Folio, Contrato o Cliente:",
+                        "", placeholder="Ej. 0718 o HARVEST", key="txt_busq_disc"
+                    )
+
+                df_vista = df_comp.copy()
+                if filtro_estatus_c == "Solo Contratos Correctos (Conciliados)":
+                    df_vista = df_vista[df_vista['Estatus'] == 'CONCILIADO']
+                elif filtro_estatus_c == "Solo Discrepancias":
+                    df_vista = df_vista[df_vista['Estatus'] == 'DISCREPANCIA']
+
+                if filtro_per_c != 'TODOS':
+                    df_vista = df_vista[df_vista['Período'] == filtro_per_c]
+                
+                if filtro_mag == "Solo redondeo (<= $5.00)":
+                    df_vista = df_vista[df_vista['Dif_Abs'] <= 5.0]
+                elif filtro_mag == "Diferencias menores ($5.01 - $500)":
+                    df_vista = df_vista[(df_vista['Dif_Abs'] > 5.0) & (df_vista['Dif_Abs'] <= 500.0)]
+                elif filtro_mag == "Diferencias medias ($500.01 - $5,000)":
+                    df_vista = df_vista[(df_vista['Dif_Abs'] > 500.0) & (df_vista['Dif_Abs'] <= 5000.0)]
+                elif filtro_mag == "Diferencias mayores (> $5,000)":
+                    df_vista = df_vista[df_vista['Dif_Abs'] > 5000.0]
+
+                if txt_filtro_disc.strip():
+                    patt = txt_filtro_disc.strip()
+                    df_vista = df_vista[
+                        df_vista['Folio'].astype(str).str.contains(patt, case=False, na=False) |
+                        df_vista['Contrato'].astype(str).str.contains(patt, case=False, na=False) |
+                        df_vista['Cliente'].astype(str).str.contains(patt, case=False, na=False)
+                    ]
+
+                st.write(f"Mostrando **{len(df_vista):,}** facturas ({filtro_estatus_c}):")
+
+                cols_mostrar = ['Folio', 'Contrato', 'Cliente', 'Período', 'Mes', 'Tipo', 'Estatus', 'Esperado', 'Facturado', 'Diferencia', 'Pct_Var', 'Concepto', 'Observación']
+                df_render = df_vista[cols_mostrar].copy()
+
+                st.dataframe(
+                    df_render.style
+                    .format({
+                        'Esperado': '${:,.2f}',
+                        'Facturado': '${:,.2f}',
+                        'Diferencia': '${:+,.2f}',
+                        'Pct_Var': '{:+.1f}%'
+                    })
+                    .map(_color_diferencia, subset=['Diferencia'])
+                    .map(_color_estatus, subset=['Estatus']),
+                    width='stretch',
+                    height=450,
+                    key="df_comparativo_cifras_grid"
+                )
+
+                try:
+                    buf_excel = excel_con_formato(
+                        {
+                            'Comparativo_Filtrado': df_render,
+                            'Conciliados_Correctos': df_comp[df_comp['Estatus'] == 'CONCILIADO'][cols_mostrar],
+                            'Discrepancias': df_comp[df_comp['Estatus'] == 'DISCREPANCIA'][cols_mostrar]
+                        },
+                        currency_cols=['Esperado', 'Facturado', 'Diferencia']
+                    )
+                    st.download_button(
+                        "Descargar Comparativo de Cifras (Excel con Conciliados y Discrepancias)",
+                        data=buf_excel,
+                        file_name="comparativo_cifras_completo.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="dl_comp_cifras_excel"
+                    )
+                except Exception:
+                    csv_data = df_render.to_csv(index=False).encode('utf-8-sig')
+                    st.download_button(
+                        "Descargar Comparativo de Cifras (CSV)",
+                        data=csv_data,
+                        file_name="comparativo_cifras.csv",
+                        mime="text/csv",
+                        key="dl_comp_cifras_csv"
+                    )
+
+            elif sub_vista == "Contratos Faltantes por Facturar (Control de Cartera / Sin CFDI)":
+                st.caption("Auditoría de cartera: contratos activos en vigencia que no cuentan con factura CFDI mensual emitida en el período seleccionado.")
+                
+                pers_disponibles = sorted([p for p in conn.execute("SELECT DISTINCT periodo FROM facturas WHERE periodo IS NOT NULL").fetchall() if p[0]], reverse=True)
+                pers_lista = [p[0] for p in pers_disponibles if str(p[0]).strip()]
+                if not pers_lista:
+                    pers_lista = [hoy_ref().strftime('%Y-%m')]
+                
+                c_p1, c_p2 = st.columns([1.5, 2.5])
+                with c_p1:
+                    per_sel_falt = st.selectbox("Período a revisar:", pers_lista, index=0, key="sel_per_faltante")
+                with c_p2:
+                    st.caption(f"Auditando qué contratos activos debieron emitir renta en **{per_sel_falt}** pero no tienen CFDI.")
+                
+                try:
+                    p_partes = per_sel_falt.split('-')
+                    anio_f, mes_f = int(p_partes[0]), int(p_partes[1])
+                except Exception:
+                    anio_f, mes_f = hoy_ref().year, hoy_ref().month
+
+                facs_per = conn.execute(
+                    "SELECT id_contrato, id_contrato_detectado FROM facturas WHERE periodo=? AND tipo='MENSUAL' AND (cancelada IS NULL OR cancelada=0)",
+                    (per_sel_falt,)
+                ).fetchall()
+                c_facturados_per = set()
+                for fp in facs_per:
+                    for campo in [fp['id_contrato'], fp['id_contrato_detectado']]:
+                        if campo:
+                            for c_item in str(campo).split(','):
+                                if c_item.strip():
+                                    c_facturados_per.add(c_item.strip())
+
+                contratos_act = conn.execute("SELECT * FROM contratos WHERE Estatus='ACTIVO'").fetchall()
+                total_en_vigencia = 0
+                faltantes_per = []
+                
+                ML_MAP = {0: "0-Al corriente", 1: "1-Atraso", 2: "2-Convenio", 3: "3-Devuelve no paga", 4: "4-Judicial"}
+
+                for c in contratos_act:
+                    c_dict = dict(c)
+                    mc = _mes_en_vigencia_contrato(c_dict, anio_f, mes_f, inc_primer_mes=True)
+                    if mc is not None:
+                        total_en_vigencia += 1
+                        idc_c = c_dict['ID_Contrato']
+                        if idc_c not in c_facturados_per:
+                            nm_val = int(c_dict.get('Nivel_Morosidad') or 0)
+                            faltantes_per.append({
+                                'Contrato': idc_c,
+                                'Cliente': c_dict.get('Cliente', ''),
+                                'Vehículo': c_dict.get('Vehiculo', ''),
+                                'Mes': f"Mes {mc} de {c_dict.get('Plazo', '')}",
+                                'Renta_Esperada': round(float(c_dict.get('Mensualidad_Sin_IVA') or 0.0), 2),
+                                'Morosidad': ML_MAP.get(nm_val, f"Nivel {nm_val}"),
+                                'Nivel_Num': nm_val,
+                                'Excluido_Poliza': 'SI' if c_dict.get('Fecha_Excl_Poliza') else 'NO',
+                                'Motivo_Exclusion': c_dict.get('Motivo_Excl_Poliza') or '—',
+                            })
+
+                cnt_facturados = len(c_facturados_per)
+                cnt_faltantes = len(faltantes_per)
+                mto_faltante = sum(f['Renta_Esperada'] for f in faltantes_per)
+
+                kf1, kf2, kf3, kf4 = st.columns(4)
+                kf1.metric("Activos en Vigencia", f"{total_en_vigencia:,}")
+                kf2.metric("Facturados en Período", f"{cnt_facturados:,}", f"{(cnt_facturados/total_en_vigencia*100) if total_en_vigencia else 0:.1f}%")
+                kf3.metric("Faltantes por Facturar", f"{cnt_faltantes:,}")
+                kf4.metric("Renta Total Faltante", f"${mto_faltante:,.2f}")
+
+                if not faltantes_per:
+                    st.success(f"Excelente: Todos los contratos activos en vigencia ({total_en_vigencia}) tienen factura CFDI emitida en {per_sel_falt}.")
+                else:
+                    df_falt = pd.DataFrame(faltantes_per)
+
+                    cm1, cm2 = st.columns([1.5, 2.5])
+                    with cm1:
+                        filtro_mora = st.selectbox(
+                            "Filtrar por estatus de cobranza:",
+                            ["Todos los faltantes", "Al corriente (Nivel 0)", "Con atraso o convenio (Nivel 1-2)", "Deterioro / Judicial (Nivel 3-4)"],
+                            key="filtro_mora_faltante"
+                        )
+                    with cm2:
+                        txt_busq_falt = st.text_input("Buscar faltante por contrato o cliente:", "", key="txt_busq_falt")
+
+                    df_falt_v = df_falt.copy()
+                    if filtro_mora == "Al corriente (Nivel 0)":
+                        df_falt_v = df_falt_v[df_falt_v['Nivel_Num'] == 0]
+                    elif filtro_mora == "Con atraso o convenio (Nivel 1-2)":
+                        df_falt_v = df_falt_v[df_falt_v['Nivel_Num'].isin([1, 2])]
+                    elif filtro_mora == "Deterioro / Judicial (Nivel 3-4)":
+                        df_falt_v = df_falt_v[df_falt_v['Nivel_Num'].isin([3, 4])]
+
+                    if txt_busq_falt.strip():
+                        patt_f = txt_busq_falt.strip()
+                        df_falt_v = df_falt_v[
+                            df_falt_v['Contrato'].str.contains(patt_f, case=False, na=False) |
+                            df_falt_v['Cliente'].str.contains(patt_f, case=False, na=False)
+                        ]
+
+                    st.write(f"Mostrando **{len(df_falt_v):,}** contratos pendientes de facturar:")
+                    cols_falt_ver = ['Contrato', 'Cliente', 'Vehículo', 'Mes', 'Renta_Esperada', 'Morosidad', 'Excluido_Poliza', 'Motivo_Exclusion']
+                    st.dataframe(
+                        df_falt_v[cols_falt_ver].style.format({'Renta_Esperada': '${:,.2f}'}),
+                        width='stretch',
+                        height=350,
+                        key="grid_contratos_faltantes"
+                    )
+
+                    with st.expander("Mitigar diferencia: Reclasificar Morosidad o Enviar a Deterioro", expanded=True):
+                        st.caption("Asigna el estatus de cobranza correspondiente para justificar contablemente la falta de facturación y mitigar el riesgo.")
+                        lista_opc_falt = [f"{f['Contrato']} — {f['Cliente']} (${f['Renta_Esperada']:,.2f})" for f in faltantes_per]
+                        mapa_opc_falt = {f"{f['Contrato']} — {f['Cliente']} (${f['Renta_Esperada']:,.2f})": f['Contrato'] for f in faltantes_per}
+                        
+                        sel_etiq_falt = st.selectbox("Selecciona contrato a clasificar:", lista_opc_falt, key="sel_falt_mitigar")
+                        c_target_falt = mapa_opc_falt.get(sel_etiq_falt)
+                        
+                        col_acc1, col_acc2 = st.columns(2)
+                        with col_acc1:
+                            st.markdown("**1. Reclasificar Nivel de Morosidad**")
+                            nm_nuevo = st.selectbox(
+                                "Nuevo nivel:",
+                                [1, 2, 3, 4],
+                                format_func=lambda x: {
+                                    1: "1 - Atraso (Sin pago primeros días)",
+                                    2: "2 - Convenio (En negociación / Reestructura)",
+                                    3: "3 - Devuelve no paga (Pase a Deterioro / Excluir)",
+                                    4: "4 - Judicial (Demanda legal / Excluir)"
+                                }[x],
+                                key=f"nm_sel_{c_target_falt}"
+                            )
+                            motivo_mora = st.text_input("Nota o justificación:", value=f"Falta de facturación en {per_sel_falt}", key=f"mot_mora_{c_target_falt}")
+                            if st.button("Actualizar Morosidad", key=f"btn_mora_{c_target_falt}"):
+                                hoy_str = hoy_ref().strftime('%Y-%m-%d')
+                                if nm_nuevo >= 3:
+                                    conn.execute(
+                                        "UPDATE contratos SET Nivel_Morosidad=?, Fecha_Excl_Poliza=?, Motivo_Excl_Poliza=? WHERE ID_Contrato=?",
+                                        (nm_nuevo, hoy_str, motivo_mora, c_target_falt)
+                                    )
+                                else:
+                                    conn.execute(
+                                        "UPDATE contratos SET Nivel_Morosidad=? WHERE ID_Contrato=?",
+                                        (nm_nuevo, c_target_falt)
+                                    )
+                                conn.commit()
+                                _tocar_datos()
+                                st.success(f"Contrato {c_target_falt} actualizado a Nivel {nm_nuevo}.")
+                                st.session_state['_refresh'] = True
+                                st.rerun()
+
+                        with col_acc2:
+                            st.markdown("**2. Enviar a Deterioro de Cartera**")
+                            st.caption("Marca el contrato con Nivel 3, lo excluye de pólizas y registra el evento especial de Deterioro.")
+                            nota_det = st.text_input("Observación de deterioro:", value=f"Deterioro por falta de emisión de CFDI en {per_sel_falt}", key=f"nota_det_{c_target_falt}")
+                            if st.button("Enviar a Deterioro de Cartera", key=f"btn_det_{c_target_falt}", type="primary"):
+                                hoy_str = hoy_ref().strftime('%Y-%m-%d')
+                                conn.execute(
+                                    "UPDATE contratos SET Nivel_Morosidad=3, Fecha_Excl_Poliza=?, Motivo_Excl_Poliza=? WHERE ID_Contrato=?",
+                                    (hoy_str, nota_det, c_target_falt)
+                                )
+                                conn.execute("""
+                                    INSERT INTO eventos_especiales (
+                                        ID_Contrato, Tipo_Evento, Fecha_Evento, Fecha_Registro, Observaciones
+                                    ) VALUES (?, 'DETERIORO', ?, ?, ?)
+                                """, (c_target_falt, f"{per_sel_falt}-01", datetime.now().isoformat(), nota_det))
+                                conn.execute("""
+                                    INSERT INTO anotaciones (ID_Contrato, Fecha, Tipo, Texto)
+                                    VALUES (?, ?, 'DETERIORO', ?)
+                                """, (c_target_falt, hoy_str, f"Enviado a deterioro de cartera desde conciliación: {nota_det}"))
+                                conn.commit()
+                                _tocar_datos()
+                                st.success(f"Contrato {c_target_falt} enviado a Deterioro de Cartera y excluido de pólizas.")
+                                st.session_state['_refresh'] = True
+                                st.rerun()
+
+                    buf_falt = excel_con_formato(
+                        {'Faltantes_Por_Facturar': df_falt_v[cols_falt_ver]},
+                        currency_cols=['Renta_Esperada']
+                    )
+                    st.download_button(
+                        f"Descargar Faltantes por Facturar ({per_sel_falt}) en Excel",
+                        data=buf_falt,
+                        file_name=f"faltantes_facturar_{per_sel_falt}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="btn_dl_faltantes_excel"
+                    )
+
+            elif sub_vista == "Comparativa de Anticipos y Apertura":
+                st.caption("Revisión de pagos iniciales: anticipo y comisión.")
+                q_ant = """
+                    SELECT 
+                        f.uuid, 
+                        f.folio, 
+                        f.id_contrato, 
+                        c.Cliente, 
+                        f.periodo, 
+                        f.fecha_emision,
+                        CASE WHEN INSTR(f.id_contrato, ',') > 0 THEN f.esperado ELSE COALESCE(c.Anticipo_Monto, 0.0) END as ant_esp,
+                        CASE WHEN INSTR(f.id_contrato, ',') > 0 THEN 0.0 ELSE COALESCE(c.Comision_Monto, 0.0) END as com_esp,
+                        COALESCE((SELECT SUM(fc.importe) FROM factura_conceptos fc WHERE fc.uuid = f.uuid AND fc.clave = 'ANTICIPO'), 0.0) as ant_fac,
+                        COALESCE((SELECT SUM(fc.importe) FROM factura_conceptos fc WHERE fc.uuid = f.uuid AND fc.clave = 'COMISION'), 0.0) as com_fac,
+                        f.esperado, 
+                        f.facturado, 
+                        f.diferencia, 
+                        f.estatus, 
+                        f.observaciones
+                    FROM facturas f
+                    LEFT JOIN contratos c ON c.ID_Contrato = TRIM(SUBSTR(f.id_contrato, 1, INSTR(f.id_contrato || ',', ',') - 1))
+                    WHERE (f.tipo = 'ANTICIPO' OR EXISTS (SELECT 1 FROM factura_conceptos fc WHERE fc.uuid = f.uuid AND fc.clave IN ('ANTICIPO', 'COMISION')))
+                      AND (f.cancelada IS NULL OR f.cancelada = 0)
+                    ORDER BY f.periodo DESC, ABS(f.diferencia) DESC
+                """
+                rows_ant = conn.execute(q_ant).fetchall()
+                if not rows_ant:
+                    st.info("No se encontraron facturas con conceptos de anticipo o comisión.")
+                else:
+                    df_ant = pd.DataFrame(rows_ant, columns=[
+                        'UUID', 'Folio', 'Contrato', 'Cliente', 'Período', 'Fecha',
+                        'Anticipo Esp', 'Comisión Esp', 'Anticipo Fac', 'Comisión Fac',
+                        'Esperado Total', 'Facturado Total', 'Diferencia Total', 'Estatus', 'Observación'
+                    ])
+                    df_ant['Cliente'] = df_ant['Cliente'].fillna('Sin Contrato / Desconocido')
+                    df_ant['Contrato'] = df_ant['Contrato'].fillna('—')
+                    df_ant['Folio'] = df_ant['Folio'].fillna('—')
+                    for col_m in ['Anticipo Esp', 'Comisión Esp', 'Anticipo Fac', 'Comisión Fac', 'Esperado Total', 'Facturado Total', 'Diferencia Total']:
+                        df_ant[col_m] = pd.to_numeric(df_ant[col_m], errors='coerce').fillna(0.0)
+
+                    df_ant['Apertura Esp'] = df_ant['Anticipo Esp'] + df_ant['Comisión Esp']
+                    df_ant['Apertura Fac'] = df_ant['Anticipo Fac'] + df_ant['Comisión Fac']
+                    df_ant['Dif Apertura'] = df_ant['Apertura Fac'] - df_ant['Apertura Esp']
+                    df_ant['Dif_Abs'] = df_ant['Dif Apertura'].abs()
+
+                    def _calc_diag_ant(r):
+                        ae = r['Anticipo Esp']
+                        ce = r['Comisión Esp']
+                        af = r['Anticipo Fac']
+                        cf = r['Comisión Fac']
+                        da = r['Dif Apertura']
+                        if abs(da) <= 1.0:
+                            if af == 0 and cf > 0 and ae > 0:
+                                return "Anticipo agrupado en comisión (OK)"
+                            elif cf == 0 and af > 0 and ce > 0:
+                                return "Comisión agrupada en anticipo (OK)"
+                            return "Conciliado OK"
+                        else:
+                            if af == 0 and cf > 0 and ae > 0:
+                                return "Anticipo en comisión (Diferencia)"
+                            elif cf == 0 and af > 0 and ce > 0:
+                                return "Comisión en anticipo (Diferencia)"
+                            return "Diferencia Apertura"
+
+                    df_ant['Diagnóstico'] = df_ant.apply(_calc_diag_ant, axis=1)
+
+                    fa1, fa2, fa3 = st.columns([1.5, 1.5, 2])
+                    with fa1:
+                        pers_ant = ['TODOS'] + sorted([p for p in df_ant['Período'].dropna().unique().tolist() if p], reverse=True)
+                        fil_per_ant = st.selectbox("Filtrar por período:", pers_ant, key="fil_per_ant")
+                    with fa2:
+                        fil_est_ant = st.selectbox(
+                            "Filtrar por resultado:",
+                            [
+                                "Todas las facturas de apertura",
+                                "Solo con Discrepancia en Apertura (Dif != $0)",
+                                "Solo Conciliadas / Sin Diferencia",
+                                "Anticipo agrupado en comisión"
+                            ],
+                            key="fil_est_ant"
+                        )
+                    with fa3:
+                        txt_busq_ant = st.text_input(
+                            "Buscar por Folio, Contrato o Cliente:",
+                            "", placeholder="Ej. 0755 o HARVEST", key="txt_busq_ant"
+                        )
+
+                    df_v_ant = df_ant.copy()
+                    if fil_per_ant != 'TODOS':
+                        df_v_ant = df_v_ant[df_v_ant['Período'] == fil_per_ant]
+                    if fil_est_ant == "Solo con Discrepancia en Apertura (Dif != $0)":
+                        df_v_ant = df_v_ant[df_v_ant['Dif_Abs'] > 1.0]
+                    elif fil_est_ant == "Solo Conciliadas / Sin Diferencia":
+                        df_v_ant = df_v_ant[df_v_ant['Dif_Abs'] <= 1.0]
+                    elif fil_est_ant == "Anticipo agrupado en comisión":
+                        df_v_ant = df_v_ant[df_v_ant['Diagnóstico'].str.contains('Anticipo agrupado|Anticipo en comisión', case=False, na=False)]
+
+                    if txt_busq_ant.strip():
+                        patt = txt_busq_ant.strip()
+                        df_v_ant = df_v_ant[
+                            df_v_ant['Folio'].astype(str).str.contains(patt, case=False, na=False) |
+                            df_v_ant['Contrato'].astype(str).str.contains(patt, case=False, na=False) |
+                            df_v_ant['Cliente'].astype(str).str.contains(patt, case=False, na=False)
+                        ]
+
+                    st.write(f"Mostrando **{len(df_v_ant):,}** facturas de apertura:")
+
+                    cols_ant_render = [
+                        'Folio', 'Contrato', 'Cliente', 'Período',
+                        'Anticipo Esp', 'Anticipo Fac',
+                        'Comisión Esp', 'Comisión Fac',
+                        'Apertura Esp', 'Apertura Fac',
+                        'Dif Apertura', 'Diagnóstico', 'Observación'
+                    ]
+                    df_ant_render = df_v_ant[cols_ant_render].copy()
+
+                    st.dataframe(
+                        df_ant_render.style
+                        .format({
+                            'Anticipo Esp': '${:,.2f}',
+                            'Anticipo Fac': '${:,.2f}',
+                            'Comisión Esp': '${:,.2f}',
+                            'Comisión Fac': '${:,.2f}',
+                            'Apertura Esp': '${:,.2f}',
+                            'Apertura Fac': '${:,.2f}',
+                            'Dif Apertura': '${:+,.2f}'
+                        })
+                        .map(_color_diferencia, subset=['Dif Apertura']),
+                        width='stretch',
+                        height=450,
+                        key="df_comparativo_anticipos_grid"
+                    )
+
+                    try:
+                        buf_excel_ant = excel_con_formato(
+                            {'Apertura': df_ant_render},
+                            currency_cols=['Anticipo Esp', 'Anticipo Fac', 'Comisión Esp', 'Comisión Fac', 'Apertura Esp', 'Apertura Fac', 'Dif Apertura']
+                        )
+                        st.download_button(
+                            "Descargar Comparativa de Anticipos (Excel)",
+                            data=buf_excel_ant,
+                            file_name="comparativo_anticipos_apertura.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="dl_comp_ant_excel"
+                        )
+                    except Exception:
+                        csv_data_ant = df_ant_render.to_csv(index=False).encode('utf-8-sig')
+                        st.download_button(
+                            "Descargar Comparativa de Anticipos (CSV)",
+                            data=csv_data_ant,
+                            file_name="comparativo_anticipos_apertura.csv",
+                            mime="text/csv",
+                            key="dl_comp_ant_csv"
+                        )
+
+            elif sub_vista == "Comparativa de Rentas (Mensualidades)":
+                st.caption("Revisión de rentas mensuales (renta, administración y GPS).")
+                q_rent = """
+                    SELECT 
+                        f.uuid, 
+                        f.folio, 
+                        f.id_contrato, 
+                        c.Cliente, 
+                        f.periodo, 
+                        f.mes_contrato, 
+                        f.fecha_emision,
+                        CASE WHEN INSTR(f.id_contrato, ',') > 0 OR INSTR(f.mes_contrato, ',') > 0 THEN f.esperado ELSE COALESCE(c.Mensualidad_Sin_IVA, 0.0) END as renta_esp,
+                        COALESCE((SELECT SUM(fc.importe) FROM factura_conceptos fc WHERE fc.uuid = f.uuid AND fc.clave = 'RENTA'), 0.0) as renta_fac,
+                        COALESCE((SELECT SUM(fc.importe) FROM factura_conceptos fc WHERE fc.uuid = f.uuid AND fc.clave = 'ADMIN'), 0.0) as admin_fac,
+                        COALESCE((SELECT SUM(fc.importe) FROM factura_conceptos fc WHERE fc.uuid = f.uuid AND fc.clave = 'GEOLOC'), 0.0) as geoloc_fac,
+                        f.esperado, 
+                        f.facturado, 
+                        f.diferencia, 
+                        f.estatus, 
+                        f.observaciones
+                    FROM facturas f
+                    LEFT JOIN contratos c ON c.ID_Contrato = TRIM(SUBSTR(f.id_contrato, 1, INSTR(f.id_contrato || ',', ',') - 1))
+                    WHERE (f.tipo = 'MENSUAL' OR EXISTS (SELECT 1 FROM factura_conceptos fc WHERE fc.uuid = f.uuid AND fc.clave IN ('RENTA', 'ADMIN', 'GEOLOC')))
+                      AND (f.cancelada IS NULL OR f.cancelada = 0)
+                    ORDER BY f.periodo DESC, ABS(f.diferencia) DESC
+                """
+                rows_rent = conn.execute(q_rent).fetchall()
+                if not rows_rent:
+                    st.info("No se encontraron facturas con conceptos de renta.")
+                else:
+                    df_rent = pd.DataFrame(rows_rent, columns=[
+                        'UUID', 'Folio', 'Contrato', 'Cliente', 'Período', 'Mes', 'Fecha',
+                        'Renta Esp', 'Renta Fac', 'Admin Fac', 'GPS Fac',
+                        'Esperado Total', 'Facturado Total', 'Diferencia Total', 'Estatus', 'Observación'
+                    ])
+                    df_rent['Cliente'] = df_rent['Cliente'].fillna('Sin Contrato / Desconocido')
+                    df_rent['Contrato'] = df_rent['Contrato'].fillna('—')
+                    df_rent['Folio'] = df_rent['Folio'].fillna('—')
+                    df_rent['Mes'] = df_rent['Mes'].fillna('—')
+
+                    for col_m in ['Renta Esp', 'Renta Fac', 'Admin Fac', 'GPS Fac', 'Esperado Total', 'Facturado Total', 'Diferencia Total']:
+                        df_rent[col_m] = pd.to_numeric(df_rent[col_m], errors='coerce').fillna(0.0)
+
+                    df_rent['Total Renta Fac'] = df_rent['Renta Fac'] + df_rent['Admin Fac'] + df_rent['GPS Fac']
+                    df_rent['Total Renta Fac'] = df_rent.apply(
+                        lambda r: r['Facturado Total'] if (r['Estatus'] == 'CONCILIADO' and abs(r['Facturado Total'] - r['Renta Esp']) <= 1.0) else r['Total Renta Fac'],
+                        axis=1
+                    )
+                    df_rent['Dif Renta'] = df_rent['Total Renta Fac'] - df_rent['Renta Esp']
+                    df_rent['Dif_Abs'] = df_rent['Dif Renta'].abs()
+
+                    def _calc_diag_rent(r):
+                        dif = r['Dif Renta']
+                        obs = str(r.get('Observación', '') or '')
+                        if abs(dif) <= 1.0:
+                            if 'pago acumulado' in obs.lower() or 'acumulado de' in obs.lower():
+                                return "Pago acumulado multimes (OK)"
+                            elif 'Desfase operativo de 1 mes' in obs:
+                                return "Desfase operativo 1 mes (OK)"
+                            elif 'Pago adelantado' in obs:
+                                return "Pago adelantado (OK)"
+                            return "Conciliado OK"
+                        else:
+                            if 'pago acumulado' in obs.lower() or 'acumulado de' in obs.lower():
+                                return "Pago acumulado multimes (Dif monto)"
+                            elif 'Desfase' in obs:
+                                return "Desfase calendario + Dif monto"
+                            elif 'Pago adelantado' in obs:
+                                return "Pago adelantado + Dif monto"
+                            return "Diferencia de monto"
+
+                    df_rent['Diagnóstico'] = df_rent.apply(_calc_diag_rent, axis=1)
+
+                    fr1, fr2, fr3 = st.columns([1.5, 1.5, 2])
+                    with fr1:
+                        pers_rent = ['TODOS'] + sorted([p for p in df_rent['Período'].dropna().unique().tolist() if p], reverse=True)
+                        fil_per_rent = st.selectbox("Filtrar por período:", pers_rent, key="fil_per_rent")
+                    with fr2:
+                        fil_est_rent = st.selectbox(
+                            "Filtrar por resultado:",
+                            [
+                                "Todas las rentas",
+                                "Solo con Discrepancia en Renta (Dif != $0)",
+                                "Solo Conciliadas / Sin Diferencia",
+                                "Con desfase operativo o pago adelantado"
+                            ],
+                            key="fil_est_rent"
+                        )
+                    with fr3:
+                        txt_busq_rent = st.text_input(
+                            "Buscar por Folio, Contrato o Cliente:",
+                            "", placeholder="Ej. 0648 o HARVEST", key="txt_busq_rent"
+                        )
+
+                    df_v_rent = df_rent.copy()
+                    if fil_per_rent != 'TODOS':
+                        df_v_rent = df_v_rent[df_v_rent['Período'] == fil_per_rent]
+                    if fil_est_rent == "Solo con Discrepancia en Renta (Dif != $0)":
+                        df_v_rent = df_v_rent[df_v_rent['Dif_Abs'] > 1.0]
+                    elif fil_est_rent == "Solo Conciliadas / Sin Diferencia":
+                        df_v_rent = df_v_rent[df_v_rent['Dif_Abs'] <= 1.0]
+                    elif fil_est_rent == "Con desfase operativo o pago adelantado":
+                        df_v_rent = df_v_rent[df_v_rent['Diagnóstico'].str.contains('Desfase|adelantado', case=False, na=False)]
+
+                    if txt_busq_rent.strip():
+                        patt = txt_busq_rent.strip()
+                        df_v_rent = df_v_rent[
+                            df_v_rent['Folio'].astype(str).str.contains(patt, case=False, na=False) |
+                            df_v_rent['Contrato'].astype(str).str.contains(patt, case=False, na=False) |
+                            df_v_rent['Cliente'].astype(str).str.contains(patt, case=False, na=False)
+                        ]
+
+                    st.write(f"Mostrando **{len(df_v_rent):,}** facturas de renta:")
+
+                    cols_rent_render = [
+                        'Folio', 'Contrato', 'Cliente', 'Período', 'Mes',
+                        'Renta Esp', 'Renta Fac', 'Admin Fac', 'GPS Fac',
+                        'Total Renta Fac', 'Dif Renta', 'Diagnóstico', 'Observación'
+                    ]
+                    df_rent_render = df_v_rent[cols_rent_render].copy()
+
+                    st.dataframe(
+                        df_rent_render.style
+                        .format({
+                            'Renta Esp': '${:,.2f}',
+                            'Renta Fac': '${:,.2f}',
+                            'Admin Fac': '${:,.2f}',
+                            'GPS Fac': '${:,.2f}',
+                            'Total Renta Fac': '${:,.2f}',
+                            'Dif Renta': '${:+,.2f}'
+                        })
+                        .map(_color_diferencia, subset=['Dif Renta']),
+                        width='stretch',
+                        height=450,
+                        key="df_comparativo_rentas_grid"
+                    )
+
+                    try:
+                        buf_excel_rent = excel_con_formato(
+                            {'Rentas': df_rent_render},
+                            currency_cols=['Renta Esp', 'Renta Fac', 'Admin Fac', 'GPS Fac', 'Total Renta Fac', 'Dif Renta']
+                        )
+                        st.download_button(
+                            "Descargar Comparativa de Rentas (Excel)",
+                            data=buf_excel_rent,
+                            file_name="comparativo_rentas.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="dl_comp_rent_excel"
+                        )
+                    except Exception:
+                        csv_data_rent = df_rent_render.to_csv(index=False).encode('utf-8-sig')
+                        st.download_button(
+                            "Descargar Comparativa de Rentas (CSV)",
+                            data=csv_data_rent,
+                            file_name="comparativo_rentas.csv",
+                            mime="text/csv",
+                            key="dl_comp_rent_csv"
+                        )
+
+    # ===================================================================
+    # TAB 3 – CONCEPTOS SIN RECONOCER
+    # ===================================================================
+    elif tab_activa == "Conceptos sin Reconocer":
         st.subheader("Conceptos sin Reconocer")
-        st.caption(
-            "Aquí aparece cualquier concepto de un CFDI cuyo texto no trae ninguna de las palabras "
-            "que ya está estipulado que debe decir (Renta, Administración, Geolocalización, Anticipo "
-            "o Comisión). Mientras un concepto esté aquí, su importe NO se toma en cuenta en la "
-            "comparación contra la póliza. Puedes reclasificarlo a mano si en realidad sí corresponde "
-            "a alguna de esas categorías, o dejarlo fuera a propósito (por ejemplo, un cargo que de "
-            "verdad no debe compararse). Las facturas que ya se clasificaron como 'servicios no "
-            "relacionados con leasing' (seguro, gestoría, etc.) no aparecen aquí, porque para esas es "
-            "normal y esperado que ningún concepto coincida — revísalas en la pestaña Historial si "
-            "crees que alguna en realidad sí era de renta."
-        )
+        st.caption("Conceptos no identificados automáticamente. Puedes asignarlos a Renta, Anticipo o dejarlos fuera.")
         conn = get_db()
         periodos_c = conn.execute(
             "SELECT DISTINCT periodo FROM facturas WHERE periodo IS NOT NULL ORDER BY periodo DESC"
@@ -3716,15 +5466,11 @@ def _render_conciliacion():
                         st.divider()
 
     # ===================================================================
-    # TAB 3 – CONTRATOS SIN FACTURA + EMPAREJAMIENTO
+    # TAB 4 – AVANCE DE PAGO POR CONTRATO
     # ===================================================================
-    with tab_faltantes:
+    elif tab_activa == "Avance de Pago":
         st.subheader("Avance de Pago por Contrato")
-        st.caption(
-            "Con base en las facturas ya conciliadas (no en el nivel de morosidad capturado a mano), "
-            "identifica qué contratos van adelantados con sus mensualidades, cuáles van al corriente, y "
-            "cuáles tienen meses vencidos sin factura — con el detalle de cuáles meses faltan."
-        )
+        st.caption("Estatus de mensualidades pagadas y pendientes por cada contrato activo.")
         df_avance_base = obtener('ACTIVO')
         if df_avance_base.empty:
             st.info("No hay contratos activos.")
@@ -3738,10 +5484,19 @@ def _render_conciliacion():
                 ).fetchall()
                 facturas_dict = {}
                 for r in todas_fact:
-                    facturas_dict.setdefault(r['id_contrato'], set()).add(r['mes_contrato'])
+                    id_raw = r['id_contrato'] or ''
+                    m_raw = str(r['mes_contrato'] or '')
+                    meses_in_row = []
+                    for m_chunk in m_raw.split(','):
+                        m_chunk = m_chunk.strip().replace('.0', '')
+                        if m_chunk.isdigit():
+                            meses_in_row.append(int(m_chunk))
+                    for c_part in [p.strip() for p in id_raw.split(',') if p.strip()]:
+                        for m_val in meses_in_row:
+                            facturas_dict.setdefault(c_part, set()).add(m_val)
                 
                 filas_avance = []
-                for _, _con_av in df_avance_base.iterrows():
+                for _con_av in df_avance_base.to_dict('records'):
                     _avp = calcular_avance_pago(_con_av, facturas_dict)
                     _renta = float(_con_av.get('Mensualidad_Sin_IVA') or 0)
                     _monto_atraso = round(_renta * _avp['meses_atraso'], 2)
@@ -3831,7 +5586,7 @@ def _render_conciliacion():
                     # Obtener facturas SIN_CONTRATO del mismo período para emparejar
                     facturas_sin = conn.execute(
                         "SELECT uuid, folio, total, subtotal, mes_contrato, id_contrato, id_contrato_detectado "
-                        "FROM facturas WHERE periodo=? AND estatus='SIN_CONTRATO'",
+                        "FROM facturas WHERE periodo=? AND estatus='SIN_CONTRATO' AND (cancelada IS NULL OR cancelada = 0)",
                         (per_f,)
                     ).fetchall()
                     if facturas_sin:
@@ -3914,23 +5669,340 @@ def _render_conciliacion():
                     )
 
     # ===================================================================
-    # TAB 4 – RESOLVER PENDIENTES (vista general)
+    # TAB 5 – RESOLVER PENDIENTES (vista general)
     # ===================================================================
-    with tab_resolver:
-        st.subheader("Resolver Pendientes")
+    elif tab_activa == "Resolver Pendientes":
+        st.subheader("Resolución de Pendientes y Depuración de Contratos")
+        st.caption("Gestiona facturas pendientes, contratos anteriores y reglas de asignación.")
         conn = get_db()
 
-        with st.expander("🧠 Reglas aprendidas (contratos facturados con otro número)"):
-            st.caption(
-                "Cada vez que resuelves a mano una factura 'Sin contrato', si el número que traía el XML "
-                "es distinto al contrato real que le asignaste, el sistema guarda esa equivalencia aquí. "
-                "La próxima factura que llegue con ese mismo número se conciliará sola, sin volver a pedir "
-                "que la asignes — y queda anotado en el resultado que se resolvió por regla."
-            )
+        sub_tab_lote, sub_tab_indiv, sub_tab_alias = st.tabs([
+            "Gestor Rápido de Contratos No Vigentes (Por Lote)",
+            "Facturas Pendientes (Paginadas)",
+            "Reglas Aprendidas (Alias)"
+        ])
+
+        # ---------------------------------------------------------------
+        # SUBTAB 1: GESTOR RÁPIDO DE CONTRATOS NO VIGENTES
+        # ---------------------------------------------------------------
+        with sub_tab_lote:
+            st.markdown("### Depuración y Archivo de Contratos Previos a Dic 2025")
+            st.info("Pertenecen a contratos concluidos antes de diciembre 2025. Puedes archivarlos para conciliar sus facturas y limpiar la lista de pendientes.")
+
+            df_no_vig = obtener_resumen_contratos_no_vigentes(fecha_corte='2025-12')
+            
+            # Métricas resumen
+            m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+            c_hist = df_no_vig[df_no_vig['tiene_recientes'] == 0] if not df_no_vig.empty else pd.DataFrame()
+            c_rec  = df_no_vig[df_no_vig['tiene_recientes'] == 1] if not df_no_vig.empty else pd.DataFrame()
+            
+            tot_fac_hist = int(c_hist['cant_facturas'].sum()) if not c_hist.empty else 0
+            tot_mto_hist = float(c_hist['total_monto'].sum()) if not c_hist.empty else 0.0
+            tot_fac_rec  = int(c_rec['cant_facturas'].sum()) if not c_rec.empty else 0
+            
+            m_col1.metric("Contratos no registrados", len(df_no_vig))
+            m_col2.metric("Facturas < Dic 2025", f"{tot_fac_hist:,}")
+            m_col3.metric("Monto histórico", f"${tot_mto_hist:,.2f}")
+            m_col4.metric("Facturas en 2026", f"{tot_fac_rec:,}")
+
+            st.divider()
+
+            # Botones de Acción Global
+            st.markdown("#### Acciones Rápidas Globales")
+            b_col1, b_col2 = st.columns([1, 1])
+
+            with b_col1:
+                st.markdown("**1. Archivar y Conciliar (Recomendado)**")
+                st.caption("Los registra como concluidos y concilia sus facturas.")
+                if st.button("Archivar Contratos Históricos (< Dic 2025) y Conciliar", type="primary", key="btn_archivar_global"):
+                    with st.spinner("Procesando contratos históricos..."):
+                        c_creados, f_act = archivar_contratos_historicos_lote(fecha_corte='2025-12', marcar_conciliado=True)
+                        st.success(f"¡Éxito! Se registraron {c_creados} contratos históricos concluidos y se reconciliaron {f_act} facturas.")
+                        st.session_state['_refresh'] = True
+                        st.rerun()
+
+            with b_col2:
+                st.markdown("**2. Marcar como NO APLICA (Silenciar Alertas)**")
+                st.caption("Las marca como no aplicables para quitarlas de pendientes.")
+                if st.button("Marcar facturas (< Dic 2025) como NO APLICA", key="btn_noaplica_global"):
+                    with st.spinner("Marcando facturas..."):
+                        n_marcadas = marcar_facturas_historicas_no_aplica(fecha_corte='2025-12')
+                        st.success(f"Se marcaron {n_marcadas} facturas como NO APLICA.")
+                        st.session_state['_refresh'] = True
+                        st.rerun()
+
+            with st.expander("Zona de Peligro: Purgar / Borrar Facturas de la Base de Datos"):
+                st.warning("Atención: Esta acción borra definitivamente las facturas de la base de datos.")
+                chk_confirma_borrar = st.checkbox("Confirmo que deseo borrar físicamente estas facturas de la base de datos", key="chk_conf_borrar")
+                if st.button("Borrar definitivamente facturas históricas (< Dic 2025)", type="secondary", disabled=not chk_confirma_borrar, key="btn_borrar_global"):
+                    with st.spinner("Borrando facturas..."):
+                        n_borradas = borrar_facturas_lote(fecha_corte='2025-12')
+                        st.success(f"Se eliminaron {n_borradas} facturas históricas de la base de datos.")
+                        st.session_state['_refresh'] = True
+                        st.rerun()
+
+            st.divider()
+
+            # Tabla Interactiva y Gestión Contrato por Contrato
+            st.markdown("#### Detalle de Contratos Detectados No Registrados")
+            if df_no_vig.empty:
+                st.success("¡Excelente! No hay contratos pendientes de registrar.")
+            else:
+                filtro_vista = st.radio(
+                    "Filtrar lista:",
+                    ["Solo anteriores a Dic 2025 (Históricos)", "Con facturas recientes (2026)", "Ver todos"],
+                    horizontal=True, key="rad_filtro_vista_contratos"
+                )
+                
+                df_mostrar = df_no_vig.copy()
+                if filtro_vista == "Solo anteriores a Dic 2025 (Históricos)":
+                    df_mostrar = df_mostrar[df_mostrar['tiene_recientes'] == 0]
+                elif filtro_vista == "Con facturas recientes (2026)":
+                    df_mostrar = df_mostrar[df_mostrar['tiene_recientes'] == 1]
+                    
+                txt_busq = st.text_input("Filtrar por contrato o cliente:", "", placeholder="Ej. 0528 o HARVEST", key="txt_busq_c_novig")
+                if txt_busq:
+                    mask = (
+                        df_mostrar['num_contrato'].str.contains(txt_busq, case=False, na=False) |
+                        df_mostrar['cliente_nombre'].str.contains(txt_busq, case=False, na=False) |
+                        df_mostrar['rfc_receptor'].str.contains(txt_busq, case=False, na=False)
+                    )
+                    df_mostrar = df_mostrar[mask]
+
+                st.write(f"Mostrando **{len(df_mostrar)}** contratos ({int(df_mostrar['cant_facturas'].sum()):,} facturas)")
+
+                df_tabla_c = df_mostrar[['num_contrato', 'cliente_nombre', 'rfc_receptor', 'cant_facturas', 'min_periodo', 'max_periodo', 'total_monto', 'renta_promedio']].copy()
+                df_tabla_c.columns = ['Contrato', 'Cliente SAT', 'RFC', 'Facturas', 'Desde', 'Hasta', 'Total Facturado', 'Renta Promedio']
+                st.dataframe(
+                    df_tabla_c.style.format({
+                        'Total Facturado': '${:,.2f}',
+                        'Renta Promedio': '${:,.2f}',
+                        'Facturas': '{:,}'
+                    }),
+                    use_container_width=True,
+                    height=280
+                )
+
+                st.markdown("##### Acciones sobre un contrato específico")
+                sel_num_c = st.selectbox(
+                    "Selecciona un contrato para operar:",
+                    df_mostrar['num_contrato'].tolist(),
+                    format_func=lambda x: f"{x} — {df_mostrar.loc[df_mostrar['num_contrato']==x, 'cliente_nombre'].values[0]} ({df_mostrar.loc[df_mostrar['num_contrato']==x, 'cant_facturas'].values[0]} facturas)",
+                    key="sel_c_operar"
+                )
+
+                if sel_num_c:
+                    row_c = df_mostrar[df_mostrar['num_contrato'] == sel_num_c].iloc[0]
+                    act_c1, act_c2, act_c3, act_c4 = st.columns([1.2, 1.8, 1, 1])
+
+                    with act_c1:
+                        if st.button(f"Archivar {sel_num_c}", key=f"btn_arch_single_{sel_num_c}"):
+                            c_c, f_a = archivar_contratos_historicos_lote(contratos_ids=[sel_num_c], fecha_corte=None, marcar_conciliado=True)
+                            st.success(f"Contrato {sel_num_c} archivado ({f_a} facturas conciliadas).")
+                            st.session_state['_refresh'] = True
+                            st.rerun()
+
+                    with act_c2:
+                        df_todos_vig = obtener()
+                        if not df_todos_vig.empty:
+                            opts_reasis = df_todos_vig.sort_values('ID_Contrato')['ID_Contrato'].tolist()
+                            c_target = st.selectbox("Reasignar a existente:", opts_reasis, key=f"sel_reasis_{sel_num_c}")
+                            if st.button(f"Reasignar a {c_target}", key=f"btn_reasis_{sel_num_c}"):
+                                n_re = reasignar_facturas_contrato_lote(sel_num_c, c_target, guardar_alias=True)
+                                st.success(f"Se reasignaron {n_re} facturas a {c_target} y se guardó la regla.")
+                                st.session_state['_refresh'] = True
+                                st.rerun()
+
+                    with act_c3:
+                        if st.button(f"NO APLICA", key=f"btn_noap_single_{sel_num_c}"):
+                            n_m = marcar_facturas_historicas_no_aplica(contratos_ids=[sel_num_c])
+                            st.success(f"{n_m} facturas marcadas como NO APLICA.")
+                            st.session_state['_refresh'] = True
+                            st.rerun()
+
+                    with act_c4:
+                        if st.button(f"Borrar", key=f"btn_del_single_{sel_num_c}"):
+                            n_b = borrar_facturas_lote(contratos_ids=[sel_num_c])
+                            st.success(f"{n_b} facturas eliminadas de {sel_num_c}.")
+                            st.session_state['_refresh'] = True
+                            st.rerun()
+
+        # ---------------------------------------------------------------
+        # SUBTAB 2: FACTURAS PENDIENTES (PAGINADAS - RÁPIDO)
+        # ---------------------------------------------------------------
+        with sub_tab_indiv:
+            st.markdown("### Facturas Pendientes de Conciliación")
+            
+            f_col1, f_col2, f_col3 = st.columns([1.5, 2, 1])
+            with f_col1:
+                filtro_est = st.selectbox(
+                    "Filtrar por estatus:",
+                    ['TODOS', 'SIN_CONTRATO', 'DISCREPANCIA', 'FUERA_DE_VIGENCIA', 'RFC_INCORRECTO', 'POSIBLES_DUPLICADAS'],
+                    key="indiv_filtro_est"
+                )
+            with f_col2:
+                filtro_txt = st.text_input(
+                    "Buscar por Folio, Contrato o UUID:",
+                    "", placeholder="Ej. 13657 o 0528", key="indiv_filtro_txt"
+                )
+            with f_col3:
+                tam_pag = st.selectbox("Por página:", [20, 50, 100], index=0, key="indiv_tam_pag")
+
+            where_clauses = ["(cancelada IS NULL OR cancelada=0)"]
+            params_count = []
+            
+            if filtro_est == 'POSIBLES_DUPLICADAS':
+                where_clauses.append("(observaciones LIKE '%ya existe otra factura%' OR observaciones LIKE '%revisa que no sea una doble%')")
+            elif filtro_est != 'TODOS':
+                where_clauses.append("estatus = ?")
+                params_count.append(filtro_est)
+            else:
+                where_clauses.append("estatus IN ('DISCREPANCIA','SIN_CONTRATO','RFC_INCORRECTO','FUERA_DE_VIGENCIA')")
+                
+            if filtro_txt.strip():
+                t_pat = f"%{filtro_txt.strip()}%"
+                where_clauses.append("(folio LIKE ? OR id_contrato LIKE ? OR id_contrato_detectado LIKE ? OR uuid LIKE ?)")
+                params_count.extend([t_pat, t_pat, t_pat, t_pat])
+                
+            where_sql = " AND ".join(where_clauses)
+            
+            total_pendientes = conn.execute(f"SELECT COUNT(*) FROM facturas WHERE {where_sql}", params_count).fetchone()[0]
+            
+            if total_pendientes == 0:
+                st.success("¡No hay facturas pendientes con los filtros seleccionados!")
+            else:
+                total_paginas = max(1, (total_pendientes + tam_pag - 1) // tam_pag)
+                
+                p_col1, p_col2, p_col3 = st.columns([1, 2, 1])
+                with p_col2:
+                    pagina = st.number_input(f"Página (de {total_paginas:,} | Total: {total_pendientes:,} facturas)", min_value=1, max_value=total_paginas, value=1, step=1, key="indiv_pagina_num")
+                
+                offset = (pagina - 1) * tam_pag
+                params_query = list(params_count) + [tam_pag, offset]
+                
+                filas_pend = conn.execute(f"""
+                    SELECT uuid, folio, id_contrato, id_contrato_detectado, tipo, estatus, observaciones, periodo, mes_contrato, 
+                           fecha_emision, fecha_registro, rfc_emisor, total, rfc_receptor
+                    FROM facturas 
+                    WHERE {where_sql}
+                    ORDER BY periodo DESC, estatus
+                    LIMIT ? OFFSET ?
+                """, params_query).fetchall()
+
+                df_todos = obtener()
+                mapa_etiqueta_id = {}
+                etiquetas_contratos = []
+                if not df_todos.empty:
+                    df_todos_sorted = df_todos.sort_values('ID_Contrato')
+                    etiquetas_contratos = (
+                        df_todos_sorted['ID_Contrato'] + ' — ' + df_todos_sorted['Cliente'].fillna('') +
+                        ' (' + df_todos_sorted['Estatus'].fillna('') + ')'
+                    ).tolist()
+                    mapa_etiqueta_id = dict(zip(etiquetas_contratos, df_todos_sorted['ID_Contrato']))
+
+                for p in filas_pend:
+                    c_num = p['id_contrato'] or p['id_contrato_detectado'] or '—'
+                    with st.expander(f"{p['folio'] or 'Sin Folio'} | {p['periodo']} | {p['tipo']} | {p['estatus']} | Contrato: {c_num} | ${p['total']:,.2f}"):
+                        st.write(f"**UUID:** `{p['uuid']}` | **Emisión:** {p['fecha_emision']}")
+                        st.write(f"**Observaciones:** {p['observaciones']}")
+
+                        if p['estatus'] == 'RFC_INCORRECTO':
+                            st.error(f"RFC emisor detectado: **{p['rfc_emisor'] or '—'}**. No coincide con tu arrendadora.")
+
+                        elif p['estatus'] == 'FUERA_DE_VIGENCIA':
+                            st.warning("El contrato ya estaba dado de baja o aún no iniciaba cuando se emitió esta factura.")
+
+                        elif p['estatus'] == 'DISCREPANCIA' and p['tipo'] == 'ANTICIPO' and 'Comisión' in (p['observaciones'] or ''):
+                            if st.button(f"Actualizar comisión para contrato {p['id_contrato']}", key=f"res_com_{p['uuid']}"):
+                                f_com = conn.execute("SELECT COALESCE(SUM(importe),0) FROM factura_conceptos WHERE uuid=? AND clave='COMISION'", (p['uuid'],)).fetchone()[0]
+                                conn.execute("UPDATE contratos SET Comision_Monto=? WHERE ID_Contrato=?", (f_com, p['id_contrato']))
+                                conn.commit()
+                                re_conciliar_factura(p['uuid'])
+                                st.success("Comisión actualizada y reconciliada.")
+                                st.session_state['_refresh'] = True
+                                st.rerun()
+
+                        elif p['estatus'] == 'DISCREPANCIA' and p['tipo'] == 'MENSUAL' and p['id_contrato']:
+                            idc_act = str(p['id_contrato']).split(',')[0].strip()
+                            c_info = conn.execute("SELECT * FROM contratos WHERE ID_Contrato=?", (idc_act,)).fetchone()
+                            if c_info:
+                                c_dict = dict(c_info)
+                                es_nuevo = es_contrato_nuevo(c_dict)
+                                subtotal_fac = float(conn.execute("SELECT subtotal FROM facturas WHERE uuid=?", (p['uuid'],)).fetchone()[0] or 0.0)
+                                renta_con = float(c_dict.get('Mensualidad_Sin_IVA') or 0.0)
+                                diag_iva = detectar_descuadre_iva_contrato(renta_con, subtotal_fac)
+                                if diag_iva:
+                                    if es_nuevo:
+                                        if diag_iva['tipo'] == 'CON_IVA':
+                                            st.warning(f"Contrato nuevo detectado con captura con IVA: {diag_iva['mensaje']}. {diag_iva['detalle']}")
+                                            if st.button(f"Corregir renta a ${diag_iva['renta_correcta']:,.2f} sin IVA y recalcular corrida", key=f"btn_fix_iva_{p['uuid']}"):
+                                                ok, msg = corregir_renta_contrato_nuevo(idc_act, diag_iva['renta_correcta'])
+                                                if ok:
+                                                    st.success(msg)
+                                                    st.session_state['_refresh'] = True
+                                                    st.rerun()
+                                                else:
+                                                    st.error(msg)
+                                        elif diag_iva['tipo'] == 'DOBLE_DEDUCCION':
+                                            st.warning(f"Contrato nuevo detectado con deducción errónea de IVA: {diag_iva['mensaje']}. {diag_iva['detalle']}")
+                                            if st.button(f"Corregir renta a ${diag_iva['renta_correcta']:,.2f} sin IVA real y recalcular corrida", key=f"btn_fix_diva_{p['uuid']}"):
+                                                ok, msg = corregir_renta_contrato_nuevo(idc_act, diag_iva['renta_correcta'])
+                                                if ok:
+                                                    st.success(msg)
+                                                    st.session_state['_refresh'] = True
+                                                    st.rerun()
+                                                else:
+                                                    st.error(msg)
+                                    else:
+                                        st.info(f"Contrato histórico {idc_act} (cerrado a agosto 2026): {diag_iva['mensaje']}. Conciliado bajo regla de equivalencia para proteger la contabilidad cerrada.")
+
+                        elif p['estatus'] in ('SIN_CONTRATO', 'DISCREPANCIA'):
+                            if etiquetas_contratos:
+                                _det = p['id_contrato_detectado'] or p['id_contrato']
+                                col_asig, col_btn = st.columns([3, 1])
+                                with col_asig:
+                                    etiq_sel = st.selectbox(
+                                        "Asignar contrato:",
+                                        etiquetas_contratos,
+                                        key=f"res_asig_{p['uuid']}"
+                                    )
+                                with col_btn:
+                                    st.write("")
+                                    st.write("")
+                                    c_target_sel = mapa_etiqueta_id.get(etiq_sel)
+                                    if st.button(f"Asignar", key=f"btn_asig_{p['uuid']}"):
+                                        res_asig = asignar_contrato_manual(p['uuid'], c_target_sel, _det)
+                                        st.success(f"Asignado a {c_target_sel}. Estatus: {res_asig['status']}")
+                                        st.session_state['_refresh'] = True
+                                        st.rerun()
+
+                        st.caption("Opciones adicionales:")
+                        c_opt1, c_opt2 = st.columns(2)
+                        with c_opt1:
+                            if st.button("No considerar (Omitir / Cancelada)", key=f"btn_canc_{p['uuid']}"):
+                                marcar_factura_cancelada(p['uuid'], True)
+                                st.success("Factura excluida. Ya no se considerará en los cálculos.")
+                                st.session_state['_refresh'] = True
+                                st.rerun()
+                        with c_opt2:
+                            if st.button("Marcar como NO APLICA", key=f"btn_noap_{p['uuid']}"):
+                                c_m = conn.execute("SELECT GROUP_CONCAT(descripcion, ' | ') FROM factura_conceptos WHERE uuid=?", (p['uuid'],)).fetchone()[0] or 'Marcada manualmente como no aplicable'
+                                if len(c_m) > 200: c_m = c_m[:197] + '...'
+                                conn.execute("UPDATE facturas SET estatus='NO_APLICA', observaciones=? WHERE uuid=?", (f"No Aplica Leasing | Concepto: {c_m}", p['uuid']))
+                                conn.commit()
+                                st.success("Marcada como NO APLICA con su concepto.")
+                                st.session_state['_refresh'] = True
+                                st.rerun()
+
+        # ---------------------------------------------------------------
+        # SUBTAB 3: REGLAS APRENDIDAS (ALIAS)
+        # ---------------------------------------------------------------
+        with sub_tab_alias:
+            st.markdown("### Equivalencias de Contratos")
+            st.caption("Reglas para asociar números de factura no estándar a sus contratos correspondientes.")
             reglas_alias, historial_alias = obtener_alias_contrato_con_historial()
             if not reglas_alias:
-                st.info("Todavía no hay ninguna regla aprendida. En cuanto resuelvas a mano tu primera factura "
-                        "'Sin contrato' con un número distinto al del contrato real, aparecerá aquí.")
+                st.info("No hay reglas activas todavía.")
             else:
                 st.markdown(f"**{len(reglas_alias)} regla(s) activa(s)**")
                 for regla in reglas_alias:
@@ -3944,110 +6016,21 @@ def _render_conciliacion():
                         if st.button("Borrar", key=f"del_alias_{regla['numero_facturado']}"):
                             eliminar_alias_contrato(regla['numero_facturado'])
                             st.session_state['_refresh'] = True
+                            st.rerun()
                 if historial_alias:
                     st.markdown("**Historial de cambios** (últimos 200)")
                     df_hist = pd.DataFrame([dict(h) for h in historial_alias])
                     st.dataframe(
                         df_hist[['fecha', 'numero_facturado', 'id_contrato_real', 'accion', 'detalle']],
-                        width='stretch', key="df_hist_alias"
+                        use_container_width=True, key="df_hist_alias"
                     )
 
-        pendientes = conn.execute(
-            "SELECT uuid, folio, id_contrato, id_contrato_detectado, tipo, estatus, observaciones, periodo, mes_contrato, "
-            "fecha_emision, fecha_registro, rfc_emisor, total FROM facturas "
-            "WHERE estatus IN ('DISCREPANCIA','SIN_CONTRATO','RFC_INCORRECTO','FUERA_DE_VIGENCIA') AND (cancelada IS NULL OR cancelada=0) "
-            "ORDER BY periodo DESC, estatus"
-        ).fetchall()
-        if not pendientes:
-            st.success("¡No hay pendientes! Todo está conciliado.")
-        else:
-            st.markdown(f"**{len(pendientes)} facturas pendientes de resolver**")
-            try:
-                _dias_prom = (pd.Timestamp(hoy_ref()) - pd.to_datetime([p['fecha_registro'] for p in pendientes]).min()).days
-            except Exception:
-                _dias_prom = None
-            if _dias_prom and _dias_prom > 30:
-                st.warning(f"Hay pendientes desde hace más de {_dias_prom} días — entre más tiempo pase, más difícil es rastrear el origen de la discrepancia.")
-            for p in pendientes:
-                with st.expander(f"{p['folio']} | {p['tipo']} | {p['estatus']} | Contrato: {p['id_contrato'] or '—'} | ${p['total']:,.2f}"):
-                    st.write(f"**UUID:** {p['uuid']}")
-                    st.write(f"**Período:** {p['periodo']}, Mes contrato: {p['mes_contrato']}")
-                    st.write(f"**Observaciones:** {p['observaciones']}")
-                    if p['estatus'] == 'RFC_INCORRECTO':
-                        st.error(f"RFC emisor detectado: **{p['rfc_emisor'] or '—'}**. No coincide con el RFC configurado de tu arrendadora.")
-                        st.caption("Revisa si subiste el lote de la empresa equivocada, o si el RFC configurado en 'Carga y Conciliación' ya no es el correcto.")
-                    if p['estatus'] == 'FUERA_DE_VIGENCIA':
-                        st.error("El contrato ya estaba dado de baja cuando se emitió esta factura.")
-                        st.caption(
-                            "Revisa si de verdad se siguió cobrando renta después de la baja (y hay que "
-                            "investigar por qué), si la fecha de baja capturada en el contrato está mal, o si "
-                            "esta factura en realidad es de otro contrato y se identificó mal el número."
-                        )
-                    if p['estatus'] == 'DISCREPANCIA' and p['tipo'] == 'ANTICIPO':
-                        if 'Comisión' in p['observaciones']:
-                            st.info("Esta discrepancia es por comisión. Puedes actualizar la comisión del contrato.")
-                            if st.button(f"Actualizar comisión para {p['id_contrato']}", key=f"res_com_{p['uuid']}"):
-                                fila_com = conn.execute(
-                                    "SELECT COALESCE(SUM(importe),0) AS total FROM factura_conceptos WHERE uuid=? AND clave='COMISION'",
-                                    (p['uuid'],)
-                                ).fetchone()
-                                com_fac = fila_com['total'] if fila_com else 0.0
-                                try:
-                                    conn.execute("UPDATE contratos SET Comision_Monto=? WHERE ID_Contrato=?", (com_fac, p['id_contrato']))
-                                    conn.commit()
-                                    agregar_anotacion(p['id_contrato'], f"Comisión actualizada por resolución manual de factura {p['folio']}", "Ajuste contable")
-                                    res2 = re_conciliar_factura(p['uuid'])
-                                    st.success("Comisión actualizada y factura reconciliada.")
-                                    st.session_state['_refresh'] = True
-                                except Exception as e:
-                                    st.error(f"Error: {e}")
-                    elif p['estatus'] == 'SIN_CONTRATO':
-                        df_todos = obtener()  # todos los contratos, no solo ACTIVO
-                        if not df_todos.empty:
-                            df_todos_sorted = df_todos.sort_values('ID_Contrato')
-                            etiquetas = (df_todos_sorted['ID_Contrato'] + ' — ' + df_todos_sorted['Cliente'].fillna('') +
-                                         ' (' + df_todos_sorted['Estatus'].fillna('') + ')').tolist()
-                            mapa_etiqueta_id = dict(zip(etiquetas, df_todos_sorted['ID_Contrato']))
-                            _detectado_previo = p['id_contrato_detectado'] or p['id_contrato']
-                            _sugerencias = sugerir_contrato_similar(_detectado_previo, df_todos_sorted['ID_Contrato'].tolist())
-                            if _sugerencias:
-                                st.caption(
-                                    f"El número '{_detectado_previo}' se parece a: {', '.join(_sugerencias)} "
-                                    f"— revisa si es un typo antes de buscarlo a mano."
-                                )
-                            etiqueta_sel = st.selectbox(
-                                "Asignar contrato (escribe para buscar por número o cliente)",
-                                etiquetas, key=f"res_asign_{p['uuid']}"
-                            )
-                            sel_contrato = mapa_etiqueta_id[etiqueta_sel]
-                            if st.button(f"Asignar {sel_contrato}", key=f"res_asign_btn_{p['uuid']}"):
-                                _detectado = p['id_contrato_detectado'] or p['id_contrato']
-                                res2 = asignar_contrato_manual(p['uuid'], sel_contrato, _detectado)
-                                if res2:
-                                    if _detectado and _detectado != sel_contrato:
-                                        st.success(f"Asignado. Nuevo estatus: {res2['status']}. Se guardó como "
-                                                   f"regla: '{_detectado}' se asignará solo a {sel_contrato} "
-                                                   f"de ahora en adelante.")
-                                    else:
-                                        st.success(f"Asignado. Nuevo estatus: {res2['status']}")
-                                else:
-                                    st.warning("Asignado pero no se pudo re-conciliar.")
-                                st.session_state['_refresh'] = True
-                        else:
-                            st.warning("No hay contratos en la base de datos.")
-                    st.divider()
-                    st.caption("¿Esta factura en realidad fue cancelada ante el SAT? Márcala para sacarla de los pendientes y de los totales de control, sin borrar su historial.")
-                    if st.button("Marcar como cancelada", key=f"cancel_res_{p['uuid']}"):
-                        marcar_factura_cancelada(p['uuid'], True)
-                        st.success("Factura marcada como cancelada.")
-                        st.session_state['_refresh'] = True
-
     # ===================================================================
-    # TAB AUDITORÍA Y CERTIFICACIÓN DE FACTURACIÓN POR CONTRATO
+    # TAB 6 – AUDITORÍA Y CERTIFICACIÓN DE FACTURACIÓN POR CONTRATO
     # ===================================================================
-    with tab_audit:
-        st.subheader("Auditoría y Certificación de Facturación por Contrato")
-        st.caption("Revisa el expediente completo de facturación de cualquier contrato mes a mes, comparando la renta esperada contra los CFDIs emitidos y detectando cobros de residual (Venta de Vehículo) o indemnizaciones por siniestro.")
+    elif tab_activa == "Auditoría por Contrato":
+        st.subheader("Auditoría por Contrato")
+        st.caption("Expediente de facturación mensual por contrato vs lo programado.")
         
         df_contratos_aud = obtener()
         if df_contratos_aud.empty:
@@ -4064,12 +6047,88 @@ def _render_conciliacion():
             row_aud = df_contratos_aud[df_contratos_aud['ID_Contrato'] == sel_aud].iloc[0]
             conn_aud = get_db()
             
+            def _get_contrato_match_data_audit(cid, con_row, fact_r, conn):
+                uuid = fact_r.get('uuid')
+                rows_c = conn.execute("SELECT clave, importe, descripcion FROM factura_conceptos WHERE uuid=?", (uuid,)).fetchall()
+                
+                cid_parts = str(cid).split('-')
+                p_num = cid_parts[0] if len(cid_parts) > 0 else '0'
+                p_suf = cid_parts[1] if len(cid_parts) > 1 else '0'
+                try:
+                    p_num_int, p_suf_int = int(p_num), int(p_suf)
+                except Exception:
+                    p_num_int, p_suf_int = 0, 0
+                es_multi_c = (',' in str(fact_r.get('id_contrato') or ''))
+                
+                conceptos_este_con = []
+                meses_en_conceptos = []
+                
+                for rc in rows_c:
+                    desc = str(rc['descripcion'] or '')
+                    clv = str(rc['clave'] or '')
+                    
+                    if es_multi_c:
+                        pertenece = False
+                        for m in _PAT_CONTRATO.findall(desc):
+                            if normalizar_contrato(m[0], m[1]) == cid:
+                                pertenece = True
+                                break
+                        if not pertenece and p_num_int > 0:
+                            patterns_var = [f"{p_num_int:04d}-{p_suf_int}", f"{p_num_int}-{p_suf_int:02d}", f"{p_num_int}-{p_suf_int}"]
+                            for pv in patterns_var:
+                                if pv in desc:
+                                    pertenece = True
+                                    break
+                        if not pertenece:
+                            continue
+                    
+                    if clv in ('RENTA', 'ADMIN', 'GEOLOC'):
+                        conceptos_este_con.append(rc)
+                        for m_str, _ in _PAT_MES.findall(desc):
+                            try:
+                                m_val = int(m_str)
+                                if m_val not in meses_en_conceptos:
+                                    meses_en_conceptos.append(m_val)
+                            except Exception:
+                                pass
+                                
+                meses_en_conceptos = sorted(meses_en_conceptos)
+                if meses_en_conceptos:
+                    meses_contrato = meses_en_conceptos
+                else:
+                    if not es_multi_c and fact_r.get('mes_contrato'):
+                        meses_contrato = [int(p.strip().replace('.0','')) for p in str(fact_r['mes_contrato']).split(',') if p.strip().replace('.0','').isdigit()]
+                    else:
+                        meses_contrato = []
+                        
+                cant_m = len(meses_contrato) or 1
+                
+                if conceptos_este_con:
+                    renta_sin_iva = sum(float(c['importe'] or 0) for c in conceptos_este_con)
+                    if fact_r.get('estatus') == 'CONCILIADO':
+                        monto_con_iva = round(float(con_row.get('Mensualidad_Sin_IVA') or 0.0) * cant_m * 1.16, 2)
+                    else:
+                        monto_con_iva = round(renta_sin_iva * 1.16, 2)
+                else:
+                    if fact_r.get('estatus') == 'CONCILIADO':
+                        monto_con_iva = round(float(con_row.get('Mensualidad_Sin_IVA') or 0.0) * cant_m * 1.16, 2)
+                    else:
+                        if not es_multi_c:
+                            monto_sin_iva = float(fact_r.get('facturado') or fact_r.get('subtotal') or 0.0)
+                            monto_con_iva = round(monto_sin_iva * 1.16, 2)
+                        else:
+                            monto_con_iva = 0.0
+
+                return meses_contrato, monto_con_iva, cant_m
+
             # Consultar facturas del contrato
             facts_con = conn_aud.execute(
-                """SELECT uuid, folio, fecha_emision, periodo, mes_contrato, tipo, subtotal, total, estatus, observaciones, cancelada
-                   FROM facturas WHERE id_contrato=? AND (cancelada IS NULL OR cancelada=0)
-                   ORDER BY fecha_emision""",
-                (sel_aud,)
+                """SELECT uuid, folio, fecha_emision, periodo, mes_contrato, tipo, subtotal, total, estatus, observaciones, cancelada, id_contrato
+                   FROM facturas
+                   WHERE (id_contrato=? OR instr(id_contrato, ?) > 0 OR instr(coalesce(id_contrato_detectado,''), ?) > 0)
+                     AND (cancelada IS NULL OR cancelada=0)
+                   ORDER BY CASE WHEN estatus='CONCILIADO' THEN 0 ELSE 1 END, periodo ASC, fecha_emision ASC""",
+                (sel_aud, sel_aud, sel_aud)
             ).fetchall()
             
             # Header del Contrato
@@ -4097,44 +6156,105 @@ def _render_conciliacion():
             renta_esperada = round(float(row_aud['Mensualidad_Sin_IVA']), 2)
             fa_dt = pd.to_datetime(row_aud['Fecha_Alta'])
             
-            # Mapear facturas mensuales por mes de contrato o período
-            df_facts_con = pd.DataFrame([dict(f) for f in facts_con]) if facts_con else pd.DataFrame()
+            # Pre-procesar facturas con asignación precisa de conceptos por contrato
+            facts_parsed = []
+            for f in facts_con:
+                f_dict = dict(f)
+                meses_c, monto_c_iva, cant_m = _get_contrato_match_data_audit(sel_aud, row_aud, f_dict, conn_aud)
+                f_dict['meses_contrato_especificos'] = meses_c
+                f_dict['monto_renta_con_iva'] = monto_c_iva
+                f_dict['cant_meses_especificos'] = cant_m
+                facts_parsed.append(f_dict)
+
+            # Deduplicar en facts_parsed comprobantes que correspondan a la misma factura
+            # (mismo folio numérico o UUID, ej. '25236' y 'F-25236'), priorizando CONCILIADO
+            facts_dedup = []
+            seen_p_fols = {}
+            for fp in facts_parsed:
+                fn = normalizar_folio(fp.get('folio'))
+                u = (fp.get('uuid') or '').strip().upper()
+                key = fn if fn else u
+                if key in seen_p_fols:
+                    prev_idx = seen_p_fols[key]
+                    if fp.get('estatus') == 'CONCILIADO' and facts_dedup[prev_idx].get('estatus') != 'CONCILIADO':
+                        facts_dedup[prev_idx] = fp
+                    continue
+                seen_p_fols[key] = len(facts_dedup)
+                facts_dedup.append(fp)
+            facts_parsed = facts_dedup
+            
+            df_facts_con = pd.DataFrame(facts_parsed) if facts_parsed else pd.DataFrame()
             
             audit_rows = []
             total_esperado_rentas = 0.0
             total_facturado_rentas = 0.0
+            meses_con_multiples = []
             
             for m_num in range(1, plazo_num + 1):
                 f_mes_dt = fa_dt + relativedelta(months=m_num-1)
                 f_mes_str = f_mes_dt.strftime('%Y-%m')
                 
-                # Buscar factura correspondiente
-                fact_match = None
-                if not df_facts_con.empty:
-                    # Coincidencia por mes_contrato
-                    match1 = df_facts_con[(df_facts_con['tipo'] == 'MENSUAL') & (df_facts_con['mes_contrato'] == m_num)]
-                    if not match1.empty:
-                        fact_match = match1.iloc[0]
-                    else:
-                        # Coincidencia por periodo
-                        match2 = df_facts_con[(df_facts_con['tipo'] == 'MENSUAL') & (df_facts_con['periodo'] == f_mes_str)]
-                        if not match2.empty:
-                            fact_match = match2.iloc[0]
+                # Buscar todas las facturas correspondientes a este mes (se suman automáticamente si son facturas distintas)
+                facts_match_list = []
+                # 1. Coincidencia por mes específico de este contrato
+                for f in facts_parsed:
+                    if f['tipo'] == 'MENSUAL' and m_num in f['meses_contrato_especificos']:
+                        facts_match_list.append(f)
+                        
+                # 2. Coincidencia por período si no hubo ninguna por mes_contrato específico
+                if not facts_match_list:
+                    for f in facts_parsed:
+                        if f['tipo'] == 'MENSUAL' and f.get('periodo') == f_mes_str:
+                            if ',' in str(f.get('id_contrato') or '') and f['monto_renta_con_iva'] == 0:
+                                continue
+                            facts_match_list.append(f)
+
+                # Deduplicar comprobantes que sean el mismo (mismo folio numérico o UUID).
+                # Facturas con folio numérico DISTINTO SÍ se suman (pagos complementarios).
+                if facts_match_list:
+                    seen_m_fols = {}
+                    facts_unicas = []
+                    for f_m in facts_match_list:
+                        fn = normalizar_folio(f_m.get('folio'))
+                        u = (f_m.get('uuid') or '').strip().upper()
+                        key = fn if fn else u
+                        if key in seen_m_fols:
+                            prev_idx = seen_m_fols[key]
+                            if f_m.get('estatus') == 'CONCILIADO' and facts_unicas[prev_idx].get('estatus') != 'CONCILIADO':
+                                facts_unicas[prev_idx] = f_m
+                            continue
+                        seen_m_fols[key] = len(facts_unicas)
+                        facts_unicas.append(f_m)
+                    facts_match_list = facts_unicas
                 
-                if fact_match is not None:
-                    monto_fac = float(fact_match['total'])
+                if facts_match_list:
+                    if len(facts_match_list) > 1:
+                        meses_con_multiples.append((m_num, f_mes_str, facts_match_list))
+                    
+                    monto_fac = sum(round(float(f['monto_renta_con_iva']) / (f['cant_meses_especificos'] or 1), 2) for f in facts_match_list)
+                    monto_fac = round(monto_fac, 2)
                     dif_mes = round(monto_fac - (renta_esperada * 1.16), 2)
                     total_facturado_rentas += monto_fac
-                    if abs(dif_mes) <= TOLERANCIA:
-                        est_audit = "🟢 CONCILIADO"
+                    
+                    if abs(dif_mes) <= TOLERANCIA * 2 or all(str(f.get('estatus')) == 'CONCILIADO' for f in facts_match_list):
+                        est_audit = "CONCILIADO"
                     else:
-                        est_audit = f"🟡 DISCREPANCIA (${dif_mes:+,.2f})"
-                    folio_str = fact_match['folio'] or fact_match['uuid'][:8]
-                    obs_str = fact_match['observaciones'] or "OK"
+                        est_audit = f"DISCREPANCIA (${dif_mes:+,.2f})"
+                        
+                    folio_str = ', '.join(f['folio'] or f['uuid'][:8] for f in facts_match_list)
+                    
+                    if len(facts_match_list) > 1:
+                        obs_str = f"Suma de {len(facts_match_list)} facturas ({folio_str}): ${monto_fac:,.2f}"
+                    elif ',' in str(facts_match_list[0].get('id_contrato') or ''):
+                        obs_str = f"Factura multi-contrato ({facts_match_list[0]['id_contrato']})"
+                    elif facts_match_list[0]['cant_meses_especificos'] > 1:
+                        obs_str = f"Factura acumulada de {facts_match_list[0]['cant_meses_especificos']} meses ({facts_match_list[0]['mes_contrato']})"
+                    else:
+                        obs_str = facts_match_list[0]['observaciones'] or "OK"
                 else:
                     monto_fac = 0.0
                     dif_mes = -round(renta_esperada * 1.16, 2)
-                    est_audit = "🔴 SIN FACTURA"
+                    est_audit = "SIN FACTURA"
                     folio_str = "—"
                     obs_str = "Mes transcurrido sin CFDI registrado" if f_mes_dt <= pd.Timestamp(hoy_ref()) else "Mes futuro"
                 
@@ -4160,7 +6280,7 @@ def _render_conciliacion():
             kpi_col4.metric("Cumplimiento de Facturación", f"{pct_cob:.1f}%")
             
             st.markdown("---")
-            st.markdown("#### 📅 Auditoría Mes a Mes del Plazo del Contrato")
+            st.markdown("#### Auditoría Mes a Mes del Plazo del Contrato")
             st.dataframe(
                 df_audit_table.style.format({
                     'Renta Esperada (c/IVA)': '${:,.2f}',
@@ -4172,9 +6292,76 @@ def _render_conciliacion():
                 key="df_audit_contract_table"
             )
             
+            # Consultar facturas excluidas / canceladas para este contrato
+            facts_canceladas = conn_aud.execute(
+                """SELECT uuid, folio, fecha_emision, periodo, mes_contrato, tipo, subtotal, total, cancelada, fecha_cancelacion
+                   FROM facturas
+                   WHERE (id_contrato=? OR instr(id_contrato, ?) > 0 OR instr(coalesce(id_contrato_detectado,''), ?) > 0)
+                     AND cancelada = 1
+                   ORDER BY fecha_emision DESC""",
+                (sel_aud, sel_aud, sel_aud)
+            ).fetchall()
+            
+            if meses_con_multiples or facts_canceladas:
+                st.markdown("---")
+                st.markdown("#### Facturas Múltiples en el Mismo Mes")
+                st.caption("Si hay varias facturas en un mes, sus importes se suman. Puedes excluir duplicados si es necesario.")
+                
+                for m_num_m, p_str_m, f_list_m in meses_con_multiples:
+                    m_renta_tot = sum(round(float(f_item['monto_renta_con_iva']) / (f_item['cant_meses_especificos'] or 1), 2) for f_item in f_list_m)
+                    with st.expander(f"Mes {m_num_m} ({p_str_m}) — {len(f_list_m)} facturas sumadas (${m_renta_tot:,.2f} c/IVA)", expanded=True):
+                        cols_m = st.columns(len(f_list_m))
+                        for idx_f, f_item in enumerate(f_list_m):
+                            with cols_m[idx_f]:
+                                f_folio = f_item['folio'] or f_item['uuid'][:8]
+                                f_monto_renta = round(float(f_item['monto_renta_con_iva']) / (f_item['cant_meses_especificos'] or 1), 2)
+                                st.markdown(f"""
+                                <div style="background:#F9FAFB;border:1px solid #DCE0E5;border-radius:6px;padding:12px;margin-bottom:8px;">
+                                    <div style="font-weight:700;font-size:1rem;color:#20242B;">Folio: {f_folio}</div>
+                                    <div style="font-size:0.75rem;color:#717882;word-break:break-all;">UUID: {f_item['uuid']}</div>
+                                    <div style="font-size:0.85rem;color:#565E68;margin-top:4px;">
+                                        Fecha: <b>{str(f_item['fecha_emision'])[:10]}</b> | Total CFDI: <b>${float(f_item['total']):,.2f}</b>
+                                    </div>
+                                    <div style="font-size:0.9rem;color:#1C7A4D;margin-top:4px;">
+                                        Renta asignada (c/IVA): <b>${f_monto_renta:,.2f}</b>
+                                    </div>
+                                    <div style="font-size:0.8rem;color:#565E68;margin-top:2px;">
+                                        Estatus actual: <b>{f_item.get('estatus', '—')}</b>
+                                    </div>
+                                    <div style="font-size:0.75rem;color:#858D96;margin-top:4px;">
+                                        {f_item.get('observaciones') or '—'}
+                                    </div>
+                                </div>
+                                """, unsafe_allow_html=True)
+                                
+                                if st.button(f"No considerar {f_folio}", key=f"btn_excl_{sel_aud}_{m_num_m}_{f_item['uuid']}", width='stretch'):
+                                    conn_aud.execute(
+                                        "UPDATE facturas SET cancelada=1, fecha_cancelacion=? WHERE uuid=?",
+                                        (hoy_ref().isoformat(), f_item['uuid'])
+                                    )
+                                    conn_aud.commit()
+                                    st.success(f"Factura {f_folio} excluida del cálculo.")
+                                    st.session_state['_refresh'] = True
+                                    st.rerun()
+
+                if facts_canceladas:
+                    st.markdown("##### Facturas Excluidas / Omitidas de este Contrato")
+                    for fc in facts_canceladas:
+                        fc_folio = fc['folio'] or fc['uuid'][:8]
+                        c_f1, c_f2 = st.columns([4, 1])
+                        with c_f1:
+                            st.write(f"• **Folio {fc_folio}** (Período: {fc['periodo']}) — Total CFDI: ${float(fc['total']):,.2f} — Excluida el {str(fc['fecha_cancelacion'] or '')[:10]}")
+                        with c_f2:
+                            if st.button("Volver a considerar", key=f"btn_reactivar_{fc['uuid']}"):
+                                conn_aud.execute("UPDATE facturas SET cancelada=0, fecha_cancelacion=NULL, estatus='PENDIENTE' WHERE uuid=?", (fc['uuid'],))
+                                conn_aud.commit()
+                                st.success(f"Factura {fc_folio} reactivada e incluida nuevamente en los cálculos.")
+                                st.session_state['_refresh'] = True
+                                st.rerun()
+            
             # Auditoría Especial (Venta de Vehículo / Residual e Indemnización)
             st.markdown("---")
-            st.markdown("#### 🚗 Eventos Especiales y Cierre de Contrato (Residual / Indemnización)")
+            st.markdown("#### Eventos Especiales y Cierre de Contrato (Residual / Indemnización)")
             
             fact_venta = df_facts_con[df_facts_con['tipo'] == 'VENTA_VEHICULO'] if not df_facts_con.empty else pd.DataFrame()
             fact_indem = df_facts_con[df_facts_con['tipo'] == 'INDEMNIZACION'] if not df_facts_con.empty else pd.DataFrame()
@@ -4186,7 +6373,7 @@ def _render_conciliacion():
                     fv_row = fact_venta.iloc[0]
                     st.success(f"Factura de Venta de Vehículo detectada: Folio **{fv_row['folio']}** | Monto: **${float(fv_row['total']):,.2f}**")
                     if str(row_aud['Estatus']).upper() != 'BAJA':
-                        st.warning("⚠️ **ALERTA:** Existe factura por Venta de Vehículo pero el contrato figura como **ACTIVO**. Procesa la baja en Gestor de Bajas.")
+                        st.warning("**ALERTA:** Existe factura por Venta de Vehículo pero el contrato figura como **ACTIVO**. Procesa la baja en Gestor de Bajas.")
                     else:
                         st.info(f"Contrato dado de BAJA el {str(row_aud.get('Fecha_Baja'))[:10]}. Residual liquidado.")
                 else:
@@ -4202,7 +6389,7 @@ def _render_conciliacion():
             
             # Resumen Ejecutivo y Certificación de Auditoría para Dirección / Ventas / Administración
             st.markdown("---")
-            st.markdown("#### 🛡️ Certificación de Estado de Facturación y Cumplimiento")
+            st.markdown("#### Certificación de Estado de Facturación y Cumplimiento")
             
             # Evaluar estatus global
             hay_alertas_venta = (not fact_venta.empty and str(row_aud['Estatus']).upper() != 'BAJA')
@@ -4211,64 +6398,75 @@ def _render_conciliacion():
             
             c_cert1, c_cert2, c_cert3 = st.columns(3)
             with c_cert1:
-                st.markdown("**🏢 Para Administración / Contabilidad**")
+                st.markdown("**Para Administración / Contabilidad**")
                 st.write(f"• Meses transcurridos al corte: **{min(plazo_num, (pd.Timestamp(hoy_ref()).year - fa_dt.year)*12 + pd.Timestamp(hoy_ref()).month - fa_dt.month + 1)} de {plazo_num}**")
                 st.write(f"• Meses con facturación omitida: **{meses_atrasados_cont}**")
                 st.write(f"• Acumulado Facturado (con IVA): **${total_facturado_rentas:,.2f}**")
             
             with c_cert2:
-                st.markdown("**💼 Para Ventas / Atención a Clientes**")
+                st.markdown("**Para Ventas / Atención a Clientes**")
                 if pct_cob >= 99.0:
-                    st.success("🟢 Cliente al corriente en facturación de rentas.")
+                    st.success("Cliente al corriente en facturación de rentas.")
                 elif pct_cob >= 80.0:
-                    st.warning(f"🟡 Facturación al {pct_cob:.1f}% (Revisar facturas pendientes).")
+                    st.warning(f"Facturación al {pct_cob:.1f}% (Revisar facturas pendientes).")
                 else:
-                    st.error(f"🔴 Facturación retrasada ({pct_cob:.1f}% de avance).")
+                    st.error(f"Facturación retrasada ({pct_cob:.1f}% de avance).")
                 st.write(f"• Próxima fecha de corte: **01/{(pd.Timestamp(hoy_ref()) + relativedelta(months=1)).strftime('%m/%Y')}**")
 
             with c_cert3:
-                st.markdown("**👑 Para Dirección General / Auditoría**")
+                st.markdown("**Para Dirección General / Auditoría**")
                 if hay_alertas_venta:
-                    st.error("🚨 ALERTA DIRECCIÓN: Cobro de Residual realizado pero contrato figura ACTIVO.")
+                    st.error("ALERTA: ALERTA DIRECCIÓN: Cobro de Residual realizado pero contrato figura ACTIVO.")
                 elif hay_alertas_indem:
-                    st.error("🚨 ALERTA DIRECCIÓN: Indemnización de seguro recibida sin evento de baja/siniestro.")
+                    st.error("ALERTA: ALERTA DIRECCIÓN: Indemnización de seguro recibida sin evento de baja/siniestro.")
                 elif meses_atrasados_cont > 0:
-                    st.warning(f"⚠️ ATENCIÓN: {meses_atrasados_cont} mes(es) pendientes de facturar.")
+                    st.warning(f"ATENCIÓN: {meses_atrasados_cont} mes(es) pendientes de facturar.")
                 else:
-                    st.success("✅ EXPEDIENTE 100% CERTIFICADO Y SIN ANOMALÍAS")
+                    st.success("EXPEDIENTE 100% CERTIFICADO Y SIN ANOMALÍAS")
 
             # Descargar reporte de auditoría en Excel
-            buf_aud = excel_con_formato(
-                {
-                    'Auditoría_Contrato': df_audit_table,
-                    'Resumen_Ejecutivo': pd.DataFrame([
-                        {'Indicador': 'ID Contrato', 'Valor': sel_aud},
-                        {'Indicador': 'Cliente', 'Valor': row_aud['Cliente']},
-                        {'Indicador': 'Vehículo', 'Valor': row_aud['Vehiculo']},
-                        {'Indicador': 'Estatus Contrato', 'Valor': row_aud['Estatus']},
-                        {'Indicador': 'Plazo', 'Valor': f"{plazo_num} meses"},
-                        {'Indicador': 'Renta Mensual (Sin IVA)', 'Valor': f"${float(row_aud['Mensualidad_Sin_IVA']):,.2f}"},
-                        {'Indicador': 'Facturación Esperada Total', 'Valor': f"${total_esperado_rentas:,.2f}"},
-                        {'Indicador': 'Facturación Registrada Total', 'Valor': f"${total_facturado_rentas:,.2f}"},
-                        {'Indicador': 'Diferencia Acumulada', 'Valor': f"${total_facturado_rentas - total_esperado_rentas:+,.2f}"},
-                        {'Indicador': 'Porcentaje de Cumplimiento', 'Valor': f"{pct_cob:.1f}%"},
-                        {'Indicador': 'Factura Venta Vehículo', 'Valor': f"${float(fact_venta.iloc[0]['total']):,.2f}" if not fact_venta.empty else "No"},
-                        {'Indicador': 'Factura Indemnización', 'Valor': f"${float(fact_indem.iloc[0]['total']):,.2f}" if not fact_indem.empty else "No"}
-                    ])
-                },
-                currency_cols=['Renta Esperada (c/IVA)', 'Facturado (c/IVA)', 'Diferencia']
-            )
-            st.download_button(
-                f"📄 Descargar Expediente Auditado Completo de {sel_aud} (Excel)",
-                buf_aud,
-                file_name=f"auditoria_expediente_{sel_aud}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+            try:
+                buf_aud = excel_con_formato(
+                    {
+                        'Auditoría_Contrato': df_audit_table,
+                        'Resumen_Ejecutivo': pd.DataFrame([
+                            {'Indicador': 'ID Contrato', 'Valor': sel_aud},
+                            {'Indicador': 'Cliente', 'Valor': row_aud['Cliente']},
+                            {'Indicador': 'Vehículo', 'Valor': row_aud['Vehiculo']},
+                            {'Indicador': 'Estatus Contrato', 'Valor': row_aud['Estatus']},
+                            {'Indicador': 'Plazo', 'Valor': f"{plazo_num} meses"},
+                            {'Indicador': 'Renta Mensual (Sin IVA)', 'Valor': f"${float(row_aud['Mensualidad_Sin_IVA']):,.2f}"},
+                            {'Indicador': 'Facturación Esperada Total', 'Valor': f"${total_esperado_rentas:,.2f}"},
+                            {'Indicador': 'Facturación Registrada Total', 'Valor': f"${total_facturado_rentas:,.2f}"},
+                            {'Indicador': 'Diferencia Acumulada', 'Valor': f"${total_facturado_rentas - total_esperado_rentas:+,.2f}"},
+                            {'Indicador': 'Porcentaje de Cumplimiento', 'Valor': f"{pct_cob:.1f}%"},
+                            {'Indicador': 'Factura Venta Vehículo', 'Valor': f"${float(fact_venta.iloc[0]['total']):,.2f}" if not fact_venta.empty else "No"},
+                            {'Indicador': 'Factura Indemnización', 'Valor': f"${float(fact_indem.iloc[0]['total']):,.2f}" if not fact_indem.empty else "No"}
+                        ])
+                    },
+                    currency_cols=['Renta Esperada (c/IVA)', 'Facturado (c/IVA)', 'Diferencia']
+                )
+                st.download_button(
+                    f"Descargar Expediente Auditado Completo de {sel_aud} (Excel)",
+                    buf_aud,
+                    file_name=f"auditoria_expediente_{sel_aud}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"dl_aud_excel_{sel_aud}"
+                )
+            except Exception:
+                csv_aud = df_audit_table.to_csv(index=False).encode('utf-8-sig')
+                st.download_button(
+                    f"Descargar Expediente Auditado Completo de {sel_aud} (CSV)",
+                    csv_aud,
+                    file_name=f"auditoria_expediente_{sel_aud}.csv",
+                    mime="text/csv",
+                    key=f"dl_aud_csv_{sel_aud}"
+                )
 
     # ===================================================================
-    # TAB 5 – REPORTE DE CONCILIACIÓN (NUEVO)
+    # TAB 7 – REPORTE CONSOLIDADO
     # ===================================================================
-    with tab_reporte:
+    elif tab_activa == "Reporte Consolidado":
         st.subheader("Reporte Consolidado de Conciliación")
         conn = get_db()
         periodos = conn.execute(
@@ -4277,11 +6475,8 @@ def _render_conciliacion():
         lista_per = [r[0] for r in periodos]
 
         # Analisis multi-anio (todos los XML cargados, varios anios a la vez)
-        with st.expander("Analisis multi-anio de facturacion (todos los XML cargados)", expanded=True):
-            st.caption(
-                "Sube XML de varios anios en la pestaña Carga (acepta multiples archivos). "
-                "Aqui se agrupa por anio y tipo para ver el panorama completo y amarrar con contabilidad."
-            )
+        with st.expander("Analisis multi-anio de facturacion (todos los XML cargados)", expanded=False):
+            st.caption("Resumen anual y por tipo de factura para cuadrar con contabilidad.")
             try:
                 _df_all_f = pd.read_sql_query(
                     """SELECT periodo, tipo, total, subtotal, cancelada, estatus
@@ -4291,38 +6486,36 @@ def _render_conciliacion():
             except Exception:
                 _df_all_f = pd.DataFrame()
             if _df_all_f.empty:
-                st.info("Aun no hay facturas. Sube XML de uno o varios anios en Carga.")
+                st.info("Sin facturas registradas.")
             else:
                 _res_anio = resumen_facturacion_por_anio(_df_all_f, solo_vigentes=True)
                 if not _res_anio.empty:
-                    _anios = sorted(_res_anio["Anio"].unique())
-                    st.markdown(f"**Anios con facturas:** {', '.join(_anios)}  |  **Total vigentes:** ${_res_anio['Total'].sum():,.2f}")
+                    _anios = sorted(_res_anio["anio"].unique())
+                    st.markdown(f"**Años con facturas:** {', '.join(_anios)}  |  **Total vigentes:** ${_res_anio['total'].sum():,.2f}")
                     c_chart, c_tab = st.columns([1, 1])
                     with c_chart:
                         try:
-                            _pivot = _res_anio.pivot_table(
-                                index="Anio", columns="Tipo", values="Total", aggfunc="sum", fill_value=0
-                            ).reset_index()
                             fig_an = go.Figure()
-                            for col in [c for c in _pivot.columns if c != "Anio"]:
-                                fig_an.add_trace(go.Bar(x=_pivot["Anio"], y=_pivot[col], name=str(col)))
-                            fig_an.update_layout(barmode="stack", title="Facturado vigente por anio y tipo", height=320)
+                            for col in ["mensual", "comision", "otros"]:
+                                if col in _res_anio.columns:
+                                    fig_an.add_trace(go.Bar(x=_res_anio["anio"], y=_res_anio[col], name=col.capitalize()))
+                            fig_an.update_layout(barmode="stack", title="Facturado vigente por año y tipo", height=320)
                             st.plotly_chart(sfig(fig_an, h=320), width="stretch", key="pc_multi_anio")
                         except Exception:
                             pass
                     with c_tab:
                         st.dataframe(
-                            _res_anio.style.format({"Total": "${:,.2f}", "Subtotal": "${:,.2f}"}),
+                            _res_anio.style.format({"total": "${:,.2f}", "subtotal": "${:,.2f}", "mensual": "${:,.2f}", "comision": "${:,.2f}", "otros": "${:,.2f}"}),
                             width="stretch", height=300, key="df_multi_anio",
                         )
                     try:
                         from reports.excel import excel_con_formato as _exc_ma
                         _buf_ma = _exc_ma(
-                            {"Por anio": _res_anio},
-                            currency_cols=["Total", "Subtotal"],
+                            {"Por año": _res_anio},
+                            currency_cols=["total", "subtotal", "mensual", "comision", "otros"],
                         )
                         st.download_button(
-                            "Excel multi-anio",
+                            "Excel multi-año",
                             data=_buf_ma,
                             file_name="facturacion_multi_anio.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -4336,9 +6529,11 @@ def _render_conciliacion():
         else:
             per_rep = st.selectbox("Selecciona un período", lista_per, key="per_reporte")
             rows = conn.execute(
-                """SELECT uuid, folio, id_contrato, tipo, mes_contrato,
-                          subtotal, total, estatus, observaciones, fecha_emision, fecha_registro, cancelada
-                   FROM facturas WHERE periodo=? ORDER BY fecha_emision""",
+                """SELECT f.uuid, f.folio, f.id_contrato, f.tipo, f.mes_contrato,
+                          f.subtotal, f.total, f.estatus,
+                          COALESCE((SELECT GROUP_CONCAT(fc.descripcion, ' | ') FROM factura_conceptos fc WHERE fc.uuid = f.uuid), f.observaciones) as concepto,
+                          f.observaciones, f.fecha_emision, f.fecha_registro, f.cancelada
+                   FROM facturas f WHERE f.periodo=? ORDER BY f.fecha_emision""",
                 (per_rep,)
             ).fetchall()
             if not rows:
@@ -4346,7 +6541,7 @@ def _render_conciliacion():
             else:
                         df_rep = pd.DataFrame(rows, columns=[
                             'UUID', 'Folio', 'Contrato', 'Tipo', 'Mes',
-                            'Subtotal', 'Total', 'Estatus', 'Observación', 'Fecha Emisión', 'Fecha Registro', 'Cancelada'
+                            'Subtotal', 'Total', 'Estatus', 'Concepto', 'Observación', 'Fecha Emisión', 'Fecha Registro', 'Cancelada'
                         ])
                         df_rep['UUID'] = df_rep['UUID'].str[:8] + '…'
                         df_rep['Mes'] = df_rep['Mes'].astype(str).replace(['nan', 'None', '<NA>', 'NaN'], '-').fillna('-')
@@ -4368,13 +6563,8 @@ def _render_conciliacion():
                         col6.metric("Monto Total", f"${monto_total:,.2f}")
 
                         st.markdown("---")
-                        st.markdown('<span class="section-label">Control global del período — ¿cuadra lo facturado contra lo que debía facturarse?</span>', unsafe_allow_html=True)
-                        st.caption(
-                            "Compara la renta mensual pactada de TODOS los contratos activos contra lo que "
-                            "realmente se facturó (sin contar facturas canceladas) en este período. Una "
-                            "diferencia grande suele significar contratos sin facturar, facturas duplicadas, "
-                            "o facturas todavía sin contrato asignado."
-                        )
+                        st.markdown('<span class="section-label">Control global del período</span>', unsafe_allow_html=True)
+                        st.caption("Compara la renta pactada de contratos activos contra lo facturado en el mes.")
                         df_act_rep = obtener('ACTIVO')
                         esperado_periodo = float(df_act_rep['Mensualidad_Sin_IVA'].sum()) if not df_act_rep.empty else 0.0
                         facturado_vigente = float(df_rep.loc[df_rep['Cancelada']=='No', 'Total'].sum())
@@ -4463,14 +6653,7 @@ def _render_conciliacion():
 
 def _render_analiticas():
     st.title("Comparar Analíticas Contables")
-    st.markdown(
-        "Sube el Excel de analíticas que te entrega el contador (las hojas típicas son 'Ingresos por "
-        "Intereses', 'Ingresos por Valor Residual' y 'Arrendamiento de Comisión Apertura', un renglón "
-        "por contrato con lo registrado mes a mes). El sistema calcula lo que debería haberse "
-        "registrado para cada contrato y mes, compara contra lo que trae el Excel, y te dice "
-        "exactamente en dónde hay diferencia y por qué — contrato dado de baja que se sigue "
-        "contabilizando, renta capturada distinta, contrato que no encuentra en el sistema, etc."
-    )
+    st.caption("Compara el Excel de analíticas contables contra los devengamientos del sistema para detectar diferencias.")
     arch_analitica = st.file_uploader("Excel de analíticas", type=["xlsx", "xls"], key="analiticas_uploader")
 
     if arch_analitica is not None:
@@ -4481,22 +6664,18 @@ def _render_analiticas():
             df_tidy, anio_detectado, hojas_no_rec = pd.DataFrame(), None, []
 
         if hojas_no_rec:
-            st.info(
-                f"No reconocí de qué son estas hojas (no las comparé): {', '.join(hojas_no_rec)}. "
-                f"Reconozco hojas cuyo nombre contenga 'interés', 'residual' o 'comisión'."
-            )
+            st.info(f"Hojas no reconocidas (omitidas): {', '.join(hojas_no_rec)}.")
 
         if df_tidy.empty:
-            st.warning("No encontré renglones con datos en ninguna hoja reconocida del archivo.")
+            st.warning("No se encontraron registros en las hojas reconocidas.")
         else:
             anio_cmp = st.number_input(
                 "Año que cubre esta analítica", min_value=2015, max_value=2100,
-                value=anio_detectado or hoy_ref().year, step=1,
-                help="Se detectó automáticamente del archivo si venía escrito ahí (ej. 'Anexos al 30 de Junio de 2026'); ajústalo si no es correcto."
+                value=anio_detectado or hoy_ref().year, step=1
             )
             n_sin_id = df_tidy['ID_Contrato_Detectado'].isna().sum()
             if n_sin_id:
-                st.caption(f"{n_sin_id} renglón(es) del Excel no traían un número de contrato reconocible en el texto — se marcarán como 'no identificado'.")
+                st.caption(f"{n_sin_id} renglones sin número de contrato identificable.")
 
             if st.button("Comparar contra el sistema", type="primary"):
                 with st.spinner("Calculando lo esperado y comparando…"):
@@ -4548,11 +6727,7 @@ def _render_analiticas():
 
             st.divider()
             st.markdown("**Sugerencia de póliza de ajuste**")
-            st.caption(
-                "Suma la diferencia neta por contrato y por tipo de ingreso, y propone una línea de "
-                "Cargo/Abono para dejar la cuenta contable alineada con lo que dice el sistema. "
-                "Es una sugerencia para que la revises — no se contabiliza sola."
-            )
+            st.caption("Propuesta de cargos y abonos para cuadrar las diferencias encontradas.")
             df_ajuste = sugerir_ajuste_poliza(df_cmp, CAT)
             if df_ajuste.empty:
                 st.info("No hay diferencias netas que ameriten un ajuste.")
@@ -4603,17 +6778,14 @@ def exportar_reporte_conciliacion(periodo: str, df: pd.DataFrame) -> bytes:
 def _pantalla_bd_danada(db_path: str, error_tecnico: str):
     st.title("La base de datos no se pudo abrir")
     st.error(
-        "El archivo de esta empresa se dañó a nivel de disco "
-        "(`database disk image is malformed`). No es un error de tus datos "
-        "ni de captura — es el archivo .db en sí. Esto casi siempre pasa por "
-        "guardar la carpeta del programa dentro de OneDrive/Dropbox/Google Drive, "
-        "o por un antivirus escaneando el archivo mientras se escribe."
+        "El archivo de base de datos se dañó y no se puede abrir. "
+        "Puedes restaurar uno de los respaldos automáticos a continuación."
     )
     respaldos = listar_respaldos_automaticos(db_path)
     if respaldos:
-        st.success(f"Buenas noticias: hay {len(respaldos)} respaldo(s) automático(s) de esta misma base de datos.")
+        st.success(f"Hay {len(respaldos)} respaldo(s) disponible(s) para restaurar.")
         opciones = {
-            f"{fecha.strftime('%Y-%m-%d %H:%M:%S')}" + (" 🔒 (cifrado)" if cifrado else ""): archivo
+            f"{fecha.strftime('%Y-%m-%d %H:%M:%S')}" + (" (cifrado)" if cifrado else ""): archivo
             for archivo, fecha, cifrado in respaldos
         }
         elegido = st.selectbox("Elige el respaldo a restaurar (el más reciente arriba):", list(opciones.keys()))
@@ -4621,7 +6793,7 @@ def _pantalla_bd_danada(db_path: str, error_tecnico: str):
         clave_restaurar = None
         if archivo_elegido.endswith(".zip"):
             clave_restaurar = st.text_input("Contraseña del respaldo", type="password")
-        st.caption("El archivo dañado NO se borra: se renombra y se guarda junto a los demás, por si necesitas soporte técnico.")
+        st.caption("El archivo dañado se conserva por seguridad con otro nombre.")
         if st.button("Restaurar este respaldo y continuar", type="primary"):
             try:
                 restaurar_respaldo_automatico(db_path, archivo_elegido, password=clave_restaurar)
@@ -4631,19 +6803,9 @@ def _pantalla_bd_danada(db_path: str, error_tecnico: str):
             except RuntimeError as e:
                 st.error(str(e))
     else:
-        st.warning(
-            "No se encontró ningún respaldo automático todavía para este archivo "
-            "(se empiezan a crear a partir de esta versión, uno por cada vez que abras "
-            "la app con la base de datos sana). Si tienes una copia manual descargada "
-            "desde 'Respaldo y Restauración', puedes restaurarla ahí una vez que "
-            "vuelvas a poder abrir la app con una base de datos nueva."
-        )
+        st.warning("No se encontraron respaldos automáticos disponibles para este archivo.")
     st.markdown("---")
-    _carpeta_ejemplo = r"C:\O-Leasing" if sys.platform.startswith("win") else "/home/tuusuario/O-Leasing"
-    st.markdown("**Para que no vuelva a pasar:** mueve la carpeta del programa fuera de "
-                f"cualquier carpeta sincronizada por OneDrive/Dropbox/Google Drive (por ejemplo, "
-                f"a `{_carpeta_ejemplo}` directamente), y agrega esa carpeta como excepción en tu antivirus "
-                f"{'(si usas uno en Windows)' if sys.platform.startswith('win') else ''}.")
+    st.markdown("**Recomendación:** Guarda la carpeta del sistema en un disco local y fuera de carpetas sincronizadas en la nube.")
     with st.expander("Detalle técnico"):
         st.code(error_tecnico)
     st.stop()
@@ -4695,9 +6857,7 @@ def _pantalla_error_amigable(e: Exception, contexto: str = ""):
       <div class="es-icon"></div>
       <span class="es-title">Esta pantalla no pudo cargar</span>
       <span class="es-msg">
-        Algo no salió como se esperaba al preparar esta vista — no es que se haya perdido información,
-        el resto del sistema sigue intacto. Prueba recargar la página o cambiar de contrato/filtro;
-        si vuelve a pasar en el mismo lugar, avísale a soporte con el detalle técnico de abajo.
+        Ocurrió un problema temporal al cargar esta pantalla. Intenta recargar o volver al menú principal.
       </span>
     </div>""", unsafe_allow_html=True)
     c_err1, c_err2 = st.columns(2)
@@ -5014,6 +7174,13 @@ if st.session_state.get('mostrar_perfil'):
     dialog_perfil()
 
 if st.sidebar.button("Cerrar sesión", key="btn_logout", width='stretch'):
+    _tok_logout = st.query_params.get("st_auth")
+    if _tok_logout:
+        try:
+            cerrar_sesion(AUTH_DB, _tok_logout)
+        except Exception:
+            pass
+        st.query_params.pop("st_auth", None)
     st.session_state.pop("auth_user", None)
     st.rerun()
 
@@ -5090,7 +7257,7 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # --- BÚSQUEDA GLOBAL / COMMAND CENTER ---
-with st.expander("🔍 Búsqueda Global — Buscar Contratos, Clientes, Series o Facturas", expanded=st.session_state.get("_open_search", False)):
+with st.expander("Búsqueda Global — Buscar Contratos, Clientes, Series o Facturas", expanded=st.session_state.get("_open_search", False)):
     _q_glob = st.text_input("Ingresa cualquier término (ID Contrato, Cliente, Vehículo, Serie/VIN o Anotaciones):", key="global_search_q_input", placeholder="Ej: 0773, Besthelg, Ford, 3FA6P...").strip()
     if _q_glob:
         _df_con_g = obtener()
@@ -5110,7 +7277,7 @@ with st.expander("🔍 Búsqueda Global — Buscar Contratos, Clientes, Series o
                     _gcol1.markdown(f"**{_r_g['ID_Contrato']}**")
                     _gcol2.markdown(f"**{_r_g['Cliente']}**<br><small style='color:#666;'>{_r_g['Vehiculo']}</small>", unsafe_allow_html=True)
                     _gcol3.markdown(f"Renta: **${float(_r_g.get('Mensualidad_Sin_IVA',0)):,.2f}**")
-                    if _gcol4.button("📋 Estado Cta", key=f"btn_gs_ec_{_r_g['ID_Contrato']}"):
+                    if _gcol4.button("Estado Cta", key=f"btn_gs_ec_{_r_g['ID_Contrato']}"):
                         st.session_state['ec_contrato'] = _r_g['ID_Contrato']
                         st.session_state['menu_item'] = "Estado de Cuenta"
                         st.session_state['menu_grupo'] = "Cartera"
@@ -5214,10 +7381,7 @@ try:
         # --- VERDAD = Tabla Mensual por Contrato (misma funcion / mismos numeros del Excel) ---
         st.markdown("---")
         st.subheader(f"Comparativos contables — {_periodo}")
-        st.caption(
-            "Los intereses se calculan con **la misma funcion** que Tabla Mensual por Contrato "
-            "(Excel int_208). Del mes = columna del mes. Acumulado = suma de columnas enero…mes."
-        )
+        st.caption("Cálculo de intereses y amortización para el período seleccionado.")
 
         with st.spinner("Calculando con logica de Tabla Mensual…"):
             _tot_tm = totales_intereses_desde_tabla_mensual(int(anio_sel), int(mes_sel))
@@ -5289,7 +7453,6 @@ try:
 
         # ---- 1) DEL MES ----
         st.markdown(f"### 1. Del mes: {MN[int(mes_sel)-1]} {int(anio_sel)}")
-        st.caption("Misma fuente que Tabla Mensual por Contrato (Excel).")
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Intereses leasing (del mes)", f"${_m_tm.get('interes_leasing_mes', 0):,.2f}")
         c2.metric("Intereses residual (del mes)", f"${_m_tm.get('interes_residual_mes', 0):,.2f}")
@@ -5300,7 +7463,6 @@ try:
 
         # ---- 2) ACUMULADO EJERCICIO ----
         st.markdown(f"### 2. Acumulado ejercicio {int(anio_sel)} (enero → {MN[int(mes_sel)-1].lower()})")
-        st.caption("Suma de columnas enero…mes de las mismas tablas de Tabla Mensual.")
         a1, a2, a3 = st.columns(3)
         a1.metric("Intereses leasing (acum.)", f"${_m_tm.get('interes_leasing_ytd', 0):,.2f}")
         a2.metric("Intereses residual (acum.)", f"${_m_tm.get('interes_residual_ytd', 0):,.2f}")
@@ -5343,18 +7505,12 @@ try:
         _acu_prev = _acu_am
 
         if _m_tm.get("n_contratos_mes", 0) == 0:
-            st.warning(
-                "No hubo contratos con amortizacion en este mes. Revisa año/mes, "
-                "Fecha_Alta de los contratos y que la tasa no sea cero."
-            )
+            st.warning("No hay contratos con amortización registrados en este mes.")
 
         # --- Auxiliar contable ---
         st.markdown("---")
         st.subheader(f"4. Comparar con auxiliar contable (ejercicio {int(anio_sel)})")
-        st.caption(
-            "Sube un Excel/CSV de tu auxiliar (CONTPAQi u otro) con columnas de cuenta/concepto y saldo. "
-            "El sistema intenta emparejar intereses, capital y rentas del ejercicio contra esos renglones."
-        )
+        st.caption("Compara tu balanza o auxiliar contable contra las cifras del sistema.")
         _aux_file = st.file_uploader(
             "Auxiliar contable (.xlsx o .csv)",
             type=["xlsx", "csv"],
@@ -5935,17 +8091,13 @@ try:
                         fc2.metric("Interés total del plazo",     f"${_int_total:,.2f}")
                         fc3.metric("Interés primeros 12 meses",   f"${_icp_c:,.2f}")
                         fc4.metric("Interés resto del plazo",     f"${_ilp_c:,.2f}")
-                        st.caption("Capital + interés + residual pactado deben cuadrar contra la suma de rentas más el valor residual del contrato.")
+                        st.caption("Desglose del valor del contrato entre capital, interés y residual.")
                     else:
                         st.info("No se puede calcular la composición: inversión neta no positiva.")
 
                     st.markdown("---")
                     st.markdown('<span class="section-label">Cuentas contables asignadas a este contrato</span>', unsafe_allow_html=True)
-                    st.caption(
-                        "Estas son, cuenta por cuenta, las claves de tu catálogo maestro que aplican a este "
-                        "contrato para Contpaqi. Las que dejaste en blanco en 'Cuentas (Macro)' no aparecen "
-                        "aquí ni se exportan."
-                    )
+                    st.caption("Cuentas contables asignadas a este contrato.")
                     cat_ec = cargar_catalogo()
                     filas_cat = []
                     for k_ec, d_ec in cat_ec.items():
@@ -5962,7 +8114,7 @@ try:
                     if filas_cat:
                         st.dataframe(pd.DataFrame(filas_cat), width='stretch', height=280, key=f"df_cont_{sel_ec}")
                     else:
-                        st.warning("No hay cuentas activas en el catálogo maestro. Ve a 'Cuentas (Macro)' y captura al menos una.")
+                        st.warning("No hay cuentas activas configuradas en el catálogo maestro.")
 
                     st.markdown("---")
                     st.markdown('<span class="section-label">Otros contratos del mismo cliente</span>', unsafe_allow_html=True)
@@ -5973,9 +8125,8 @@ try:
                                 .rename(columns={'Mensualidad_Sin_IVA':'Renta mensual'}),
                             width='stretch', height=180, key=f"df_otros_{sel_ec}"
                         )
-                        st.caption("Útil para ver la exposición total de este cliente antes de aprobar un nuevo contrato o negociar una renovación.")
                     else:
-                        st.caption("Este cliente no tiene otros contratos registrados en esta empresa.")
+                        st.caption("Sin otros contratos registrados para este cliente.")
 
             st.markdown("---")
             if st.button("Exportar estado de cuenta completo (Excel)", width='stretch'):
@@ -6244,7 +8395,38 @@ try:
                                 residual_transferred=0,Nivel_Morosidad=nm)
                         guardar(ct); st.success("Guardado.")
                         st.session_state['_refresh'] = True
+
+                        # Revisar facturas para alertar discrepancia de IVA en contrato nuevo
+                        f_ex = get_db().execute(
+                            "SELECT subtotal FROM facturas WHERE (id_contrato=? OR id_contrato_detectado=?) AND tipo='MENSUAL' AND (cancelada IS NULL OR cancelada=0) ORDER BY fecha_emision DESC LIMIT 1",
+                            (id_c.strip(), id_c.strip())
+                        ).fetchone()
+                        if f_ex and f_ex['subtotal']:
+                            subt = float(f_ex['subtotal'])
+                            diag = detectar_descuadre_iva_contrato(renta, subt)
+                            if diag:
+                                st.session_state['alerta_iva_nuevo_contrato'] = {
+                                    'id_contrato': id_c.strip(),
+                                    'diag': diag,
+                                    'subtotal': subt
+                                }
                     else: st.error("Completa los campos obligatorios.")
+
+            alerta_c = st.session_state.get('alerta_iva_nuevo_contrato')
+            if alerta_c and alerta_c.get('id_contrato'):
+                idc_a = alerta_c['id_contrato']
+                diag_a = alerta_c['diag']
+                subt_a = alerta_c['subtotal']
+                st.warning(f"Alerta en Contrato Nuevo {idc_a}: {diag_a['mensaje']}. {diag_a['detalle']}")
+                if st.button(f"Corregir renta a ${subt_a:,.2f} y recalcular corrida", key=f"btn_corr_alta_{idc_a}"):
+                    ok, msg = corregir_renta_contrato_nuevo(idc_a, subt_a)
+                    if ok:
+                        st.success(msg)
+                        st.session_state.pop('alerta_iva_nuevo_contrato', None)
+                        st.session_state['_refresh'] = True
+                        st.rerun()
+                    else:
+                        st.error(msg)
 
     elif menu=="Editar / Eliminar":
         st.title("Edición y Eliminación de Contratos")
@@ -6253,11 +8435,8 @@ try:
         else:
             ids=st.selectbox("Contrato",dfa['ID_Contrato'],key="edit_sel_contrato"); row=dfa[dfa['ID_Contrato']==ids].iloc[0]
 
-            with st.expander(f"Cambiar el número de contrato (ahora mismo es {ids})"):
-                st.caption(
-                    "Renumera el contrato completo: se actualiza también en sus facturas, anotaciones y "
-                    "eventos especiales, para que nada se quede apuntando al número viejo."
-                )
+            with st.expander(f"Cambiar número de contrato ({ids})"):
+                st.caption("Actualiza el número de contrato y sus registros asociados.")
                 nuevo_id = st.text_input("Nuevo número (formato NNNN-NNNN)", value=ids, key=f"nuevo_id_{ids}")
                 if st.button("Renumerar contrato"):
                     ok, msg = renumerar_contrato(ids, nuevo_id)
@@ -6289,7 +8468,7 @@ try:
                     st.session_state['_refresh'] = True
 
             st.divider()
-            n_fact_rel = get_db().execute("SELECT COUNT(*) FROM facturas WHERE id_contrato=?", (ids,)).fetchone()[0]
+            n_fact_rel = get_db().execute("SELECT COUNT(*) FROM facturas WHERE (id_contrato=? OR instr(id_contrato, ?) > 0)", (ids, ids)).fetchone()[0]
             n_anot_rel = get_db().execute("SELECT COUNT(*) FROM anotaciones WHERE ID_Contrato=?", (ids,)).fetchone()[0]
             n_evt_rel  = get_db().execute("SELECT COUNT(*) FROM eventos_especiales WHERE ID_Contrato=?", (ids,)).fetchone()[0]
             if n_fact_rel or n_anot_rel or n_evt_rel:
@@ -6319,7 +8498,6 @@ try:
 
             st.divider()
             st.subheader("Anotaciones de este contrato")
-            st.caption("Deja notas sobre ajustes contables u observaciones de este contrato en particular.")
             notas=obtener_anotaciones(ids)
             if notas.empty:
                 st.info("Sin anotaciones registradas para este contrato.")
@@ -6343,7 +8521,7 @@ try:
 
     elif menu=="Gestor de Bajas":
         st.title("Gestor de Bajas y Análisis de Cartera")
-        st.caption("Los contratos que llegan al final de su plazo se dan de baja por terminación natural automáticamente, cada vez que abres la app.")
+        st.caption("Los contratos vencidos se dan de baja automáticamente por terminación natural.")
         if st.button("Revisar vencimientos ahora"):
             n_chk=procesar_vencimientos_naturales()
             if n_chk>0: st.success(f"{n_chk} contrato(s) pasaron a BAJA por terminación natural.")
@@ -6361,7 +8539,6 @@ try:
                        "Jurídico / incumplimiento total","Refinanciamiento","Error administrativo","Otro"]
 
             st.subheader("Baja Masiva")
-            st.caption("Selecciona múltiples contratos y registra la baja con un solo clic.")
             sel = st.multiselect(
                 "Contratos a dar de baja",
                 options=act['ID_Contrato'].tolist() if not act.empty else [],
@@ -6639,7 +8816,7 @@ try:
 
     elif menu=="Eventos Especiales":
         st.title("Siniestros, Robos y Procesos Jurídicos")
-        st.caption("Registra estos eventos y calcula el ajuste contable correcto, incluso si ya pasaron meses o años y la cartera siguió corriendo amortizaciones e intereses normales mientras tanto.")
+        st.caption("Registra siniestros o procesos legales y calcula sus ajustes contables.")
         df_all = obtener()
         tab_nuevo, tab_seg, tab_calc = st.tabs(["Registrar evento", "Estatus de seguro", "Calcular ajuste"])
 
@@ -6652,8 +8829,7 @@ try:
                 tipo_ev = c2.selectbox("Tipo de evento", ["SINIESTRO","ROBO","JURIDICO"],
                             format_func=lambda x:{"SINIESTRO":"Siniestro (daño)","ROBO":"Robo / pérdida total","JURIDICO":"Proceso jurídico"}[x])
                 c3,c4 = st.columns(2)
-                fecha_ev = c3.date_input("Fecha real en que ocurrió el evento", value=date.today(),
-                            help="Aunque haya pasado hace meses o años, captura la fecha real del hecho — el sistema calcula el ajuste a partir de ahí.")
+                fecha_ev = c3.date_input("Fecha del evento", value=date.today())
                 val_rec = c4.number_input("Valor recuperable estimado (salvamento)", min_value=0.0, value=0.0, step=1000.0)
                 monto_recl = st.number_input("Monto reclamado a la aseguradora (si aplica)", min_value=0.0, value=0.0, step=1000.0)
                 obs = st.text_area("Observaciones")
@@ -6661,10 +8837,8 @@ try:
                 TIPOS_EXCL_EVT = ["SINIESTRO","ROBO","JURIDICO"]
                 excluir_de_poliza = tipo_ev in TIPOS_EXCL_EVT
                 if excluir_de_poliza:
-                    st.markdown(f"Los eventos de tipo **{tipo_ev}** excluyen automáticamente el contrato de las pólizas de parcialidades.")
-                    fecha_excl_evt_reg = st.date_input("¿Desde qué fecha aplica la exclusión?",
-                                                        value=fecha_ev, key="fexcl_evt_reg",
-                                                        help="El contrato quedará excluido a partir del primer día del mes siguiente a esta fecha.")
+                    st.caption(f"Los eventos de tipo {tipo_ev} excluyen el contrato de las pólizas de parcialidades.")
+                    fecha_excl_evt_reg = st.date_input("Fecha de inicio de exclusión", value=fecha_ev, key="fexcl_evt_reg")
                 else:
                     fecha_excl_evt_reg = None
                 if st.button("Registrar evento"):
@@ -6680,7 +8854,7 @@ try:
                     st.session_state['_refresh'] = True
 
             st.divider()
-            st.caption("Eventos ya registrados:")
+            st.caption("Eventos registrados:")
             dfe_prev = obtener_eventos_especiales()
             if dfe_prev.empty:
                 st.info("Aún no hay eventos registrados.")
@@ -6694,7 +8868,7 @@ try:
             if dfe.empty:
                 st.info("Registra un evento primero en la pestaña 'Registrar evento'.")
             else:
-                st.markdown("Mientras no confirmes el reembolso, el cálculo del ajuste **no** incluirá ningún ingreso por seguro — así evitas reconocer una recuperación que aún no es segura (regla del activo contingente, IAS 37 / NIF C-9).")
+                st.caption("Hasta confirmar el reembolso de la aseguradora, el cálculo no incluirá ingresos por seguro.")
                 ev_sel = st.selectbox("Evento", dfe['id'],
                             format_func=lambda i: f"#{i} — {dfe[dfe['id']==i]['ID_Contrato'].values[0]} ({dfe[dfe['id']==i]['Tipo_Evento'].values[0]}) — estatus actual: {dfe[dfe['id']==i]['Estatus_Seguro'].values[0]}")
                 ec1,ec2,ec3 = st.columns(3)
@@ -6732,10 +8906,10 @@ try:
                     k3.metric("Meses con registro indebido", calc['mes_hoy']-calc['mes_evento'])
 
                     if calc['es_retroactivo']:
-                        st.info(f"Este evento ocurrió hace {calc['mes_hoy']-calc['mes_evento']} mes(es) y el sistema siguió generando amortización e interés como si el contrato estuviera sano. Ese ingreso indebido se revierte junto con la pérdida en el ajuste de abajo.")
+                        st.info(f"Evento registrado con retraso ({calc['mes_hoy']-calc['mes_evento']} meses). Se revertirán las amortizaciones e intereses generados en ese período.")
 
                     if abs(calc['loss_plug_anterior'])>0.001:
-                        st.error(f"${calc['loss_plug_anterior']:,.2f} de este ajuste corresponde a un ejercicio fiscal ya cerrado. Bajo NIF B-1 / IAS 8 esto se corrige contra **Utilidades Acumuladas**, no contra el resultado del año en curso, y normalmente implica reexpresar los estados comparativos del periodo afectado. Coordínalo con tu auditor.")
+                        st.warning(f"${calc['loss_plug_anterior']:,.2f} corresponde a un ejercicio fiscal cerrado. Debe registrarse contra utilidades acumuladas con apoyo de tu contador.")
 
                     with st.expander("Ver detalle mes por mes del ajuste"):
                         if not calc['detalle'].empty:
@@ -6756,7 +8930,7 @@ try:
                         st.dataframe(pd.DataFrame([{'Cuenta':n,'Saldo a cancelar':sl[k]} for n,k in filas_sl])
                                      .style.format({'Saldo a cancelar':'${:,.2f}'}), width='stretch',
         key="df_014")
-                        st.caption("Estos son los saldos que tu sistema muestra hoy para este contrato; la póliza de abajo los lleva a cero.")
+                        st.caption("Saldos actuales del contrato que serán cancelados por el ajuste.")
 
                     st.divider()
                     st.subheader("Póliza de ajuste sugerida")
@@ -6953,11 +9127,7 @@ try:
         tipo=st.radio("Tipo",["Inicial","Parcialidad (mensual)","Comisión por apertura","Reglas Personalizadas"])
 
         if tipo=="Reglas Personalizadas":
-            st.caption(
-                "Para empresas cuya forma de contabilizar no encaja con las pólizas estándar de arriba: tú "
-                "dictas, concepto por concepto, en qué cuenta va y si es cargo o abono. El sistema calcula el "
-                "monto de cada concepto con las mismas fórmulas de amortización de siempre, y arma la póliza."
-            )
+            st.caption("Configura manualmente las cuentas de cargo y abono para armar tus pólizas.")
             with st.expander("Configurar reglas", expanded=obtener_reglas_poliza_custom().empty):
                 df_reglas = obtener_reglas_poliza_custom()
                 if not df_reglas.empty:
@@ -7021,9 +9191,7 @@ try:
                         "TXT (Contpaqi)",
                         poliza_txt_contpaqi(df_fin_rp, "Reglas Personalizadas", pd.Timestamp(year=int(anio_rp), month=mes_rp, day=1)),
                         f"poliza_custom_{mes_rp}_{anio_rp}.txt",
-                        help="Layout de ancho fijo verificado carácter por carácter contra un TXT real "
-                             "exportado de Contpaqi. Si algún día tu Contpaqi trae otro layout, manda un "
-                             "TXT de muestra de ese caso para ajustarlo."
+                        help="Archivo en formato de texto para importar en Contpaqi."
                     )
 
         else:
@@ -7100,7 +9268,7 @@ try:
 
     elif menu=="Intereses del Mes":
         st.title("Reporte de Intereses del Mes")
-        st.markdown("Calcula exactamente cuántos ingresos financieros generará tu cartera en el período seleccionado.")
+        st.caption("Cálculo de ingresos financieros de la cartera para el período.")
         cc1,cc2,cc3=st.columns(3)
         mes_i=cc1.selectbox("Mes",range(1,13),index=datetime.now().month-1,format_func=lambda m:MN[m-1])
         anio_i=cc2.number_input("Año",min_value=2020,max_value=2050,value=datetime.now().year,step=1,key="yi")
@@ -7225,8 +9393,8 @@ try:
                     st.download_button("Descargar",buf,"proyeccion_intereses.xlsx")
 
     elif menu == "Cotizador Comercial":
-        st.title("🧮 Cotizador Comercial y Simulador de Arrendamiento")
-        st.markdown("Simula y estructura un nuevo contrato de arrendamiento puro, calcula el desglose de pago inicial, la renta mensual proyectada y genera la cotización formal en PDF para tu cliente.")
+        st.title("Cotizador Comercial")
+        st.caption("Simula pagos, rentas y genera cotizaciones en PDF para prospectos.")
 
         col1, col2 = st.columns([1, 1])
         with col1:
@@ -7260,7 +9428,7 @@ try:
         )
 
         st.markdown("---")
-        st.subheader("📊 Resumen de la Cotización")
+        st.subheader("Resumen de la Cotización")
 
         k1, k2, k3, k4 = st.columns(4)
         k1.metric("Renta Mensual (Sin IVA)", f"${sim['renta_mensual_sin_iva']:,.2f}")
@@ -7314,7 +9482,7 @@ try:
                 empresa_nombre=st.session_state.get('_nombre_empresa', 'O-Leasing')
             )
             st.download_button(
-                "📄 Descargar Cotización Formal en PDF",
+                "Descargar Cotización Formal en PDF",
                 pdf_bytes,
                 file_name=f"cotizacion_{cot_cliente.replace(' ','_')[:15]}.pdf",
                 mime="application/pdf",
@@ -7327,7 +9495,7 @@ try:
                 currency_cols=["Renta", "Interes", "Capital", "Saldo", "Saldo_Fin"]
             )
             st.download_button(
-                "📊 Descargar Tabla en Excel",
+                "Descargar Tabla en Excel",
                 buf_sim,
                 file_name=f"simulacion_amort_{cot_cliente.replace(' ','_')[:15]}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -7335,14 +9503,15 @@ try:
             )
 
         with st.expander("Ver Tabla Completa de Amortización Proyectada"):
+            fmt_cols = {c: '${:,.2f}' for c in ['Renta', 'Interes', 'Capital', 'Saldo'] if c in dfa_sim.columns}
             st.dataframe(
-                dfa_sim.style.format({'Renta': '${:,.2f}', 'Interes': '${:,.2f}', 'Capital': '${:,.2f}', 'Saldo': '${:,.2f}'}),
+                dfa_sim.style.format(fmt_cols),
                 width="stretch"
             )
 
     elif menu == "Cierre y Conciliación Mensual":
-        st.title("📋 Cierre y Conciliación Mensual de Cartera")
-        st.markdown("Genera el reporte oficial de cierre contable del mes, conciliación de facturas CFDI vs devengamiento y descarga el expediente completo en PDF o Excel.")
+        st.title("Cierre y Conciliación Mensual")
+        st.caption("Reporte de cierre contable mensual y expediente descargable en PDF o Excel.")
 
         c1, c2 = st.columns([1, 2])
         with c1:
@@ -7365,17 +9534,17 @@ try:
             # Facturas conciliadas
             conn = get_db()
             per_str = f"{int(anio_cierre):04d}-{int(mes_cierre):02d}"
-            r_fact = conn.execute("SELECT COUNT(*) as n, SUM(total) as tot FROM facturas WHERE periodo=?", (per_str,)).fetchone()
+            r_fact = conn.execute("SELECT COUNT(*) as n, SUM(total) as tot FROM facturas WHERE periodo=? AND (cancelada IS NULL OR cancelada = 0)", (per_str,)).fetchone()
             tot_facturado = float(r_fact['tot'] or 0.0) if r_fact else 0.0
             n_facturas = int(r_fact['n'] or 0) if r_fact else 0
             
-            r_conc = conn.execute("SELECT COUNT(*) FROM facturas WHERE periodo=? AND estatus='CONCILIADO'", (per_str,)).fetchone()
-            r_disc = conn.execute("SELECT COUNT(*) FROM facturas WHERE periodo=? AND estatus='DISCREPANCIA'", (per_str,)).fetchone()
+            r_conc = conn.execute("SELECT COUNT(*) FROM facturas WHERE periodo=? AND estatus='CONCILIADO' AND (cancelada IS NULL OR cancelada = 0)", (per_str,)).fetchone()
+            r_disc = conn.execute("SELECT COUNT(*) FROM facturas WHERE periodo=? AND estatus='DISCREPANCIA' AND (cancelada IS NULL OR cancelada = 0)", (per_str,)).fetchone()
             n_conc = int(r_conc[0]) if r_conc else 0
             n_disc = int(r_disc[0]) if r_disc else 0
 
             st.markdown("---")
-            st.subheader(f"📊 Resumen del Cierre — {nombre_mes_sel} {anio_cierre}")
+            st.subheader(f"Resumen del Cierre — {nombre_mes_sel} {anio_cierre}")
 
             k1, k2, k3, k4 = st.columns(4)
             k1.metric("Interés Leasing (Cta 208)", f"${tot_leasing:,.2f}")
@@ -7390,7 +9559,7 @@ try:
             kc3.metric("Cobertura de Facturación", f"{(tot_facturado / max(tot_leasing, 1) * 100):.1f}%")
 
             st.markdown("---")
-            st.subheader("📑 Tablas de Cierre Contable")
+            st.subheader("Tablas de Cierre Contable")
 
             t_c1, t_c2 = st.tabs(["Detalle por Contrato", "Póliza Consolidada del Mes"])
             with t_c1:
@@ -7429,7 +9598,7 @@ try:
                     empresa_nombre=st.session_state.get('_nombre_empresa', 'O-Leasing')
                 )
                 st.download_button(
-                    "📄 Descargar Informe de Cierre en PDF",
+                    "Descargar Informe de Cierre en PDF",
                     pdf_cierre_bytes,
                     file_name=f"informe_cierre_{nombre_mes_sel}_{anio_cierre}.pdf",
                     mime="application/pdf",
@@ -7445,7 +9614,7 @@ try:
                     currency_cols=[nombre_mes_sel, 'Cargo', 'Abono']
                 )
                 st.download_button(
-                    "📊 Descargar Expediente en Excel",
+                    "Descargar Expediente en Excel",
                     buf_cierre,
                     file_name=f"expediente_cierre_{nombre_mes_sel}_{anio_cierre}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -7455,12 +9624,8 @@ try:
     elif menu=="Cuentas (Macro)":
         st.title("Catálogo Maestro de Cuentas Contables")
 
-        with st.expander("Codificación de cuentas (cómo se arma el número completo por contrato)", expanded=False):
-            st.caption(
-                "Cada empresa puede tener un esquema distinto para armar el número de cuenta específico de "
-                "un contrato (cuenta base + identificador del contrato + sufijo). Esto es **por empresa** — "
-                "cambiarlo aquí no afecta a las demás empresas que manejes en Multiempresa."
-            )
+        with st.expander("Codificación de cuentas por contrato", expanded=False):
+            st.caption("Configura el formato de las subcuentas contables por contrato para esta empresa.")
             _cfg_cod = get_config_codificacion_cuentas()
             cc1, cc2, cc3 = st.columns(3)
             _dbase = cc1.number_input("Dígitos de la cuenta base", min_value=0, max_value=20, value=int(_cfg_cod['digitos_base']))
@@ -7469,8 +9634,7 @@ try:
             _solo_anexo = st.checkbox(
                 "Usar solo la segunda mitad del número de contrato (después del guion)",
                 value=_cfg_cod['solo_anexo'],
-                help="Actívalo si tus contratos internamente son '0000-0008' pero para la cuenta contable solo "
-                     "quieres usar el '8', no las dos mitades juntas."
+                help="Usa únicamente el número anexo en lugar del folio completo."
             )
             _cfg_preview = {'digitos_base': _dbase, 'digitos_contrato': _dcontr, 'sufijo': _sufijo, 'solo_anexo': _solo_anexo}
             _ejemplo = cta_sg("117-00-00", "0524-0001", cfg=_cfg_preview)
@@ -7479,11 +9643,7 @@ try:
                 set_config_codificacion_cuentas(_cfg_preview)
                 st.success("Guardado. Se aplicará a las próximas pólizas y al archivo de Contpaqi que generes.")
 
-        st.caption(
-            "Aquí defines, cuenta por cuenta, cómo se traduce cada movimiento del leasing a tu contabilidad. "
-            "**Deja una cuenta en blanco si no la usas** — se marcará como inactiva y jamás se incluirá al "
-            "generar el archivo de Contpaqi, sin importar cuántos contratos tengas."
-        )
+        st.caption("Asigna las cuentas contables por concepto. Las cuentas en blanco se omiten.")
         _ETIQUETAS_CUENTA = {
             'CXC_CP':                    'Cuentas por cobrar — corto plazo',
             'CXC_LP':                    'Cuentas por cobrar — largo plazo',
@@ -7534,7 +9694,7 @@ try:
 
     elif menu=="Contpaqi (Cuentas)":
         st.title("Exportador de Cuentas para Contpaqi")
-        st.caption("Genera el archivo de importación de catálogo de cuentas (formato CONTPAQi Contabilidad) a partir de tus contratos vigentes y del catálogo maestro.")
+        st.caption("Genera el archivo para importar el catálogo de cuentas a Contpaqi.")
 
         cat_actual = cargar_catalogo()
         activas  = [k for k,d in cat_actual.items() if str(d.get('cuenta') or '').strip()]
@@ -7634,13 +9794,7 @@ try:
 
         st.divider()
         st.subheader("Cifrado de los respaldos automáticos")
-        st.caption(
-            "Los respaldos automáticos normalmente son una copia plana del .db — cualquiera con acceso a "
-            "esa carpeta (una laptop robada, una carpeta de la nube mal compartida, un USB perdido) puede "
-            "abrirla. Si pones una contraseña aquí, los respaldos nuevos se guardan cifrados con AES-256 "
-            "(.zip en vez de .bak) y nadie puede abrirlos sin ella — ni tú, así que guárdala en un lugar "
-            "seguro; si la pierdes, esos respaldos ya no se pueden recuperar."
-        )
+        st.caption("Opcional: Asigna una contraseña para proteger tus respaldos con cifrado.")
         _pass_actual = get_cfg('respaldo_password')
         if not _PYZIPPER_DISPONIBLE:
             st.warning("La librería de cifrado (pyzipper) no está instalada en este equipo — los respaldos "
@@ -7667,11 +9821,7 @@ try:
 
         st.divider()
         st.subheader("Diagnóstico y respaldos automáticos")
-        st.caption(
-            "Cada vez que abres la app con la base de datos sana, se guarda automáticamente una copia en "
-            "la carpeta 'respaldos_auto' junto a tu base de datos (se conservan las últimas 8). Si algún día "
-            "ves el error 'database disk image is malformed', puedes restaurar el más reciente desde aquí."
-        )
+        st.caption("Copias de seguridad recientes de la base de datos disponibles para restaurar.")
         _db_path_diag = get_db_path()
         dc1, dc2 = st.columns(2)
         with dc1:
@@ -7690,7 +9840,7 @@ try:
             st.markdown(f"**{len(_resp)} respaldo(s) automático(s) disponibles:**")
             for _arch, _fecha, _cifrado in _resp:
                 rc1, rc2 = st.columns([3,1])
-                _etiqueta_cifrado = " 🔒" if _cifrado else ""
+                _etiqueta_cifrado = " [Cifrado]" if _cifrado else ""
                 rc1.write(f"{_fecha.strftime('%Y-%m-%d %H:%M:%S')}{_etiqueta_cifrado}  ·  {os.path.getsize(_arch)/1024:.0f} KB")
                 _clave_this = None
                 if _cifrado:
@@ -7707,10 +9857,6 @@ try:
             st.info("Todavía no hay respaldos automáticos para esta empresa — se crea el primero la próxima vez que abras la app.")
 
         st.divider(); st.subheader("Configuración de Marca")
-        st.caption(
-            "Esta sección ya está protegida por tu inicio de sesión (solo la ve el rol administrador) — "
-            "ya no hace falta un código adicional."
-        )
         with st.expander("Configuración de Marca", expanded=True):
             with st.form("brand"):
                 ne=st.text_input("Nombre empresa",value=get_cfg('nombre_empresa','Orange Leasing'))
@@ -7783,10 +9929,8 @@ try:
                     fecha_excl_cli = None
                     if nn_cli in [3,4]:
                         st.markdown("---")
-                        st.markdown(f"Al asignar **Nivel {nn_cli}** a todos los contratos de **{cli_sel}**, quedarán excluidos de las pólizas de parcialidades a partir del mes siguiente a la fecha que indiques.")
-                        fecha_excl_cli = st.date_input("¿Desde qué fecha aplica esta morosidad?",
-                                                        value=date.today(), key="fexcl_mora_cli",
-                                                        help="El sistema excluirá estos contratos a partir del primer día del mes siguiente a esta fecha.")
+                        st.caption(f"Los contratos en nivel {nn_cli} se excluirán de pólizas de parcialidades a partir de la fecha indicada.")
+                        fecha_excl_cli = st.date_input("Fecha de aplicación", value=date.today(), key="fexcl_mora_cli")
                     if st.button(f"Actualizar los {len(df_cli)} contrato(s) de {cli_sel}"):
                         if nn_cli in [3,4] and fecha_excl_cli:
                             get_db().execute(
@@ -7818,10 +9962,8 @@ try:
                     fecha_excl_mora = None
                     if nn in [3,4]:
                         st.markdown("---")
-                        st.markdown(f"Al asignar **Nivel {nn}**, el contrato quedará **excluido de las pólizas de parcialidades** a partir del mes siguiente a la fecha que indiques.")
-                        fecha_excl_mora = st.date_input("¿Desde qué fecha aplica esta morosidad?",
-                                                         value=date.today(), key="fexcl_mora_ind",
-                                                         help="El sistema excluirá este contrato a partir del primer día del mes siguiente a esta fecha.")
+                        st.caption(f"El contrato quedará excluido de pólizas de parcialidades a partir de la fecha indicada.")
+                        fecha_excl_mora = st.date_input("Fecha de aplicación", value=date.today(), key="fexcl_mora_ind")
                     elif nn in [0,1,2] and excl_actual:
                         st.info("Al bajar el nivel, se eliminará la exclusión de pólizas de este contrato.")
                     if st.button("Actualizar Nivel"):
@@ -7844,7 +9986,7 @@ try:
 
     elif menu=="Tabla Mensual por Contrato":
         st.title("Tabla Mensual de Conceptos Financieros")
-        st.markdown("Genera 4 tablas: **Intereses leasing** • **Intereses residual** • **Amort. comisión** • **Saldo residual activo**")
+        st.caption("Resumen mensual de intereses, comisiones y saldos por contrato.")
         anio_t=st.number_input("Año",min_value=2020,max_value=2050,value=datetime.now().year,step=1,key="yt")
         if st.button("Generar Tablas"):
             di,dr,dc,ds,err=tabla_mensual_conceptos(anio_t)
@@ -7867,7 +10009,7 @@ try:
 
     elif menu=="Reporte Maestro":
         st.title("Reporte Maestro: Capital e Intereses")
-        st.markdown("Genera las tablas completas de amortización de toda la cartera activa, incluyendo metadatos de los contratos y resúmenes ejecutivos.")
+        st.caption("Tablas de amortización y resúmenes de la cartera activa.")
         anio_m=st.number_input("Año del reporte maestro",min_value=2020,max_value=2050,value=datetime.now().year,step=1,key="ym")
         if st.button("Generar Reporte Maestro", type="primary"):
             di, dcap, drenta, dr, dc, ds, err = reporte_maestro_mensual(anio_m)
@@ -7885,7 +10027,7 @@ try:
                 total_renta = drenta_g[MN].sum().round(2)
                 
                 st.markdown("---")
-                st.subheader(f"📊 Resumen Ejecutivo {anio_m}")
+                st.subheader(f"Resumen Ejecutivo {anio_m}")
                 
                 k1, k2, k3 = st.columns(3)
                 k1.metric("Capital a Recuperar", f"${total_cap.sum():,.2f}")
@@ -7918,7 +10060,7 @@ try:
                 
                 # Generar Excel completo con Graficas
                 buf_completo = exportar_maestro_completo(anio_m, di, dcap, drenta, dr, dc, ds, total_cap, total_int, total_renta)
-                st.download_button("📥 Descargar Todo en un Solo Excel (con Gráficas)", buf_completo, f"reporte_maestro_completo_{anio_m}.xlsx", type="primary", use_container_width=True)
+                st.download_button("Descargar Todo en un Solo Excel (con Gráficas)", buf_completo, f"reporte_maestro_completo_{anio_m}.xlsx", type="primary", use_container_width=True)
                 
                 st.markdown("---")
                 
@@ -7954,7 +10096,7 @@ try:
 
     elif menu=="Reporte Maestro Saldos":
         st.title("Reporte Maestro: Saldos Insolutos")
-        st.markdown("Genera las tablas de **saldos pendientes** (lo que los clientes aún deben al final de cada mes) de toda la cartera activa.")
+        st.caption("Tablas de saldos insolutos mensuales de la cartera activa.")
         anio_s=st.number_input("Año del reporte de saldos",min_value=2020,max_value=2050,value=datetime.now().year,step=1,key="ys")
         if st.button("Generar Reporte de Saldos", type="primary"):
             dcap, dint, dtot, dres, err = reporte_maestro_saldos(anio_s)
@@ -7972,7 +10114,7 @@ try:
                 total_tot = dtot_g[MN].sum().round(2)
                 
                 st.markdown("---")
-                st.subheader(f"📊 Resumen de Cartera (Saldos a fin de mes) - {anio_s}")
+                st.subheader(f"Resumen de Cartera (Saldos a fin de mes) - {anio_s}")
                 
                 k1, k2, k3 = st.columns(3)
                 k1.metric("Saldo Capital (Diciembre)", f"${total_cap.iloc[-1]:,.2f}")
@@ -8002,7 +10144,7 @@ try:
                 st.plotly_chart(fig_exec, width='stretch', key="pc_maestro_saldos")
                 
                 buf_completo = exportar_saldos_completo(anio_s, dcap, dint, dtot, dres, total_cap, total_int, total_tot)
-                st.download_button("📥 Descargar Todo en un Solo Excel (con Gráficas)", buf_completo, f"reporte_saldos_completo_{anio_s}.xlsx", type="primary", use_container_width=True)
+                st.download_button("Descargar Todo en un Solo Excel (con Gráficas)", buf_completo, f"reporte_saldos_completo_{anio_s}.xlsx", type="primary", use_container_width=True)
                 
                 st.markdown("---")
                 
@@ -8035,7 +10177,7 @@ try:
 
     elif menu=="Multiempresa":
         st.title("Gestión Multiempresa")
-        st.markdown("Administra múltiples empresas leasing, cada una con su propia base de datos, catálogo y configuración.")
+        st.caption("Administra empresas registradas y su configuración independiente.")
         empresas=load_empresas(); emp_act=get_empresa_actual()
 
         _busq_emp = st.text_input(
@@ -8108,12 +10250,7 @@ try:
     elif menu=="Usuarios y Roles":
         from models.auth import listar_grupos, crear_grupo, eliminar_grupo, obtener_empresas_de_grupo
         st.title("Usuarios, Grupos y Roles")
-        st.markdown(
-            "Administra los grupos de acceso y las cuentas de usuario. "
-            "Cada persona debe entrar con su propio usuario. El rol define qué puede hacer una vez adentro: "
-            "**admin** ve y cambia todo, **captura** da de alta y edita contratos pero no toca la configuración, "
-            "**lectura** solo consulta."
-        )
+        st.caption("Administra usuarios, grupos y permisos por rol en el sistema.")
         
         tab_usrs, tab_grps = st.tabs(["Usuarios", "Grupos de Acceso"])
         
@@ -8190,13 +10327,10 @@ try:
 
                     # --- Pantallas permitidas (palomitas una por una) ---
                     if _u['rol'] in ("admin", "super_usuario"):
-                        st.info("Este usuario es administrador: ve **todas** las pantallas. No requiere palomitas.")
+                        st.info("El administrador tiene acceso completo a todas las pantallas.")
                     else:
-                        st.markdown("**Pantallas que puede ver** (marca con palomita una por una)")
-                        st.caption(
-                            "Si no guardas ninguna selección, el usuario ve el menú completo de su rol "
-                            "(sin Configuración). Al guardar, solo verá las pantallas marcadas."
-                        )
+                        st.markdown("**Pantallas permitidas**")
+                        st.caption("Selecciona las pantallas que este usuario puede consultar.")
                         _grupos_ref = {
                             "Cartera": [
                                 "Dashboard & Cartera", "Estado de Cuenta", "Carga Masiva y Altas",
@@ -8263,8 +10397,8 @@ try:
                             st.session_state['_refresh'] = True
 
     elif menu=="Punto de Equilibrio":
-        st.title("Análisis de Punto de Equilibrio")
-        st.markdown("¿En qué mes recupera la empresa su inversión en cada contrato? ¿Cuántos meses tarda la cartera en ser rentable?")
+        st.title("Punto de Equilibrio")
+        st.caption("Estimación del período de recuperación de inversión por contrato y cartera.")
 
         with st.spinner("Calculando el punto de equilibrio de cada contrato…"):
             df_pe=calcular_punto_equilibrio()
@@ -8292,9 +10426,8 @@ try:
             pct_ya = ya_hoy/len(df_pe)*100 if len(df_pe) else 0
             hc1, hc2 = st.columns([1,1.4])
             with hc1:
-                st.markdown('<span class="section-label">¿Cuántos contratos ya llegaron a su punto de equilibrio HOY?</span>', unsafe_allow_html=True)
-                st.caption("A diferencia de las gráficas de arriba (que miran todo el plazo), esto compara el mes de "
-                           "equilibrio contra los meses que realmente ya han transcurrido desde hoy.")
+                st.markdown('<span class="section-label">Contratos en punto de equilibrio hoy</span>', unsafe_allow_html=True)
+                st.caption("Contratos que ya han cubierto su costo a la fecha actual.")
                 hh1,hh2,hh3=st.columns(3)
                 hh1.metric("Ya lo alcanzaron", f"{ya_hoy}", f"{pct_ya:.0f}% de la cartera activa")
                 hh2.metric("Aún no", f"{aun_no}")
@@ -8487,11 +10620,7 @@ try:
     # Tablas de amortización (leasing + residual, todos los contratos)
     elif menu == "Tablas de Amortización":
         st.title("Tablas de Amortización")
-        st.markdown(
-            "Consulta la tabla de amortización de **leasing** y la tabla de **acumulación del residual** "
-            "(VP → intereses acumulados → residual pactado) para cada contrato, incluyendo los que ya "
-            "se dieron de baja (su tabla se corta en el mes de la baja, no sigue hasta el plazo original)."
-        )
+        st.caption("Consulta la amortización de leasing y acumulación de residual por contrato.")
 
         df_act = obtener()
         if df_act.empty:
@@ -8513,7 +10642,7 @@ try:
             contratos_sel = df_act if sel.startswith("—") else df_act[df_act['ID_Contrato'] == sel]
 
             with tab_lea:
-                st.markdown("Tabla clásica de amortización: saldo inicial, interés del mes, capital amortizado, saldo final.")
+                st.caption("Amortización mensual de capital e intereses.")
                 frames_lea = []
                 for _, row in contratos_sel.iterrows():
                     inv = row['Valor_Sin_IVA'] - row['Anticipo_Monto']
@@ -8593,10 +10722,7 @@ try:
                     st.info("Sin datos para los contratos seleccionados.")
 
             with tab_res:
-                st.markdown(
-                    "Tabla de acumulación del residual: parte del **Valor Presente** (VP) del residual "
-                    "y cada mes se le agregan intereses hasta llegar al **residual pactado** al vencimiento."
-                )
+                st.caption("Evolución mensual del valor residual hasta el vencimiento.")
                 frames_res = []
                 for _, row in contratos_sel.iterrows():
                     inv = row['Valor_Sin_IVA'] - row['Anticipo_Monto']

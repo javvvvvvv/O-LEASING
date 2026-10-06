@@ -70,6 +70,7 @@ def simular_cotizacion(
 
     # Tabla de amortización proyectada
     dfa, _, _, _, _ = calc_amort(inv_neta, renta_mensual_sin_iva, monto_residual, plazo_meses, tasa_dec)
+    dfa.insert(1, 'Renta', renta_mensual_sin_iva)
     
     # TIR mensual y anualizada de la operación
     flujos = [-inv_neta] + [renta_mensual_sin_iva] * (plazo_meses - 1) + [renta_mensual_sin_iva + monto_residual]

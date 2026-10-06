@@ -3,8 +3,8 @@ port = 8501
 headless = true
 sslCertFile = "certs/cert.pem"
 sslKeyFile = "certs/key.pem"
-enableCORS = false
-enableXsrfProtection = true
+enableCORS = true
+enableXsrfProtection = false
 maxUploadSize = 500
 maxMessageSize = 500
 

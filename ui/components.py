@@ -84,6 +84,11 @@ def sfig(fig, title=None, h=300):
 
 
 def explain(titulo, texto):
+    if not texto or texto.strip() == titulo.strip():
+        st.markdown(f"""<div class="chart-explain">
+          <span class="ce-title">{titulo}</span>
+        </div>""", unsafe_allow_html=True)
+        return
     st.markdown(f"""<div class="chart-explain">
       <span class="ce-title">{titulo}</span><br>
       <span class="ce-body">{texto}</span>

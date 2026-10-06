@@ -89,6 +89,16 @@ def init_auth_db(db_path: str) -> None:
                 FOREIGN KEY (user_id) REFERENCES usuarios(id) ON DELETE CASCADE
             )
         """)
+        # Sesiones persistentes (para no pedir login en cada recarga de pantalla)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sesiones (
+                token TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                creado_en TEXT NOT NULL,
+                expira_en TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES usuarios(id) ON DELETE CASCADE
+            )
+        """)
         conn.commit()
     finally:
         conn.close()
@@ -314,3 +324,59 @@ def usuario_tiene_restriccion_pantallas(db_path: str, user_id: int) -> bool:
         return n > 0
     finally:
         conn.close()
+
+
+# --- SESIONES PERSISTENTES ---
+
+def crear_sesion(db_path: str, user_id: int, dias: int = 30) -> str:
+    token = secrets.token_urlsafe(32)
+    conn = sqlite3.connect(db_path)
+    try:
+        from datetime import timedelta
+        expira = (datetime.now() + timedelta(days=dias)).isoformat()
+        conn.execute(
+            "INSERT INTO sesiones (token, user_id, creado_en, expira_en) VALUES (?,?,?,?)",
+            (token, user_id, datetime.now().isoformat(), expira)
+        )
+        conn.commit()
+        return token
+    finally:
+        conn.close()
+
+
+def validar_sesion(db_path: str, token: str) -> dict | None:
+    if not token or not str(token).strip():
+        return None
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        now_str = datetime.now().isoformat()
+        fila = conn.execute("""
+            SELECT u.id, u.username, u.nombre_completo, u.rol, u.grupo_id
+            FROM sesiones s
+            JOIN usuarios u ON s.user_id = u.id
+            WHERE s.token = ? AND u.activo = 1 AND s.expira_en > ?
+        """, (str(token).strip(), now_str)).fetchone()
+        if not fila:
+            return None
+        return {
+            "id": fila["id"],
+            "username": fila["username"],
+            "nombre_completo": fila["nombre_completo"],
+            "rol": fila["rol"],
+            "grupo_id": fila["grupo_id"]
+        }
+    finally:
+        conn.close()
+
+
+def cerrar_sesion(db_path: str, token: str) -> None:
+    if not token:
+        return
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("DELETE FROM sesiones WHERE token=?", (str(token).strip(),))
+        conn.commit()
+    finally:
+        conn.close()
+
