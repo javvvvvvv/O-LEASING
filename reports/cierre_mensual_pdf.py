@@ -148,8 +148,8 @@ def generar_pdf_cierre_mensual(
 
     # Pie de firmas
     f_data = [
-        [Paragraph("__________________________________________<br><b>Elaboró / Contador General</b>", bold_cell),
-         Paragraph("__________________________________________<br><b>Autorizó / Dirección General</b>", bold_cell)]
+        [Paragraph("__________________________________________<br/><b>Elaboró / Contador General</b>", bold_cell),
+         Paragraph("__________________________________________<br/><b>Autorizó / Dirección General</b>", bold_cell)]
     ]
     t_firmas = Table(f_data, colWidths=[270, 270])
     t_firmas.setStyle(TableStyle([

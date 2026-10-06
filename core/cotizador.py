@@ -259,8 +259,8 @@ def generar_pdf_cotizacion(sim: dict, cliente_nombre: str, vehiculo_desc: str, e
 
     # Firmas
     f_data = [
-        [Paragraph("__________________________________________<br><b>Ejecutivo Comercial</b>", bold_cell),
-         Paragraph("__________________________________________<br><b>Aceptación Prospecto / Cliente</b>", bold_cell)]
+        [Paragraph("__________________________________________<br/><b>Ejecutivo Comercial</b>", bold_cell),
+         Paragraph("__________________________________________<br/><b>Aceptación Prospecto / Cliente</b>", bold_cell)]
     ]
     t_firmas = Table(f_data, colWidths=[270, 270])
     t_firmas.setStyle(TableStyle([
