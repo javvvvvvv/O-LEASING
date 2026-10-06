@@ -321,7 +321,7 @@ class BaseButton(UIComponent):
         icon: Optional[str] = None
     ):
         self.label = label
-        self.key = key or f"btn_{abs(hash((label, self.__class__.__name__)))}"
+        self.key = key
         self.help = help
         self.on_click = on_click
         self.args = args
@@ -387,7 +387,7 @@ class PrimaryButton(BaseButton):
 
     def render(self) -> bool:
         inyectar_componentes_css()
-        marker_id = f"mk_prim_{self.key}"
+        marker_id = f"mk_prim_{self.key or id(self)}"
         st.markdown(f'<span class="oleasing-primary-marker" id="{marker_id}"></span>', unsafe_allow_html=True)
         clicked = st.button(
             label=self.label,
@@ -447,7 +447,7 @@ class OutlinedButton(BaseButton):
 
     def render(self) -> bool:
         inyectar_componentes_css()
-        marker_id = f"mk_outl_{self.key}"
+        marker_id = f"mk_outl_{self.key or id(self)}"
         st.markdown(f'<span class="oleasing-outlined-marker" id="{marker_id}"></span>', unsafe_allow_html=True)
         clicked = st.button(
             label=self.label,
@@ -479,7 +479,7 @@ class BaseContainer(UIComponent, AbstractContextManager):
         key: Optional[str] = None,
         padding: str = "20px"
     ):
-        self.key = key or f"cont_{abs(hash(self.__class__.__name__))}"
+        self.key = key
         self.padding = padding
         self._delta_container = None
 
@@ -517,7 +517,10 @@ class CardContainer(BaseContainer):
 
     def __enter__(self):
         inyectar_componentes_css()
-        self._delta_container = st.container(border=self.border, key=self.key)
+        if self.key is not None:
+            self._delta_container = st.container(border=self.border, key=self.key)
+        else:
+            self._delta_container = st.container(border=self.border)
         ctx = self._delta_container.__enter__()
         st.markdown('<span class="oleasing-card-marker"></span>', unsafe_allow_html=True)
         if self.title:
@@ -558,7 +561,7 @@ class BaseInput(UIComponent):
         self.label = label
         self.initial_value = value
         self.placeholder = placeholder or ""
-        self.key = key or f"inp_{abs(hash((label, self.__class__.__name__)))}"
+        self.key = key
         self.help = help
         self.disabled = disabled
         self.type = type
@@ -568,7 +571,7 @@ class BaseInput(UIComponent):
     @property
     def value(self) -> str:
         """Obtiene el valor actual del campo desde session_state o valor local."""
-        if hasattr(st, "session_state") and self.key in st.session_state:
+        if self.key and hasattr(st, "session_state") and self.key in st.session_state:
             return str(st.session_state[self.key])
         return self._current_value
 
@@ -623,7 +626,7 @@ class FormInput(BaseInput):
 
     def render(self) -> str:
         inyectar_componentes_css()
-        marker_id = f"mk_inp_{self.key}"
+        marker_id = f"mk_inp_{self.key or id(self)}"
         st.markdown(f'<span class="oleasing-input-marker" id="{marker_id}"></span>', unsafe_allow_html=True)
         val = st.text_input(
             label=self.label,

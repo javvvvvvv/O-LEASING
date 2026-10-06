@@ -122,9 +122,9 @@ def sz(series):
     return pd.to_numeric(series, errors='coerce').fillna(1).replace([np.inf,-np.inf],1).clip(lower=0.1)
 
 
-def titled_chart(title, fig, use_container_width=True):
+def titled_chart(title, fig, use_container_width=True, key=None):
     st.markdown(f'<span class="section-label">{title}</span>', unsafe_allow_html=True)
-    st.plotly_chart(fig, width=('stretch' if use_container_width else 'content'), key="pc_001")
+    st.plotly_chart(fig, width=('stretch' if use_container_width else 'content'), key=key)
 
 
 def titled_table(title, df_show, fmt_dict=None, cmap_col=None, key=None):
@@ -135,6 +135,6 @@ def titled_table(title, df_show, fmt_dict=None, cmap_col=None, key=None):
         if safe_fmt: styled = styled.format(safe_fmt, na_rep="-")
     if cmap_col and cmap_col in df_show.columns:
         styled = styled.background_gradient(subset=[cmap_col], cmap=CMAP_INDIGO)
-    st.dataframe(styled, width='stretch', key="df_001")
+    st.dataframe(styled, width='stretch', key=key)
 
 
