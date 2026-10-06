@@ -322,8 +322,9 @@ CMAP_INDIGO = LinearSegmentedColormap.from_list("ledger_indigo", ["#161B2200", "
 CMAP_CORAL  = LinearSegmentedColormap.from_list("ledger_coral",  ["#161B2200", "#DA363366", "#da3633"])
 CMAP_TEAL   = LinearSegmentedColormap.from_list("ledger_teal",   ["#161B2200", "#23863666", "#238636"])
 
-from ui.theme import inyectar_css
-inyectar_css()
+import theme
+theme.inicializar_tema(default="Dark")
+theme.inyectar_css()
 
 # ============================================================================
 # BIENVENIDA (video de arranque) Y LOGIN — pantallas independientes
@@ -6961,6 +6962,8 @@ with st.sidebar.container(key="contexto_wrap", border=True):
         if fcol2.button("Volver a hoy", key="reset_fecha_analisis", width='stretch'):
             st.session_state.pop('fecha_analisis', None)
             st.rerun()
+
+    theme.render_theme_toggle(label="Tema visual", key="sidebar_theme_toggle")
 if viendo_fecha_pasada():
     st.sidebar.warning(f"Viendo el sistema al **{hoy_ref().strftime('%d/%m/%Y')}**, no a hoy.")
 
@@ -7238,17 +7241,15 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 st.markdown(f"""
-<div style="background:#FFFFFF;border:1px solid #DCE0E5;border-radius:6px;
-            padding:.65rem 1.1rem;margin-bottom:1.1rem;
-            display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;">
+<div class="nav-breadcrumb-card">
   <div>
-    <div style="font-size:.68rem;font-weight:700;color:#8A929C;text-transform:uppercase;letter-spacing:.7px;">
-      {_grupo_nombre} {'›' if _grupo_nombre else ''} <span style="color:#1E5C4F;">{menu}</span>
+    <div style="font-size:.68rem;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.7px;">
+      {_grupo_nombre} {'›' if _grupo_nombre else ''} <span style="color:var(--brand);">{menu}</span>
     </div>
-    {f'<div style="font-size:.85rem;color:#565E68;margin-top:3px;">{_desc_actual}</div>' if _desc_actual else ''}
+    {f'<div style="font-size:.85rem;color:var(--text-secondary);margin-top:3px;">{_desc_actual}</div>' if _desc_actual else ''}
   </div>
   <div title="Todos los cálculos, gráficas y proyecciones de esta pantalla toman esta fecha como 'hoy'.{' Estás viendo un cierre pasado, no el día de hoy.' if viendo_fecha_pasada() else ''}"
-       style="background:{'#96660C' if viendo_fecha_pasada() else '#1E5C4F'};
+       style="background:{'#96660C' if viendo_fecha_pasada() else 'var(--brand)'};
               color:#fff;font-size:.72rem;font-weight:700;
               padding:.3rem .8rem;border-radius:4px;white-space:nowrap;">
     {'Viendo cierre al' if viendo_fecha_pasada() else 'Cálculos al'} {_hoy_ref_txt}

@@ -34,30 +34,43 @@ def sfig(fig, title=None, h=300):
     if not hasattr(fig, 'update_layout'):
         return fig
 
+    try:
+        from theme import get_current_theme
+        _t_cfg = get_current_theme()
+        _c_font = _t_cfg.get("text_secondary", "#8b949e")
+        _c_title = _t_cfg.get("text_primary", "#e6edf3")
+        _c_grid = _t_cfg.get("border", "rgba(255,255,255,.05)")
+        _c_accent = _t_cfg.get("Accent", "#FF6B35")
+    except Exception:
+        _c_font = "#8b949e"
+        _c_title = "#e6edf3"
+        _c_grid = "rgba(255,255,255,.05)"
+        _c_accent = "#2f81f7"
+
     layout = dict(
-        font=dict(family="Segoe UI, Helvetica Neue, Arial, sans-serif", color="#8b949e", size=12),
+        font=dict(family="Segoe UI, Helvetica Neue, Arial, sans-serif", color=_c_font, size=12),
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         margin=dict(t=56, r=18, b=42, l=18),
-        hoverlabel=dict(bgcolor="#1E5C4F", font_color="#fff", bordercolor="#1E5C4F",
+        hoverlabel=dict(bgcolor="#1E293B", font_color="#FFFFFF", bordercolor=_c_accent,
                         font_size=13, font_family="Segoe UI, Helvetica Neue, Arial, sans-serif",
                         align="left", namelength=-1),
-        xaxis=dict(gridcolor="rgba(255,255,255,.05)", linecolor="rgba(255,255,255,.1)",
+        xaxis=dict(gridcolor=_c_grid, linecolor=_c_grid,
                    showspikes=True, spikethickness=1,
-                   spikecolor="rgba(47,129,247,.35)", spikedash="dot"),
-        yaxis=dict(gridcolor="rgba(255,255,255,.05)", linecolor="rgba(255,255,255,.1)"),
+                   spikecolor=_c_accent, spikedash="dot"),
+        yaxis=dict(gridcolor=_c_grid, linecolor=_c_grid),
         height=h,
         bargap=0.22, bargroupgap=0.09,
         colorway=PAL_PASTEL,
-        legend=dict(bgcolor="rgba(255,255,255,0)", bordercolor="rgba(255,255,255,.1)",
-                    borderwidth=0, font=dict(size=11)),
+        legend=dict(bgcolor="rgba(0,0,0,0)", bordercolor=_c_grid,
+                    borderwidth=0, font=dict(size=11, color=_c_font)),
     )
     _title = title
     if not _title:
         _title = fig.layout.title.text if fig.layout.title and fig.layout.title.text else None
     if _title:
         layout['title'] = dict(
-            text=f"<span style='color:#2f81f7;'>●</span>&nbsp; <b>{_title}</b>",
-            font=dict(size=14.5, color="#e6edf3"),
+            text=f"<span style='color:{_c_accent};'>●</span>&nbsp; <b>{_title}</b>",
+            font=dict(size=14.5, color=_c_title),
             x=0.012, xanchor='left', y=0.97, yanchor='top'
         )
     fig.update_layout(**layout)
