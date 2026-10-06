@@ -99,8 +99,9 @@ LIGHT_CONFIG: Dict[str, Any] = {
     "topbar_bg":        "rgba(255, 255, 255, 0.92)",
     "card_bg":          "#FFFFFF",
     "card_border":      "rgba(30, 41, 59, 0.08)",
-    "table_header_bg":  "#F1F5F9",
-    "table_row_hover":  "rgba(30, 41, 59, 0.04)",
+    "table_header_bg":  "#1E293B",
+    "table_header_text": "#FFFFFF",
+    "table_row_hover":  "rgba(30, 41, 59, 0.05)",
 
     # Bordes
     "border":       "rgba(30, 41, 59, 0.12)",
@@ -154,8 +155,9 @@ DARK_CONFIG: Dict[str, Any] = {
     "topbar_bg":        "rgba(30, 41, 59, 0.85)",
     "card_bg":          "#1E293B",
     "card_border":      "rgba(241, 245, 249, 0.08)",
-    "table_header_bg":  "#243044",
-    "table_row_hover":  "rgba(241, 245, 249, 0.04)",
+    "table_header_bg":  "#1E293B",
+    "table_header_text": "#F1F5F9",
+    "table_row_hover":  "rgba(255, 139, 96, 0.08)",
 
     # Bordes
     "border":       "rgba(241, 245, 249, 0.12)",
@@ -236,10 +238,17 @@ def get_current_theme_name() -> str:
     return "Dark"
 
 
-def get_current_theme() -> Dict[str, Any]:
-    """Devuelve el diccionario de configuracion del tema activo."""
-    nombre = get_current_theme_name()
+def get_current_theme(theme_name: Optional[str] = None) -> Dict[str, Any]:
+    """Devuelve el diccionario de configuracion del tema activo o solicitado."""
+    if theme_name:
+        nombre = normalizar_nombre_tema(theme_name)
+    else:
+        nombre = get_current_theme_name()
     return THEMES.get(nombre, DARK_CONFIG)
+
+
+obtener_config_actual = get_current_theme
+obtener_tema_actual = get_current_theme_name
 
 
 def get_theme_class(theme_name: Optional[str] = None):
@@ -363,8 +372,9 @@ def generar_css(theme_name: Optional[str] = None) -> str:
   --sidebar-bg:       {cfg["sidebar_bg"]};
   --topbar-bg:        {cfg["topbar_bg"]};
   --card-bg:          {cfg["card_bg"]};
-  --table-header-bg:  {cfg["table_header_bg"]};
-  --table-row-hover:  {cfg["table_row_hover"]};
+  --table-header-bg:   {cfg["table_header_bg"]};
+  --table-header-text: {cfg.get("table_header_text", "#FFFFFF")};
+  --table-row-hover:   {cfg["table_row_hover"]};
 
   /* Bordes */
   --border:       {cfg["border"]};
@@ -500,23 +510,33 @@ div[data-testid="stVerticalBlockBorderWrapper"] > div {{
 }}
 div[data-testid="metric-container"]:hover {{ border-color: var(--border-hover) !important; }}
 
-/* Inputs */
+/* Inputs y campos de formulario */
 .stTextInput input, .stDateInput input, .stNumberInput input, .stTextArea textarea,
 .stSelectbox > div > div, .stMultiSelect > div > div {{
-  border-radius: var(--radius-sm) !important;
+  border-radius: 8px !important;
   border: 1px solid var(--border) !important;
   background-color: var(--bg-1) !important;
   color: var(--text-primary) !important;
-  transition: all var(--ease-micro) !important;
+  padding: 8px 12px !important;
+  font-size: 14px !important;
+  transition: border-color var(--ease-std), box-shadow var(--ease-std) !important;
 }}
 .stTextInput input:focus, .stDateInput input:focus, .stNumberInput input:focus, .stTextArea textarea:focus,
 .stSelectbox > div > div:focus-within, .stMultiSelect > div > div:focus-within {{
-  border-color: var(--border-focus) !important;
-  box-shadow: 0 0 0 2px var(--brand-soft) !important;
+  border-color: var(--brand) !important;
+  box-shadow: 0 0 0 3px var(--brand-soft) !important;
+  outline: none !important;
+}}
+.stTextInput input::placeholder, .stTextArea textarea::placeholder {{
+  color: var(--text-disabled) !important;
 }}
 label[data-testid="stWidgetLabel"] p, label[data-testid="stWidgetLabel"] span {{
   color: var(--text-primary) !important;
-  font-weight: 500 !important;
+  font-weight: 600 !important;
+  font-size: 13px !important;
+}}
+.stCaption, [data-testid="stCaptionContainer"] p {{
+  color: var(--text-secondary) !important;
 }}
 
 /* Popovers y menus */
@@ -581,21 +601,36 @@ div[data-testid="stSegmentedControl"] button[aria-checked="true"] {{
   font-weight: 600 !important;
 }}
 
-/* Tablas y DataFrames */
+/* Tablas y DataFrames Empresariales */
 .stDataFrame, [data-testid="stDataFrame"], table {{
   background-color: var(--bg-1) !important;
   color: var(--text-primary) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-md) !important;
+  overflow: hidden !important;
 }}
-th {{
+thead th, th, [data-testid="stTable"] th, .stDataFrame [role="columnheader"] {{
   background-color: var(--table-header-bg) !important;
-  color: var(--text-primary) !important;
+  color: var(--table-header-text) !important;
+  font-weight: 600 !important;
+  font-size: 13px !important;
+  letter-spacing: 0.02em !important;
   border-bottom: 1px solid var(--border) !important;
+  border-right: 1px solid var(--border) !important;
+  padding: 10px 14px !important;
 }}
-td {{
+thead th p, th p, thead th span, th span {{
+  color: var(--table-header-text) !important;
+}}
+tbody td, td, [data-testid="stTable"] td, .stDataFrame [role="gridcell"] {{
   border-bottom: 1px solid var(--border) !important;
+  border-right: 1px solid var(--border) !important;
   color: var(--text-primary) !important;
+  padding: 10px 14px !important;
+  font-size: 13px !important;
+  transition: background-color 150ms ease-in-out !important;
 }}
-tr:hover td {{
+tbody tr:hover td, tr:hover td, [data-testid="stTable"] tr:hover td {{
   background-color: var(--table-row-hover) !important;
 }}
 

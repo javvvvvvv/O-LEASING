@@ -324,9 +324,17 @@ CMAP_TEAL   = LinearSegmentedColormap.from_list("ledger_teal",   ["#161B2200", "
 
 import theme
 from ui.layout import inyectar_layout_css, render_topbar, render_sidebar_navigation
+from ui_components import (
+    PrimaryButton,
+    OutlinedButton,
+    CardContainer,
+    FormInput,
+    inyectar_componentes_css,
+)
 theme.inicializar_tema(default="Dark")
 theme.inyectar_css()
 inyectar_layout_css()
+inyectar_componentes_css()
 
 # ============================================================================
 # BIENVENIDA (video de arranque) Y LOGIN — pantallas independientes
@@ -4007,10 +4015,10 @@ def _render_conciliacion():
             display: flex;
             flex-wrap: wrap;
             gap: 6px;
-            background: #F8F9FA;
+            background: var(--bg-1, #F8FAFC);
             padding: 6px;
             border-radius: 8px;
-            border: 1px solid #E5E7EB;
+            border: 1px solid var(--border, #E2E8F0);
             margin-bottom: 1.2rem;
         }
         div[data-testid="stSegmentedControl"] button {
@@ -4020,9 +4028,10 @@ def _render_conciliacion():
             font-size: 0.88rem !important;
             padding: 7px 15px !important;
             transition: all 0.15s ease-in-out !important;
+            color: var(--text-secondary, #64748B) !important;
         }
         div[data-testid="stSegmentedControl"] button[aria-selected="true"] {
-            background-color: #0E7090 !important;
+            background-color: var(--brand, #FF6B35) !important;
             color: #FFFFFF !important;
             box-shadow: 0 1px 3px rgba(0,0,0,0.12) !important;
         }
@@ -4046,7 +4055,7 @@ def _render_conciliacion():
             _rfc_actual = get_cfg('rfc_arrendadora', '') or ''
             _rfc_nuevo = st.text_input("RFC de tu arrendadora", value=_rfc_actual, max_chars=13,
                                         placeholder="Ej. ABC010101AB1").strip().upper()
-            if st.button("Guardar RFC"):
+            if PrimaryButton("Guardar RFC", key="btn_guardar_rfc_concil"):
                 set_cfg('rfc_arrendadora', _rfc_nuevo)
                 st.success("RFC guardado. Se aplicará a partir de la próxima carga.")
 
@@ -6135,21 +6144,21 @@ def _render_conciliacion():
             ).fetchall()
             
             # Header del Contrato
-            estatus_badge_color = "#1C7A4D" if str(row_aud['Estatus']).upper() == 'ACTIVO' else "#B3261E"
+            estatus_badge_color = "var(--success, #10B981)" if str(row_aud['Estatus']).upper() == 'ACTIVO' else "var(--danger, #EF4444)"
             st.markdown(f"""
-            <div style="background:#FFFFFF;border:1px solid #DCE0E5;border-left:5px solid {estatus_badge_color};border-radius:4px;padding:12px 16px;margin-bottom:12px;">
+            <div style="background:var(--card-bg, #FFFFFF);border:1px solid var(--border, #DCE0E5);border-left:5px solid {estatus_badge_color};border-radius:12px;padding:16px 20px;margin-bottom:16px;box-shadow:var(--card-shadow, 0 1px 3px rgba(0,0,0,0.05));">
                 <div style="display:flex;justify-content:space-between;align-items:center;">
                     <div>
-                        <span style="font-size:1.1rem;font-weight:700;color:#20242B;">Contrato: {row_aud['ID_Contrato']}</span>
+                        <span style="font-size:1.1rem;font-weight:700;color:var(--text-primary, #0F172A);">Contrato: {row_aud['ID_Contrato']}</span>
                         <span style="background:{estatus_badge_color};color:#fff;border-radius:4px;padding:2px 8px;font-size:0.75rem;font-weight:700;margin-left:8px;">{row_aud['Estatus']}</span>
                     </div>
-                    <div style="font-size:0.85rem;color:#565E68;">Alta: <b>{str(row_aud['Fecha_Alta'])[:10]}</b> | Plazo: <b>{row_aud['Plazo']} meses</b></div>
+                    <div style="font-size:0.85rem;color:var(--text-secondary, #64748B);">Alta: <b>{str(row_aud['Fecha_Alta'])[:10]}</b> | Plazo: <b>{row_aud['Plazo']} meses</b></div>
                 </div>
-                <div style="font-size:0.9rem;color:#565E68;margin-top:4px;">
-                    Cliente: <b>{row_aud['Cliente']}</b> | Vehículo: <b>{row_aud['Vehiculo']}</b>
+                <div style="font-size:0.9rem;color:var(--text-secondary, #64748B);margin-top:6px;">
+                    Cliente: <b style="color:var(--text-primary, #0F172A);">{row_aud['Cliente']}</b> | Vehículo: <b style="color:var(--text-primary, #0F172A);">{row_aud['Vehiculo']}</b>
                 </div>
-                <div style="font-size:0.85rem;color:#20242B;margin-top:6px;">
-                    Renta Mensual: <b>${float(row_aud['Mensualidad_Sin_IVA']):,.2f}</b> | Residual Pactado: <b>${float(row_aud['Residual_Monto']):,.2f}</b>
+                <div style="font-size:0.85rem;color:var(--text-secondary, #64748B);margin-top:6px;">
+                    Renta Mensual: <b style="color:var(--text-primary, #0F172A);">${float(row_aud['Mensualidad_Sin_IVA']):,.2f}</b> | Residual Pactado: <b style="color:var(--text-primary, #0F172A);">${float(row_aud['Residual_Monto']):,.2f}</b>
                 </div>
             </div>
             """, unsafe_allow_html=True)
@@ -6319,25 +6328,25 @@ def _render_conciliacion():
                                 f_folio = f_item['folio'] or f_item['uuid'][:8]
                                 f_monto_renta = round(float(f_item['monto_renta_con_iva']) / (f_item['cant_meses_especificos'] or 1), 2)
                                 st.markdown(f"""
-                                <div style="background:#F9FAFB;border:1px solid #DCE0E5;border-radius:6px;padding:12px;margin-bottom:8px;">
-                                    <div style="font-weight:700;font-size:1rem;color:#20242B;">Folio: {f_folio}</div>
-                                    <div style="font-size:0.75rem;color:#717882;word-break:break-all;">UUID: {f_item['uuid']}</div>
-                                    <div style="font-size:0.85rem;color:#565E68;margin-top:4px;">
-                                        Fecha: <b>{str(f_item['fecha_emision'])[:10]}</b> | Total CFDI: <b>${float(f_item['total']):,.2f}</b>
+                                <div style="background:var(--bg-1, #F8FAFC);border:1px solid var(--border, #E2E8F0);border-radius:8px;padding:14px;margin-bottom:10px;">
+                                    <div style="font-weight:700;font-size:1rem;color:var(--text-primary, #0F172A);">Folio: {f_folio}</div>
+                                    <div style="font-size:0.75rem;color:var(--text-muted, #94A3B8);word-break:break-all;">UUID: {f_item['uuid']}</div>
+                                    <div style="font-size:0.85rem;color:var(--text-secondary, #64748B);margin-top:4px;">
+                                        Fecha: <b style="color:var(--text-primary);">{str(f_item['fecha_emision'])[:10]}</b> | Total CFDI: <b style="color:var(--text-primary);">${float(f_item['total']):,.2f}</b>
                                     </div>
-                                    <div style="font-size:0.9rem;color:#1C7A4D;margin-top:4px;">
+                                    <div style="font-size:0.9rem;color:var(--success, #10B981);margin-top:4px;">
                                         Renta asignada (c/IVA): <b>${f_monto_renta:,.2f}</b>
                                     </div>
-                                    <div style="font-size:0.8rem;color:#565E68;margin-top:2px;">
-                                        Estatus actual: <b>{f_item.get('estatus', '—')}</b>
+                                    <div style="font-size:0.8rem;color:var(--text-secondary, #64748B);margin-top:2px;">
+                                        Estatus actual: <b style="color:var(--text-primary);">{f_item.get('estatus', '—')}</b>
                                     </div>
-                                    <div style="font-size:0.75rem;color:#858D96;margin-top:4px;">
+                                    <div style="font-size:0.75rem;color:var(--text-muted, #94A3B8);margin-top:4px;">
                                         {f_item.get('observaciones') or '—'}
                                     </div>
                                 </div>
                                 """, unsafe_allow_html=True)
                                 
-                                if st.button(f"No considerar {f_folio}", key=f"btn_excl_{sel_aud}_{m_num_m}_{f_item['uuid']}", width='stretch'):
+                                if OutlinedButton(f"No considerar {f_folio}", key=f"btn_excl_{sel_aud}_{m_num_m}_{f_item['uuid']}", use_container_width=True):
                                     conn_aud.execute(
                                         "UPDATE facturas SET cancelada=1, fecha_cancelacion=? WHERE uuid=?",
                                         (hoy_ref().isoformat(), f_item['uuid'])
@@ -6355,7 +6364,7 @@ def _render_conciliacion():
                         with c_f1:
                             st.write(f"• **Folio {fc_folio}** (Período: {fc['periodo']}) — Total CFDI: ${float(fc['total']):,.2f} — Excluida el {str(fc['fecha_cancelacion'] or '')[:10]}")
                         with c_f2:
-                            if st.button("Volver a considerar", key=f"btn_reactivar_{fc['uuid']}"):
+                            if OutlinedButton("Volver a considerar", key=f"btn_reactivar_{fc['uuid']}", use_container_width=True):
                                 conn_aud.execute("UPDATE facturas SET cancelada=0, fecha_cancelacion=NULL, estatus='PENDIENTE' WHERE uuid=?", (fc['uuid'],))
                                 conn_aud.commit()
                                 st.success(f"Factura {fc_folio} reactivada e incluida nuevamente en los cálculos.")
@@ -7283,71 +7292,65 @@ try:
                 "Se usan formulas internas de respaldo (igual Tabla Mensual). "
                 "Copia el archivo del ZIP a core\\cartera_contable.py y borra core\\__pycache__."
             )
-        st.markdown(
-            '<div style="background:#1E5C4F;color:#fff;padding:10px 14px;border-radius:6px;margin-bottom:12px;font-weight:600;">'
-            'DASHBOARD CARTERA / CONTABILIDAD — elige mes y año para ver el mes y el acumulado a ese corte'
-            '</div>',
-            unsafe_allow_html=True,
-        )
+        with CardContainer(title="Parámetros de Cartera y Búsqueda", subtitle="Selecciona mes y año para consultar el corte y acumulados", padding="20px"):
+            col_m, col_a, col_info = st.columns([1, 1, 2])
+            with col_m:
+                mes_sel = st.selectbox(
+                    "Mes de análisis",
+                    list(range(1, 13)),
+                    index=max(0, hoy_sistema.month - 1),
+                    format_func=lambda m: MN[m - 1],
+                    key="dash_mes_analisis",
+                )
+            with col_a:
+                anio_sel = st.number_input(
+                    "Año de análisis",
+                    min_value=2000,
+                    max_value=2100,
+                    value=int(hoy_sistema.year),
+                    step=1,
+                    key="dash_anio_analisis",
+                )
+            # Corte = último día del mes seleccionado (para saldos y acumulado)
+            try:
+                _corte = (date(int(anio_sel), int(mes_sel), 1) + relativedelta(months=1) - relativedelta(days=1))
+            except Exception:
+                _corte = hoy_sistema
+            if _corte > hoy_sistema:
+                _corte = hoy_sistema
+            _periodo = f"{int(anio_sel):04d}-{int(mes_sel):02d}"
+            with col_info:
+                st.markdown(
+                    f"**Corte:** {_corte.isoformat()}  \n"
+                    f"**Periodo del mes:** `{_periodo}`  \n"
+                    f"Primer mes en firma = mes 1 de amortización."
+                )
 
-        col_m, col_a, col_info = st.columns([1, 1, 2])
-        with col_m:
-            mes_sel = st.selectbox(
-                "Mes de análisis",
-                list(range(1, 13)),
-                index=max(0, hoy_sistema.month - 1),
-                format_func=lambda m: MN[m - 1],
-                key="dash_mes_analisis",
+            busq_top = st.text_input(
+                "Buscar contrato o cliente → Estado de cuenta",
+                placeholder="ID o nombre…",
+                key="dash_busq_top",
             )
-        with col_a:
-            anio_sel = st.number_input(
-                "Año de análisis",
-                min_value=2000,
-                max_value=2100,
-                value=int(hoy_sistema.year),
-                step=1,
-                key="dash_anio_analisis",
-            )
-        # Corte = último día del mes seleccionado (para saldos y acumulado)
-        try:
-            _corte = (date(int(anio_sel), int(mes_sel), 1) + relativedelta(months=1) - relativedelta(days=1))
-        except Exception:
-            _corte = hoy_sistema
-        if _corte > hoy_sistema:
-            _corte = hoy_sistema
-        _periodo = f"{int(anio_sel):04d}-{int(mes_sel):02d}"
-        with col_info:
-            st.markdown(
-                f"**Corte:** {_corte.isoformat()}  \n"
-                f"**Periodo del mes:** `{_periodo}`  \n"
-                f"Primer mes en firma = mes 1 de amortización."
-            )
-
-        busq_top = st.text_input(
-            "Buscar contrato o cliente → Estado de cuenta",
-            placeholder="ID o nombre…",
-            key="dash_busq_top",
-        )
-        if busq_top.strip() and not df_all.empty:
-            _match_top = df_all[
-                df_all['ID_Contrato'].str.contains(busq_top, case=False, na=False)
-                | df_all['Cliente'].str.contains(busq_top, case=False, na=False)
-            ]
-            if not _match_top.empty:
-                for _, _mr in _match_top.head(5).iterrows():
-                    if st.button(
-                        f"{_mr['ID_Contrato']} — {_mr['Cliente']}",
-                        key=f"jump_{_mr['ID_Contrato']}",
-                        width='stretch',
-                    ):
-                        st.session_state['ec_contrato'] = _mr['ID_Contrato']
-                        st.session_state['menu_item'] = "Estado de Cuenta"
-                        for g, its in GRUPOS.items():
-                            if "Estado de Cuenta" in its:
-                                st.session_state['menu_grupo'] = g
-                        st.rerun()
-            else:
-                st.caption("Sin coincidencias.")
+            if busq_top.strip() and not df_all.empty:
+                _match_top = df_all[
+                    df_all['ID_Contrato'].str.contains(busq_top, case=False, na=False)
+                    | df_all['Cliente'].str.contains(busq_top, case=False, na=False)
+                ]
+                if not _match_top.empty:
+                    for _, _mr in _match_top.head(5).iterrows():
+                        if OutlinedButton(
+                            f"{_mr['ID_Contrato']} — {_mr['Cliente']}",
+                            key=f"jump_{_mr['ID_Contrato']}",
+                            icon=":material/arrow_forward:"
+                        ):
+                            st.session_state['ec_contrato'] = _mr['ID_Contrato']
+                            st.session_state['menu_item'] = "Estado de Cuenta"
+                            for g, its in GRUPOS.items():
+                                if "Estado de Cuenta" in its:
+                                    st.session_state['menu_grupo'] = g
+                            st.rerun()
+                else:
+                    st.caption("Sin coincidencias.")
 
         # --- VERDAD = Tabla Mensual por Contrato (misma funcion / mismos numeros del Excel) ---
         st.markdown("---")
@@ -7423,42 +7426,42 @@ try:
             _n_fact_mes = 0
 
         # ---- 1) DEL MES ----
-        st.markdown(f"### 1. Del mes: {MN[int(mes_sel)-1]} {int(anio_sel)}")
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Intereses leasing (del mes)", f"${_m_tm.get('interes_leasing_mes', 0):,.2f}")
-        c2.metric("Intereses residual (del mes)", f"${_m_tm.get('interes_residual_mes', 0):,.2f}")
-        c3.metric("Saldo residual activo (del mes)", f"${_m_tm.get('saldo_residual_mes', 0):,.2f}")
-        c4.metric("Contratos en el mes", f"{_m_tm.get('n_contratos_mes', 0):,}")
-        c5, = st.columns(1)
-        c5.metric("Facturado rentas (CFDI)", f"${_fact_mes_renta:,.2f}")
+        with CardContainer(title=f"1. Cifras del Mes — {MN[int(mes_sel)-1]} {int(anio_sel)}", subtitle="Métricas de cartera vigentes y facturación del mes", padding="20px"):
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Intereses leasing (del mes)", f"${_m_tm.get('interes_leasing_mes', 0):,.2f}")
+            c2.metric("Intereses residual (del mes)", f"${_m_tm.get('interes_residual_mes', 0):,.2f}")
+            c3.metric("Saldo residual activo (del mes)", f"${_m_tm.get('saldo_residual_mes', 0):,.2f}")
+            c4.metric("Contratos en el mes", f"{_m_tm.get('n_contratos_mes', 0):,}")
+            c5, = st.columns(1)
+            c5.metric("Facturado rentas (CFDI)", f"${_fact_mes_renta:,.2f}")
 
         # ---- 2) ACUMULADO EJERCICIO ----
-        st.markdown(f"### 2. Acumulado ejercicio {int(anio_sel)} (enero → {MN[int(mes_sel)-1].lower()})")
-        a1, a2, a3 = st.columns(3)
-        a1.metric("Intereses leasing (acum.)", f"${_m_tm.get('interes_leasing_ytd', 0):,.2f}")
-        a2.metric("Intereses residual (acum.)", f"${_m_tm.get('interes_residual_ytd', 0):,.2f}")
-        a3.metric("Contratos (ref. mes)", f"{_m_tm.get('n_contratos_mes', 0):,}")
+        with CardContainer(title=f"2. Acumulado Ejercicio {int(anio_sel)}", subtitle=f"Cifras YTD (enero a {MN[int(mes_sel)-1].lower()})", padding="20px"):
+            a1, a2, a3 = st.columns(3)
+            a1.metric("Intereses leasing (acum.)", f"${_m_tm.get('interes_leasing_ytd', 0):,.2f}")
+            a2.metric("Intereses residual (acum.)", f"${_m_tm.get('interes_residual_ytd', 0):,.2f}")
+            a3.metric("Contratos (ref. mes)", f"{_m_tm.get('n_contratos_mes', 0):,}")
 
-        try:
-            _df_fact_all = pd.read_sql_query(
-                """SELECT periodo, tipo, total, subtotal, cancelada FROM facturas""",
-                get_db(),
+            try:
+                _df_fact_all = pd.read_sql_query(
+                    """SELECT periodo, tipo, total, subtotal, cancelada FROM facturas""",
+                    get_db(),
+                )
+            except Exception:
+                _df_fact_all = pd.DataFrame()
+            _acu_anio = acumulado_facturacion(_df_fact_all, anio=int(anio_sel), hasta_periodo=_periodo)
+            b1, b2 = st.columns(2)
+            b1.metric(f"Facturado total {int(anio_sel)} YTD", f"${_acu_anio.get('total', 0):,.2f}")
+            b2.metric(f"Rentas facturadas {int(anio_sel)} YTD", f"${_acu_anio.get('mensual', 0):,.2f}")
+
+            _dif_mes = round(_fact_mes_renta - _m_tm.get('renta_mes', 0), 2)
+            _dif_ytd = round(_acu_anio.get('mensual', 0) - _m_tm.get('renta_ytd', 0), 2)
+            st.info(
+                f"Cuadre rentas del mes: CFDI ${_fact_mes_renta:,.2f} vs esperado ${_m_tm.get('renta_mes', 0):,.2f} "
+                f"→ dif. ${_dif_mes:+,.2f}.  |  "
+                f"YTD: CFDI ${_acu_anio.get('mensual', 0):,.2f} vs esperado ${_m_tm.get('renta_ytd', 0):,.2f} "
+                f"→ dif. ${_dif_ytd:+,.2f}."
             )
-        except Exception:
-            _df_fact_all = pd.DataFrame()
-        _acu_anio = acumulado_facturacion(_df_fact_all, anio=int(anio_sel), hasta_periodo=_periodo)
-        b1, b2 = st.columns(2)
-        b1.metric(f"Facturado total {int(anio_sel)} YTD", f"${_acu_anio.get('total', 0):,.2f}")
-        b2.metric(f"Rentas facturadas {int(anio_sel)} YTD", f"${_acu_anio.get('mensual', 0):,.2f}")
-
-        _dif_mes = round(_fact_mes_renta - _m_tm.get('renta_mes', 0), 2)
-        _dif_ytd = round(_acu_anio.get('mensual', 0) - _m_tm.get('renta_ytd', 0), 2)
-        st.info(
-            f"Cuadre rentas del mes: CFDI ${_fact_mes_renta:,.2f} vs esperado ${_m_tm.get('renta_mes', 0):,.2f} "
-            f"→ dif. ${_dif_mes:+,.2f}.  |  "
-            f"YTD: CFDI ${_acu_anio.get('mensual', 0):,.2f} vs esperado ${_m_tm.get('renta_ytd', 0):,.2f} "
-            f"→ dif. ${_dif_ytd:+,.2f}."
-        )
 
         # Guardar para auxiliar y export
         _acu_am = {
@@ -7479,132 +7482,131 @@ try:
             st.warning("No hay contratos con amortización registrados en este mes.")
 
         # --- Auxiliar contable ---
-        st.markdown("---")
-        st.subheader(f"4. Comparar con auxiliar contable (ejercicio {int(anio_sel)})")
-        st.caption("Compara tu balanza o auxiliar contable contra las cifras del sistema.")
-        _aux_file = st.file_uploader(
-            "Auxiliar contable (.xlsx o .csv)",
-            type=["xlsx", "csv"],
-            key="dash_aux_uploader",
-        )
-        if _aux_file is not None:
-            try:
-                if _aux_file.name.lower().endswith(".csv"):
-                    _df_aux = pd.read_csv(_aux_file)
-                else:
-                    _df_aux = pd.read_excel(_aux_file)
-                st.write("Vista previa auxiliar:", _df_aux.head(8))
-                _tot_sis = {
-                    "intereses_devengados": _acu_am.get("intereses_devengados", 0),
-                    "capital_amortizado": _acu_am.get("capital_amortizado", 0),
-                    "rentas_esperadas_acum": _acu_am.get("rentas_esperadas_acum", 0),
-                    "intereses_residual_devengados": _acu_am.get("intereses_residual_devengados", 0),
-                    "facturado_ytd": _acu_anio.get("total", 0),
-                }
-                _cmp = comparar_auxiliar(_df_aux, _tot_sis)
-                st.dataframe(_cmp, width="stretch", key="df_cmp_aux")
+        with CardContainer(title=f"3. Comparar con Auxiliar Contable (Ejercicio {int(anio_sel)})", subtitle="Compara tu balanza o auxiliar contable contra las cifras del sistema", padding="20px"):
+            _aux_file = st.file_uploader(
+                "Auxiliar contable (.xlsx o .csv)",
+                type=["xlsx", "csv"],
+                key="dash_aux_uploader",
+            )
+            if _aux_file is not None:
                 try:
-                    from reports.excel import excel_con_formato as _exc_aux
-                    _buf_aux = _exc_aux(
-                        {"Comparacion": _cmp, "Auxiliar": _df_aux, "Totales sistema": pd.DataFrame([_tot_sis])},
-                    )
-                    st.download_button(
-                        "Excel comparacion vs auxiliar",
-                        data=_buf_aux,
-                        file_name=f"comparacion_auxiliar_{_periodo}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="dl_cmp_aux",
-                    )
-                except Exception:
-                    pass
-            except Exception as _e_aux:
-                st.error(f"No se pudo leer el auxiliar: {_e_aux}")
-
-        tab_det, tab_cli, tab_anio, tab_exp = st.tabs([
-            "Detalle por contrato al corte",
-            "Por cliente",
-            "Facturación por año",
-            "Exportar Excel",
-        ])
-        with tab_det:
-            if _det_c is not None and not _det_c.empty:
-                st.dataframe(_det_c, width='stretch', height=360, key="df_cartera_mes")
-            else:
-                st.info("Sin detalle.")
-        with tab_cli:
-            if _det_c is not None and not _det_c.empty and "Cliente" in _det_c.columns:
-                _por_cli = (
-                    _det_c.groupby("Cliente", dropna=False)
-                    .agg(
-                        Contratos=("ID_Contrato", "count"),
-                        Inversion_Neta=("Inversion_Neta", "sum"),
-                        Saldo_Capital=("Saldo_Capital", "sum"),
-                        Renta_Mensual=("Renta_Mensual", "sum"),
-                        CxC_CP=("CxC_CP", "sum"),
-                        CxC_LP=("CxC_LP", "sum"),
-                    )
-                    .reset_index()
-                )
-                _por_cli["CxC_Total"] = _por_cli["CxC_CP"] + _por_cli["CxC_LP"]
-                st.dataframe(_por_cli.sort_values("Saldo_Capital", ascending=False), width='stretch', height=320, key="df_cli_mes")
-            else:
-                st.info("Sin datos.")
-        with tab_anio:
-            if not _df_fact_all.empty:
-                _res_a = resumen_facturacion_por_anio(_df_fact_all, solo_vigentes=True)
-                if not _res_a.empty:
-                    st.dataframe(_res_a, width='stretch', height=280, key="df_fact_anio_dash")
+                    if _aux_file.name.lower().endswith(".csv"):
+                        _df_aux = pd.read_csv(_aux_file)
+                    else:
+                        _df_aux = pd.read_excel(_aux_file)
+                    st.write("Vista previa auxiliar:", _df_aux.head(8))
+                    _tot_sis = {
+                        "intereses_devengados": _acu_am.get("intereses_devengados", 0),
+                        "capital_amortizado": _acu_am.get("capital_amortizado", 0),
+                        "rentas_esperadas_acum": _acu_am.get("rentas_esperadas_acum", 0),
+                        "intereses_residual_devengados": _acu_am.get("intereses_residual_devengados", 0),
+                        "facturado_ytd": _acu_anio.get("total", 0),
+                    }
+                    _cmp = comparar_auxiliar(_df_aux, _tot_sis)
+                    st.dataframe(_cmp, width="stretch", key="df_cmp_aux")
                     try:
-                        _pivot = _res_a.pivot_table(index="Anio", columns="Tipo", values="Total", aggfunc="sum", fill_value=0).reset_index()
-                        fig_an = go.Figure()
-                        for col in [c for c in _pivot.columns if c != "Anio"]:
-                            fig_an.add_trace(go.Bar(x=_pivot["Anio"], y=_pivot[col], name=str(col)))
-                        fig_an.update_layout(barmode="stack", title="Facturado por año", height=300)
-                        st.plotly_chart(sfig(fig_an, h=300), width="stretch", key="pc_dash_anio")
+                        from reports.excel import excel_con_formato as _exc_aux
+                        _buf_aux = _exc_aux(
+                            {"Comparacion": _cmp, "Auxiliar": _df_aux, "Totales sistema": pd.DataFrame([_tot_sis])},
+                        )
+                        st.download_button(
+                            "Excel comparacion vs auxiliar",
+                            data=_buf_aux,
+                            file_name=f"comparacion_auxiliar_{_periodo}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="dl_cmp_aux",
+                        )
                     except Exception:
                         pass
-                else:
-                    st.info("Sin facturas agrupables.")
-            else:
-                st.info("Aún no hay facturas cargadas. Sube XML en Conciliación → Carga.")
-        with tab_exp:
-            try:
-                from reports.excel import excel_con_formato
-                _hojas = {
-                    "Saldos corte": _det_c if _det_c is not None else pd.DataFrame(),
-                    "Totales corte": pd.DataFrame([_tot_c]) if _tot_c else pd.DataFrame(),
-                    "Del mes": pd.DataFrame([{
-                        "periodo": _periodo,
-                        "renta_esperada": _cob["esperado"],
-                        "facturado": _cob["facturado"],
-                        "diferencia": _cob["diferencia"],
-                        "cobertura_pct": _cob["cobertura_pct"],
-                        "capital_mes": round(_cap_mes, 2),
-                        "intereses_mes": round(_int_mes, 2),
-                        "intereses_residual_mes": round(_int_res_mes, 2),
-                    }]),
-                    "Acumulado amort": pd.DataFrame([_acu_am]),
-                    "Facturado hasta mes": pd.DataFrame([_acu_hasta]),
-                    "Facturado YTD anio": pd.DataFrame([_acu_anio]),
-                }
-                _buf = excel_con_formato(_hojas)
-                st.download_button(
-                    f"Descargar Excel — {_periodo} (mes + acumulado)",
-                    data=_buf,
-                    file_name=f"cartera_{_periodo}_mes_y_acumulado.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="dl_mes_acu",
-                )
-            except Exception as _e_exp:
-                st.error(f"No se pudo armar el Excel: {_e_exp}")
+                except Exception as _e_aux:
+                    st.error(f"No se pudo leer el auxiliar: {_e_aux}")
+
+        with CardContainer(title="4. Desglose y Reportes de Cartera al Corte", subtitle="Detalle por contrato, cliente, facturación anual y exportaciones", padding="20px"):
+            tab_det, tab_cli, tab_anio, tab_exp = st.tabs([
+                "Detalle por contrato al corte",
+                "Por cliente",
+                "Facturación por año",
+                "Exportar Excel",
+            ])
+            with tab_det:
                 if _det_c is not None and not _det_c.empty:
-                    st.download_button(
-                        "CSV detalle cartera",
-                        data=_det_c.to_csv(index=False).encode("utf-8-sig"),
-                        file_name=f"cartera_{_periodo}.csv",
-                        mime="text/csv",
-                        key="dl_csv_mes",
+                    st.dataframe(_det_c, width='stretch', height=360, key="df_cartera_mes")
+                else:
+                    st.info("Sin detalle.")
+            with tab_cli:
+                if _det_c is not None and not _det_c.empty and "Cliente" in _det_c.columns:
+                    _por_cli = (
+                        _det_c.groupby("Cliente", dropna=False)
+                        .agg(
+                            Contratos=("ID_Contrato", "count"),
+                            Inversion_Neta=("Inversion_Neta", "sum"),
+                            Saldo_Capital=("Saldo_Capital", "sum"),
+                            Renta_Mensual=("Renta_Mensual", "sum"),
+                            CxC_CP=("CxC_CP", "sum"),
+                            CxC_LP=("CxC_LP", "sum"),
+                        )
+                        .reset_index()
                     )
+                    _por_cli["CxC_Total"] = _por_cli["CxC_CP"] + _por_cli["CxC_LP"]
+                    st.dataframe(_por_cli.sort_values("Saldo_Capital", ascending=False), width='stretch', height=320, key="df_cli_mes")
+                else:
+                    st.info("Sin datos.")
+            with tab_anio:
+                if not _df_fact_all.empty:
+                    _res_a = resumen_facturacion_por_anio(_df_fact_all, solo_vigentes=True)
+                    if not _res_a.empty:
+                        st.dataframe(_res_a, width='stretch', height=280, key="df_fact_anio_dash")
+                        try:
+                            _pivot = _res_a.pivot_table(index="Anio", columns="Tipo", values="Total", aggfunc="sum", fill_value=0).reset_index()
+                            fig_an = go.Figure()
+                            for col in [c for c in _pivot.columns if c != "Anio"]:
+                                fig_an.add_trace(go.Bar(x=_pivot["Anio"], y=_pivot[col], name=str(col)))
+                            fig_an.update_layout(barmode="stack", title="Facturado por año", height=300)
+                            st.plotly_chart(sfig(fig_an, h=300), width="stretch", key="pc_dash_anio")
+                        except Exception:
+                            pass
+                    else:
+                        st.info("Sin facturas agrupables.")
+                else:
+                    st.info("Aún no hay facturas cargadas. Sube XML en Conciliación → Carga.")
+            with tab_exp:
+                try:
+                    from reports.excel import excel_con_formato
+                    _hojas = {
+                        "Saldos corte": _det_c if _det_c is not None else pd.DataFrame(),
+                        "Totales corte": pd.DataFrame([_tot_c]) if _tot_c else pd.DataFrame(),
+                        "Del mes": pd.DataFrame([{
+                            "periodo": _periodo,
+                            "renta_esperada": _cob["esperado"],
+                            "facturado": _cob["facturado"],
+                            "diferencia": _cob["diferencia"],
+                            "cobertura_pct": _cob["cobertura_pct"],
+                            "capital_mes": round(_cap_mes, 2),
+                            "intereses_mes": round(_int_mes, 2),
+                            "intereses_residual_mes": round(_int_res_mes, 2),
+                        }]),
+                        "Acumulado amort": pd.DataFrame([_acu_am]),
+                        "Facturado hasta mes": pd.DataFrame([_acu_hasta]),
+                        "Facturado YTD anio": pd.DataFrame([_acu_anio]),
+                    }
+                    _buf = excel_con_formato(_hojas)
+                    st.download_button(
+                        f"Descargar Excel — {_periodo} (mes + acumulado)",
+                        data=_buf,
+                        file_name=f"cartera_{_periodo}_mes_y_acumulado.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="dl_mes_acu",
+                    )
+                except Exception as _e_exp:
+                    st.error(f"No se pudo armar el Excel: {_e_exp}")
+                    if _det_c is not None and not _det_c.empty:
+                        st.download_button(
+                            "CSV detalle cartera",
+                            data=_det_c.to_csv(index=False).encode("utf-8-sig"),
+                            file_name=f"cartera_{_periodo}.csv",
+                            mime="text/csv",
+                            key="dl_csv_mes",
+                        )
 
     elif menu=="Estado de Cuenta":
         st.title("Estado de Cuenta por Contrato")
@@ -7647,7 +7649,7 @@ try:
             row = _match.iloc[0]
             assert str(row['ID_Contrato']) == str(sel_ec), "Inconsistencia de selección de contrato detectada."
 
-            with st.container(key=f"tabbox_header_{sel_ec}"):
+            with CardContainer(title=f"{sel_ec} · {row['Cliente']}", subtitle="Expediente general y especificaciones del contrato", padding="20px"):
                 nm = int(row.get('Nivel_Morosidad',0) or 0)
                 ML_ec = {0:"Al corriente",1:"Atraso",2:"Convenio",3:"Devuelve no paga",4:"Judicial"}
                 MC_ec = {0:C['success'],1:C['gold'],2:C['warning'],3:C['accent'],4:"#7A1015"}
@@ -7660,10 +7662,10 @@ try:
                 es_baja_hdr = str(row.get('Estatus','')).upper() == 'BAJA'
 
                 badge_mora  = f'<span style="background:{MC_ec[nm]};color:#fff;border-radius:6px;padding:2px 10px;font-size:.8rem;font-weight:700;">Nivel {nm} — {ML_ec[nm]}</span>'
-                badge_baja  = (f'<span style="background:#B3261E;color:#fff;border-radius:4px;padding:2px 10px;font-size:.8rem;font-weight:700;">Dado de baja el {_fb_hdr[:10]}</span>'
+                badge_baja  = (f'<span style="background:var(--danger);color:#fff;border-radius:4px;padding:2px 10px;font-size:.8rem;font-weight:700;">Dado de baja el {_fb_hdr[:10]}</span>'
                                if es_baja_hdr and _fb_hdr else
-                               ('<span style="background:#96660C;color:#fff;border-radius:4px;padding:2px 10px;font-size:.8rem;font-weight:700;">Dado de baja (sin fecha capturada)</span>' if es_baja_hdr else ''))
-                badge_excl  = (f'<span style="background:#B3261E;color:#fff;border-radius:4px;padding:2px 10px;font-size:.8rem;font-weight:700;">Excluido de pólizas desde {excl_poliza}</span>'
+                               ('<span style="background:var(--warning);color:#fff;border-radius:4px;padding:2px 10px;font-size:.8rem;font-weight:700;">Dado de baja (sin fecha capturada)</span>' if es_baja_hdr else ''))
+                badge_excl  = (f'<span style="background:var(--danger);color:#fff;border-radius:4px;padding:2px 10px;font-size:.8rem;font-weight:700;">Excluido de pólizas desde {excl_poliza}</span>'
                                if excl_poliza else '')
                 badge_avance = ''
                 if not es_baja_hdr:
@@ -7671,40 +7673,36 @@ try:
                     if _avp['estado'] == 'ATRASADO':
                         _txt_falt = ', '.join(str(m) for m in _avp['meses_faltantes'][:8]) + \
                                     (f" y {len(_avp['meses_faltantes'])-8} más" if len(_avp['meses_faltantes']) > 8 else '')
-                        badge_avance = (f'<span style="background:#B3261E;color:#fff;border-radius:4px;padding:2px 10px;font-size:.8rem;font-weight:700;" '
+                        badge_avance = (f'<span style="background:var(--danger);color:#fff;border-radius:4px;padding:2px 10px;font-size:.8rem;font-weight:700;" '
                                         f'title="Meses de plazo sin factura conciliada: {_txt_falt}">'
                                         f"Va atrasado {_avp['meses_atraso']} mes(es) — falta{'n' if _avp['meses_atraso']>1 else ''} el/los mes(es) {_txt_falt}</span>")
                     elif _avp['estado'] == 'ADELANTADO':
-                        badge_avance = (f'<span style="background:#1E5C4F;color:#fff;border-radius:4px;padding:2px 10px;font-size:.8rem;font-weight:700;">'
+                        badge_avance = (f'<span style="background:var(--brand);color:#fff;border-radius:4px;padding:2px 10px;font-size:.8rem;font-weight:700;">'
                                         f"Va adelantado {_avp['meses_adelanto']} mes(es) — ya tiene facturado hasta el mes {_avp['mes_max_facturado']} de {int(row.get('Plazo',0))}</span>")
                 _campo_vencimiento = (
-                    f"<div><b>Fecha Vencimiento (original)</b><br>{str(row.get('Fecha_Vencimiento','—'))[:10]}</div>"
+                    f"<div><b style='color:var(--text-primary);'>Fecha Vencimiento (original)</b><br><span style='color:var(--text-secondary);'>{str(row.get('Fecha_Vencimiento','—'))[:10]}</span></div>"
                     if es_baja_hdr else
-                    f"<div><b>Fecha Vencimiento</b><br>{str(row.get('Fecha_Vencimiento','—'))[:10]}</div>"
+                    f"<div><b style='color:var(--text-primary);'>Fecha Vencimiento</b><br><span style='color:var(--text-secondary);'>{str(row.get('Fecha_Vencimiento','—'))[:10]}</span></div>"
                 )
                 st.markdown(f"""
-                <div style="background:#FFFFFF;border:1px solid #DCE0E5;border-radius:6px;padding:18px 22px;
-                            margin-bottom:16px;">
-                  <div style="font-size:1.3rem;font-weight:700;color:#1E5C4F;margin-bottom:8px;">
-                    {sel_ec} &nbsp;·&nbsp; {row['Cliente']}
-                  </div>
-                  <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;">
+                <div>
+                  <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;">
                     {badge_mora} {badge_baja} {badge_excl} {badge_avance}
                   </div>
-                  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;font-size:.85rem;color:#565E68;">
-                    <div><b>Vehículo</b><br>{row.get('Vehiculo','—')}</div>
-                    <div><b>Fecha Alta</b><br>{str(row.get('Fecha_Alta','—'))[:10]}</div>
+                  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;font-size:.85rem;">
+                    <div><b style="color:var(--text-primary);">Vehículo</b><br><span style="color:var(--text-secondary);">{row.get('Vehiculo','—')}</span></div>
+                    <div><b style="color:var(--text-primary);">Fecha Alta</b><br><span style="color:var(--text-secondary);">{str(row.get('Fecha_Alta','—'))[:10]}</span></div>
                     {_campo_vencimiento}
-                    <div><b>Estatus</b><br>{row.get('Estatus','—')}</div>
-                    <div><b>Plazo</b><br>{int(row.get('Plazo',0))} meses</div>
-                    <div><b>Valor (s/IVA)</b><br>${float(row.get('Valor_Sin_IVA',0)):,.2f}</div>
-                    <div><b>Anticipo</b><br>${float(row.get('Anticipo_Monto',0)):,.2f} ({float(row.get('Anticipo_Pct',0)):.1f}%)</div>
-                    <div><b>Comisión</b><br>${float(row.get('Comision_Monto',0)):,.2f}</div>
-                    <div><b>Renta (s/IVA)</b><br>${float(row.get('Mensualidad_Sin_IVA',0)):,.2f}</div>
-                    <div><b>Residual</b><br>${float(row.get('Residual_Monto',0)):,.2f}</div>
-                    <div><b>Tasa anual impl.</b><br>{float(row.get('Tasa_Calculada',0))*1200:.2f}%</div>
+                    <div><b style="color:var(--text-primary);">Estatus</b><br><span style="color:var(--text-secondary);">{row.get('Estatus','—')}</span></div>
+                    <div><b style="color:var(--text-primary);">Plazo</b><br><span style="color:var(--text-secondary);">{int(row.get('Plazo',0))} meses</span></div>
+                    <div><b style="color:var(--text-primary);">Valor (s/IVA)</b><br><span style="color:var(--text-secondary);">${float(row.get('Valor_Sin_IVA',0)):,.2f}</span></div>
+                    <div><b style="color:var(--text-primary);">Anticipo</b><br><span style="color:var(--text-secondary);">${float(row.get('Anticipo_Monto',0)):,.2f} ({float(row.get('Anticipo_Pct',0)):.1f}%)</span></div>
+                    <div><b style="color:var(--text-primary);">Comisión</b><br><span style="color:var(--text-secondary);">${float(row.get('Comision_Monto',0)):,.2f}</span></div>
+                    <div><b style="color:var(--text-primary);">Renta (s/IVA)</b><br><span style="color:var(--text-secondary);">${float(row.get('Mensualidad_Sin_IVA',0)):,.2f}</span></div>
+                    <div><b style="color:var(--text-primary);">Residual</b><br><span style="color:var(--text-secondary);">${float(row.get('Residual_Monto',0)):,.2f}</span></div>
+                    <div><b style="color:var(--text-primary);">Tasa anual impl.</b><br><span style="color:var(--text-secondary);">{float(row.get('Tasa_Calculada',0))*1200:.2f}%</span></div>
                   </div>
-                  {('<div style="margin-top:10px;font-size:.8rem;color:#B3261E;"><b>Motivo exclusi\u00f3n:</b> ' + motivo_excl + '</div>') if motivo_excl else ""}
+                  {('<div style="margin-top:12px;font-size:.8rem;color:var(--danger);"><b>Motivo exclusión:</b> ' + motivo_excl + '</div>') if motivo_excl else ""}
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -7985,19 +7983,19 @@ try:
                             col_e = C['success'] if est=='CONFIRMADO' else (C['accent'] if est=='PENDIENTE' else C['warning'])
                             with st.container(key=f"evtcard_{sel_ec}_{int(ev['id'])}"):
                                 st.markdown(f"""
-                                <div style="border:1px solid #DCE0E5;border-left:4px solid {col_e};background:#FFFFFF;border-radius:0 4px 4px 0;
-                                            padding:10px 14px;margin-bottom:8px;">
-                                  <b>{ev['Tipo_Evento']}</b>
+                                <div style="border:1px solid var(--border, #DCE0E5);border-left:4px solid {col_e};background:var(--bg-1, #FFFFFF);border-radius:0 6px 6px 0;
+                                            padding:12px 16px;margin-bottom:8px;">
+                                  <b style="color:var(--text-primary, #0F172A);">{ev['Tipo_Evento']}</b>
                                   <span style="float:right;background:{col_e};color:#fff;border-radius:4px;
                                                padding:1px 8px;font-size:.75rem;">{est}</span><br>
-                                  <span style="font-size:.8rem;color:#565E68;">Fecha evento: {ev['Fecha_Evento']}
+                                  <span style="font-size:.8rem;color:var(--text-secondary, #64748B);">Fecha evento: {ev['Fecha_Evento']}
                                   &nbsp;·&nbsp; Registrado: {ev['Fecha_Registro']}</span><br>
-                                  <span style="font-size:.82rem;color:#20242B;">
-                                    Valor recuperable: <b>${float(ev.get('Valor_Recuperable',0)):,.2f}</b>
-                                    &nbsp;·&nbsp; Reclamado: <b>${float(ev.get('Monto_Reclamado',0)):,.2f}</b>
-                                    &nbsp;·&nbsp; Confirmado: <b>${float(ev.get('Monto_Confirmado',0)):,.2f}</b>
+                                  <span style="font-size:.82rem;color:var(--text-secondary, #64748B);">
+                                    Valor recuperable: <b style="color:var(--text-primary);">${float(ev.get('Valor_Recuperable',0)):,.2f}</b>
+                                    &nbsp;·&nbsp; Reclamado: <b style="color:var(--text-primary);">${float(ev.get('Monto_Reclamado',0)):,.2f}</b>
+                                    &nbsp;·&nbsp; Confirmado: <b style="color:var(--text-primary);">${float(ev.get('Monto_Confirmado',0)):,.2f}</b>
                                   </span>
-                                  {"<br><span style='font-size:.78rem;color:#8A929C;'>"+str(ev.get('Observaciones',''))+"</span>" if ev.get('Observaciones') else ""}
+                                  {"<br><span style='font-size:.78rem;color:var(--text-muted, #8A929C);'>"+str(ev.get('Observaciones',''))+"</span>" if ev.get('Observaciones') else ""}
                                 </div>
                                 """, unsafe_allow_html=True)
 
@@ -8012,7 +8010,7 @@ try:
                         ec_an1, ec_an2 = st.columns([3,1])
                         ec_txt  = ec_an1.text_area("Texto", height=70, key="ec_anot_txt", placeholder="Escribe aquí…")
                         ec_tipo = ec_an2.selectbox("Tipo", TIPOS_AN, key="ec_anot_tipo")
-                        if st.button("Guardar", key="ec_anot_save"):
+                        if PrimaryButton("Guardar", key="ec_anot_save", icon=":material/save:"):
                             if ec_txt.strip():
                                 agregar_anotacion(sel_ec, ec_txt.strip(), ec_tipo)
                                 st.success("Anotación guardada.")
@@ -8028,25 +8026,25 @@ try:
                             confirm_del_ec = (st.session_state.get('anot_confirm_del') == int(an['id']))
                             with st.container(key=f"anotcard_{sel_ec}_{int(an['id'])}"):
                                 st.markdown(f"""
-                                <div style="border:1px solid #DCE0E5;border-left:4px solid {col_an};background:#FFFFFF;border-radius:0 4px 4px 0;
-                                            padding:10px 14px;margin-bottom:6px;">
+                                <div style="border:1px solid var(--border);border-left:4px solid {col_an};background:var(--bg-1);border-radius:0 6px 6px 0;
+                                            padding:12px 16px;margin-bottom:8px;">
                                   <span style="font-weight:700;color:{col_an};font-size:.82rem;">{tipo_an}</span>
-                                  <span style="float:right;font-size:.75rem;color:#8A929C;">{an['Fecha']}</span><br>
-                                  <span style="font-size:.88rem;color:#20242B;white-space:pre-wrap;">{an['Texto']}</span>
+                                  <span style="float:right;font-size:.75rem;color:var(--text-secondary);">{an['Fecha']}</span><br>
+                                  <span style="font-size:.88rem;color:var(--text-primary);white-space:pre-wrap;">{an['Texto']}</span>
                                 </div>
                                 """, unsafe_allow_html=True)
                                 bc1_ec, bc2_ec, _ = st.columns([1,1,5])
                                 if confirm_del_ec:
                                     bc1_ec.warning("¿Borrar?")
-                                    if bc2_ec.button("Sí", key=f"ec_del_ok_{an['id']}", width='stretch'):
+                                    if PrimaryButton("Sí", key=f"ec_del_ok_{an['id']}"):
                                         eliminar_anotacion(int(an['id']))
                                         st.session_state['anot_confirm_del'] = None
                                         st.session_state['_refresh'] = True
-                                    if _.button("No", key=f"ec_del_no_{an['id']}", width='stretch'):
+                                    if OutlinedButton("No", key=f"ec_del_no_{an['id']}"):
                                         st.session_state['anot_confirm_del'] = None
                                         st.session_state['_refresh'] = True
                                 else:
-                                    if bc2_ec.button("Eliminar", key=f"ec_del_{an['id']}", width='stretch'):
+                                    if OutlinedButton("Eliminar", key=f"ec_del_{an['id']}", icon=":material/delete:"):
                                         st.session_state['anot_confirm_del'] = int(an['id'])
                                         st.session_state['_refresh'] = True
 
@@ -8190,21 +8188,24 @@ try:
         st.title("Carga Masiva y Altas de Contratos")
         tab_m,tab_man=st.tabs(["Carga Masiva","Alta Manual"])
         with tab_m:
-            st.subheader("Importar desde Excel")
-            if st.button("Descargar Plantilla"):
-                st.download_button("Guardar plantilla",plantilla(),"plantilla.xlsx")
-            arch = st.file_uploader("Sube .xlsx o .csv",type=['xlsx','csv'])
+            with CardContainer(title="Carga Masiva desde Archivo", subtitle="Importa múltiples contratos simultáneamente desde Excel (.xlsx) o CSV", padding="20px"):
+                st.markdown("**Importar desde Excel o CSV**")
+                if OutlinedButton("Descargar Plantilla", key="btn_descargar_plantilla"):
+                    st.download_button("Guardar plantilla",plantilla(),"plantilla.xlsx")
+                arch = st.file_uploader("Sube .xlsx o .csv",type=['xlsx','csv'])
+                
+                hojas_sel = []
+                xls = None
+                if arch and arch.name.endswith('.xlsx'):
+                    xls = pd.ExcelFile(arch)
+                    opciones = xls.sheet_names
+                    # Preseleccionar julio y agosto 2026 si existen, por requerimiento directo
+                    defs = [h for h in opciones if "JULIO 2026" in h.upper() or "AGOSTO 2026" in h.upper() or h.upper().strip() == "CARTERA"]
+                    hojas_sel = st.multiselect("Selecciona las hojas a procesar (dejalo vacio para procesar la primera):", opciones, default=defs)
+                
+                ejecutar_carga = arch and PrimaryButton("Procesar y Cargar", key="btn_procesar_carga_masiva")
             
-            hojas_sel = []
-            xls = None
-            if arch and arch.name.endswith('.xlsx'):
-                xls = pd.ExcelFile(arch)
-                opciones = xls.sheet_names
-                # Preseleccionar julio y agosto 2026 si existen, por requerimiento directo
-                defs = [h for h in opciones if "JULIO 2026" in h.upper() or "AGOSTO 2026" in h.upper() or h.upper().strip() == "CARTERA"]
-                hojas_sel = st.multiselect("Selecciona las hojas a procesar (dejalo vacio para procesar la primera):", opciones, default=defs)
-            
-            if arch and st.button("Procesar y Cargar"):
+            if ejecutar_carga:
                 try:
                     if arch.name.endswith('.xlsx'):
                         if not hojas_sel: hojas_sel = [xls.sheet_names[0]]
@@ -8345,59 +8346,60 @@ try:
                     st.error(f"Error procesando el archivo: {e}")
                     
         with tab_man:
-            with st.form("alta"):
-                c1,c2=st.columns(2)
-                id_c=c1.text_input("ID Contrato (ej. 0472-0003)"); cliente=c2.text_input("Cliente")
-                vehiculo=st.text_input("Vehículo"); fa=st.date_input("Fecha de Alta")
-                v=st.number_input("Valor sin IVA",min_value=0.0,step=1000.0); renta=st.number_input("Renta mensual sin IVA",min_value=0.0,step=100.0)
-                plazo=st.number_input("Plazo (meses)",min_value=1,value=36); pa=st.number_input("% Anticipo",value=30.0,step=1.0)
-                pr=st.number_input("% Residual",value=10.0,step=1.0); pc=st.number_input("% Comisión",value=2.0,step=.5)
-                est=st.selectbox("Estatus",["ACTIVO","BAJA"])
-                nm=st.selectbox("Nivel Morosidad",[0,1,2,3,4],format_func=lambda x:{0:"0-Al corriente",1:"1-Atraso",2:"2-Convenio",3:"3-Devuelve no paga",4:"4-Judicial"}[x])
-                fb=st.date_input("Fecha de Baja",value=None) if est=="BAJA" else None
-                if st.form_submit_button("Guardar"):
-                    if id_c and cliente and v>0:
-                        pan=norm_pct(pa); prn=norm_pct(pr); pcn=norm_pct(pc)
-                        ct=dict(ID_Contrato=id_c,Cliente=cliente,Vehiculo=vehiculo,
-                                Fecha_Alta=pd.to_datetime(fa),Fecha_Vencimiento=pd.to_datetime(fa)+relativedelta(months=int(plazo)),
-                                Valor_Sin_IVA=v,Mensualidad_Sin_IVA=renta,Plazo=int(plazo),
-                                Comision_Apertura_Pct=pcn,Comision_Monto=v*pcn/100,Anticipo_Pct=pan,Anticipo_Monto=v*pan/100,
-                                Residual_Pct=prn,Residual_Monto=v*prn/100,Tasa_Calculada=0.0,Estatus=est,Fecha_Baja=fb,
-                                residual_transferred=0,Nivel_Morosidad=nm)
-                        guardar(ct); st.success("Guardado.")
-                        st.session_state['_refresh'] = True
+            with CardContainer(title="Alta Manual de Contrato", subtitle="Captura un nuevo contrato financiero y valida su estructura", padding="20px"):
+                with st.form("alta"):
+                    c1,c2=st.columns(2)
+                    id_c=c1.text_input("ID Contrato (ej. 0472-0003)"); cliente=c2.text_input("Cliente")
+                    vehiculo=st.text_input("Vehículo"); fa=st.date_input("Fecha de Alta")
+                    v=st.number_input("Valor sin IVA",min_value=0.0,step=1000.0); renta=st.number_input("Renta mensual sin IVA",min_value=0.0,step=100.0)
+                    plazo=st.number_input("Plazo (meses)",min_value=1,value=36); pa=st.number_input("% Anticipo",value=30.0,step=1.0)
+                    pr=st.number_input("% Residual",value=10.0,step=1.0); pc=st.number_input("% Comisión",value=2.0,step=.5)
+                    est=st.selectbox("Estatus",["ACTIVO","BAJA"])
+                    nm=st.selectbox("Nivel Morosidad",[0,1,2,3,4],format_func=lambda x:{0:"0-Al corriente",1:"1-Atraso",2:"2-Convenio",3:"3-Devuelve no paga",4:"4-Judicial"}[x])
+                    fb=st.date_input("Fecha de Baja",value=None) if est=="BAJA" else None
+                    if st.form_submit_button("Guardar"):
+                        if id_c and cliente and v>0:
+                            pan=norm_pct(pa); prn=norm_pct(pr); pcn=norm_pct(pc)
+                            ct=dict(ID_Contrato=id_c,Cliente=cliente,Vehiculo=vehiculo,
+                                    Fecha_Alta=pd.to_datetime(fa),Fecha_Vencimiento=pd.to_datetime(fa)+relativedelta(months=int(plazo)),
+                                    Valor_Sin_IVA=v,Mensualidad_Sin_IVA=renta,Plazo=int(plazo),
+                                    Comision_Apertura_Pct=pcn,Comision_Monto=v*pcn/100,Anticipo_Pct=pan,Anticipo_Monto=v*pan/100,
+                                    Residual_Pct=prn,Residual_Monto=v*prn/100,Tasa_Calculada=0.0,Estatus=est,Fecha_Baja=fb,
+                                    residual_transferred=0,Nivel_Morosidad=nm)
+                            guardar(ct); st.success("Guardado.")
+                            st.session_state['_refresh'] = True
 
-                        # Revisar facturas para alertar discrepancia de IVA en contrato nuevo
-                        f_ex = get_db().execute(
-                            "SELECT subtotal FROM facturas WHERE (id_contrato=? OR id_contrato_detectado=?) AND tipo='MENSUAL' AND (cancelada IS NULL OR cancelada=0) ORDER BY fecha_emision DESC LIMIT 1",
-                            (id_c.strip(), id_c.strip())
-                        ).fetchone()
-                        if f_ex and f_ex['subtotal']:
-                            subt = float(f_ex['subtotal'])
-                            diag = detectar_descuadre_iva_contrato(renta, subt)
-                            if diag:
-                                st.session_state['alerta_iva_nuevo_contrato'] = {
-                                    'id_contrato': id_c.strip(),
-                                    'diag': diag,
-                                    'subtotal': subt
-                                }
-                    else: st.error("Completa los campos obligatorios.")
+                            # Revisar facturas para alertar discrepancia de IVA en contrato nuevo
+                            f_ex = get_db().execute(
+                                "SELECT subtotal FROM facturas WHERE (id_contrato=? OR id_contrato_detectado=?) AND tipo='MENSUAL' AND (cancelada IS NULL OR cancelada=0) ORDER BY fecha_emision DESC LIMIT 1",
+                                (id_c.strip(), id_c.strip())
+                            ).fetchone()
+                            if f_ex and f_ex['subtotal']:
+                                subt = float(f_ex['subtotal'])
+                                diag = detectar_descuadre_iva_contrato(renta, subt)
+                                if diag:
+                                    st.session_state['alerta_iva_nuevo_contrato'] = {
+                                        'id_contrato': id_c.strip(),
+                                        'diag': diag,
+                                        'subtotal': subt
+                                    }
+                        else: st.error("Completa los campos obligatorios.")
 
-            alerta_c = st.session_state.get('alerta_iva_nuevo_contrato')
-            if alerta_c and alerta_c.get('id_contrato'):
-                idc_a = alerta_c['id_contrato']
-                diag_a = alerta_c['diag']
-                subt_a = alerta_c['subtotal']
-                st.warning(f"Alerta en Contrato Nuevo {idc_a}: {diag_a['mensaje']}. {diag_a['detalle']}")
-                if st.button(f"Corregir renta a ${subt_a:,.2f} y recalcular corrida", key=f"btn_corr_alta_{idc_a}"):
-                    ok, msg = corregir_renta_contrato_nuevo(idc_a, subt_a)
-                    if ok:
-                        st.success(msg)
-                        st.session_state.pop('alerta_iva_nuevo_contrato', None)
-                        st.session_state['_refresh'] = True
-                        st.rerun()
-                    else:
-                        st.error(msg)
+                alerta_c = st.session_state.get('alerta_iva_nuevo_contrato')
+                if alerta_c and alerta_c.get('id_contrato'):
+                    idc_a = alerta_c['id_contrato']
+                    diag_a = alerta_c['diag']
+                    subt_a = alerta_c['subtotal']
+                    st.warning(f"Alerta en Contrato Nuevo {idc_a}: {diag_a['mensaje']}. {diag_a['detalle']}")
+                    if PrimaryButton(f"Corregir renta a ${subt_a:,.2f} y recalcular corrida", key=f"btn_corr_alta_{idc_a}"):
+                        ok, msg = corregir_renta_contrato_nuevo(idc_a, subt_a)
+                        if ok:
+                            st.success(msg)
+                            st.session_state.pop('alerta_iva_nuevo_contrato', None)
+                            st.session_state['_refresh'] = True
+                            st.rerun()
+                        else:
+                            st.error(msg)
 
     elif menu=="Editar / Eliminar":
         st.title("Edición y Eliminación de Contratos")
@@ -8406,66 +8408,67 @@ try:
         else:
             ids=st.selectbox("Contrato",dfa['ID_Contrato'],key="edit_sel_contrato"); row=dfa[dfa['ID_Contrato']==ids].iloc[0]
 
-            with st.expander(f"Cambiar número de contrato ({ids})"):
-                st.caption("Actualiza el número de contrato y sus registros asociados.")
-                nuevo_id = st.text_input("Nuevo número (formato NNNN-NNNN)", value=ids, key=f"nuevo_id_{ids}")
-                if st.button("Renumerar contrato"):
-                    ok, msg = renumerar_contrato(ids, nuevo_id)
-                    if ok:
-                        st.success(msg)
-                    else:
-                        st.error(msg)
-                    st.session_state['_refresh'] = True
+            with CardContainer(title="Edición y Mantenimiento de Contrato", subtitle=f"Modifica condiciones, renombra o elimina el contrato {ids}", padding="20px"):
+                with st.expander(f"Cambiar número de contrato ({ids})"):
+                    st.caption("Actualiza el número de contrato y sus registros asociados.")
+                    nuevo_id = st.text_input("Nuevo número (formato NNNN-NNNN)", value=ids, key=f"nuevo_id_{ids}")
+                    if OutlinedButton("Renumerar contrato", key=f"btn_renum_{ids}"):
+                        ok, msg = renumerar_contrato(ids, nuevo_id)
+                        if ok:
+                            st.success(msg)
+                        else:
+                            st.error(msg)
+                        st.session_state['_refresh'] = True
 
-            with st.form("editar"):
-                c1,c2=st.columns(2)
-                cli=c1.text_input("Cliente",row['Cliente']); veh=c2.text_input("Vehículo",row['Vehiculo'])
-                fa=st.date_input("Fecha Alta",row['Fecha_Alta'])
-                v=st.number_input("Valor sin IVA",value=float(row['Valor_Sin_IVA']),min_value=0.01); r=st.number_input("Renta",value=float(row['Mensualidad_Sin_IVA']))
-                pl=st.number_input("Plazo",value=int(row['Plazo']),min_value=1); pa=st.number_input("% Anticipo",value=float(row['Anticipo_Pct']))
-                pr_=st.number_input("% Residual",value=float(row['Residual_Pct']))
-                nm=st.selectbox("Nivel Morosidad",[0,1,2,3,4],index=int(row.get('Nivel_Morosidad',0)),
-                                 format_func=lambda x:{0:"0-Al corriente",1:"1-Atraso",2:"2-Convenio",3:"3-Devuelve no paga",4:"4-Judicial"}[x])
-                fb_a=row['Fecha_Baja'] if pd.notnull(row['Fecha_Baja']) else None
-                fb=st.date_input("Fecha de Baja",value=fb_a)
-                if st.form_submit_button("Actualizar"):
-                    ant=v*pa/100; res_m=v*pr_/100; inv_=v-ant; est_='BAJA' if fb else row['Estatus']
-                    upd=row.to_dict(); upd.update(Cliente=cli,Vehiculo=veh,Fecha_Alta=pd.to_datetime(fa),
-                        Fecha_Vencimiento=pd.to_datetime(fa)+relativedelta(months=int(pl)),
-                        Valor_Sin_IVA=v,Mensualidad_Sin_IVA=r,Plazo=int(pl),Anticipo_Pct=pa,Anticipo_Monto=ant,
-                        Residual_Pct=pr_,Residual_Monto=res_m,Tasa_Calculada=calc_tasa(int(pl),r,inv_,res_m),
-                        Nivel_Morosidad=nm,Estatus=est_,Fecha_Baja=pd.to_datetime(fb) if fb else None)
-                    guardar(upd); st.success("Actualizado.")
-                    st.session_state['_refresh'] = True
+                with st.form("editar"):
+                    c1,c2=st.columns(2)
+                    cli=c1.text_input("Cliente",row['Cliente']); veh=c2.text_input("Vehículo",row['Vehiculo'])
+                    fa=st.date_input("Fecha Alta",row['Fecha_Alta'])
+                    v=st.number_input("Valor sin IVA",value=float(row['Valor_Sin_IVA']),min_value=0.01); r=st.number_input("Renta",value=float(row['Mensualidad_Sin_IVA']))
+                    pl=st.number_input("Plazo",value=int(row['Plazo']),min_value=1); pa=st.number_input("% Anticipo",value=float(row['Anticipo_Pct']))
+                    pr_=st.number_input("% Residual",value=float(row['Residual_Pct']))
+                    nm=st.selectbox("Nivel Morosidad",[0,1,2,3,4],index=int(row.get('Nivel_Morosidad',0)),
+                                     format_func=lambda x:{0:"0-Al corriente",1:"1-Atraso",2:"2-Convenio",3:"3-Devuelve no paga",4:"4-Judicial"}[x])
+                    fb_a=row['Fecha_Baja'] if pd.notnull(row['Fecha_Baja']) else None
+                    fb=st.date_input("Fecha de Baja",value=fb_a)
+                    if st.form_submit_button("Actualizar"):
+                        ant=v*pa/100; res_m=v*pr_/100; inv_=v-ant; est_='BAJA' if fb else row['Estatus']
+                        upd=row.to_dict(); upd.update(Cliente=cli,Vehiculo=veh,Fecha_Alta=pd.to_datetime(fa),
+                            Fecha_Vencimiento=pd.to_datetime(fa)+relativedelta(months=int(pl)),
+                            Valor_Sin_IVA=v,Mensualidad_Sin_IVA=r,Plazo=int(pl),Anticipo_Pct=pa,Anticipo_Monto=ant,
+                            Residual_Pct=pr_,Residual_Monto=res_m,Tasa_Calculada=calc_tasa(int(pl),r,inv_,res_m),
+                            Nivel_Morosidad=nm,Estatus=est_,Fecha_Baja=pd.to_datetime(fb) if fb else None)
+                        guardar(upd); st.success("Actualizado.")
+                        st.session_state['_refresh'] = True
 
-            st.divider()
-            n_fact_rel = get_db().execute("SELECT COUNT(*) FROM facturas WHERE (id_contrato=? OR instr(id_contrato, ?) > 0)", (ids, ids)).fetchone()[0]
-            n_anot_rel = get_db().execute("SELECT COUNT(*) FROM anotaciones WHERE ID_Contrato=?", (ids,)).fetchone()[0]
-            n_evt_rel  = get_db().execute("SELECT COUNT(*) FROM eventos_especiales WHERE ID_Contrato=?", (ids,)).fetchone()[0]
-            if n_fact_rel or n_anot_rel or n_evt_rel:
-                st.caption(
-                    f"Este contrato tiene {n_fact_rel} factura(s), {n_anot_rel} anotación(es) y "
-                    f"{n_evt_rel} evento(s) especial(es) asociados — eliminarlo también los borra a ellos."
-                )
-            if st.session_state.get('confirmar_borrado_contrato') == ids:
-                st.error(f"¿Seguro que quieres eliminar **{ids}** y todo lo que le pertenece? Esto no se puede deshacer.")
-                cb1, cb2 = st.columns(2)
-                if cb1.button("Sí, eliminar definitivamente", type="primary", key=f"del_ok_{ids}"):
-                    borrado = eliminar_contrato_completo(ids)
-                    st.cache_data.clear()  # por si acaso: limpia TODO caché de Streamlit, no solo el de contratos
-                    if borrado:
-                        st.session_state['flash_msg'] = ('success', f"Se eliminó **{ids}** de forma permanente, junto con sus facturas, anotaciones y eventos especiales. Ya no debería aparecer en ninguna otra pantalla.")
-                    else:
-                        st.session_state['flash_msg'] = ('error', f"No se encontró **{ids}** en la base de datos — es posible que ya se hubiera eliminado antes.")
-                    st.session_state['confirmar_borrado_contrato'] = None
-                    st.rerun()
-                if cb2.button("Cancelar", key=f"del_no_{ids}"):
-                    st.session_state['confirmar_borrado_contrato'] = None
-                    st.session_state['_refresh'] = True
-            else:
-                if st.button("Eliminar permanentemente",type="primary"):
-                    st.session_state['confirmar_borrado_contrato'] = ids
-                    st.session_state['_refresh'] = True
+                st.divider()
+                n_fact_rel = get_db().execute("SELECT COUNT(*) FROM facturas WHERE (id_contrato=? OR instr(id_contrato, ?) > 0)", (ids, ids)).fetchone()[0]
+                n_anot_rel = get_db().execute("SELECT COUNT(*) FROM anotaciones WHERE ID_Contrato=?", (ids,)).fetchone()[0]
+                n_evt_rel  = get_db().execute("SELECT COUNT(*) FROM eventos_especiales WHERE ID_Contrato=?", (ids,)).fetchone()[0]
+                if n_fact_rel or n_anot_rel or n_evt_rel:
+                    st.caption(
+                        f"Este contrato tiene {n_fact_rel} factura(s), {n_anot_rel} anotación(es) y "
+                        f"{n_evt_rel} evento(s) especial(es) asociados — eliminarlo también los borra a ellos."
+                    )
+                if st.session_state.get('confirmar_borrado_contrato') == ids:
+                    st.error(f"¿Seguro que quieres eliminar **{ids}** y todo lo que le pertenece? Esto no se puede deshacer.")
+                    cb1, cb2 = st.columns(2)
+                    if PrimaryButton("Sí, eliminar definitivamente", key=f"del_ok_{ids}"):
+                        borrado = eliminar_contrato_completo(ids)
+                        st.cache_data.clear()  # por si acaso: limpia TODO caché de Streamlit, no solo el de contratos
+                        if borrado:
+                            st.session_state['flash_msg'] = ('success', f"Se eliminó **{ids}** de forma permanente, junto con sus facturas, anotaciones y eventos especiales. Ya no debería aparecer en ninguna otra pantalla.")
+                        else:
+                            st.session_state['flash_msg'] = ('error', f"No se encontró **{ids}** en la base de datos — es posible que ya se hubiera eliminado antes.")
+                        st.session_state['confirmar_borrado_contrato'] = None
+                        st.rerun()
+                    if OutlinedButton("Cancelar", key=f"del_no_{ids}"):
+                        st.session_state['confirmar_borrado_contrato'] = None
+                        st.session_state['_refresh'] = True
+                else:
+                    if OutlinedButton("Eliminar permanentemente", key=f"btn_del_init_{ids}", icon=":material/delete:"):
+                        st.session_state['confirmar_borrado_contrato'] = ids
+                        st.session_state['_refresh'] = True
 
             st.divider()
             st.subheader("Anotaciones de este contrato")
@@ -8493,11 +8496,12 @@ try:
     elif menu=="Gestor de Bajas":
         st.title("Gestor de Bajas y Análisis de Cartera")
         st.caption("Los contratos vencidos se dan de baja automáticamente por terminación natural.")
-        if st.button("Revisar vencimientos ahora"):
-            n_chk=procesar_vencimientos_naturales()
-            if n_chk>0: st.success(f"{n_chk} contrato(s) pasaron a BAJA por terminación natural.")
-            else: st.info("No hay contratos pendientes de vencimiento. Todo está al día.")
-            st.session_state['_refresh'] = True
+        with CardContainer(title="Revisión de Vencimientos Naturales", subtitle="Verifica si hay contratos en cartera cuya fecha de término haya concluido", padding="20px"):
+            if OutlinedButton("Revisar vencimientos ahora", key="btn_rev_venc_now"):
+                n_chk=procesar_vencimientos_naturales()
+                if n_chk>0: st.success(f"{n_chk} contrato(s) pasaron a BAJA por terminación natural.")
+                else: st.info("No hay contratos pendientes de vencimiento. Todo está al día.")
+                st.session_state['_refresh'] = True
 
         act = obtener('ACTIVO')
         bj  = obtener('BAJA')
@@ -8509,39 +8513,39 @@ try:
                        "Incumplimiento / morosidad","Siniestro (pérdida total/parcial)","Robo del activo",
                        "Jurídico / incumplimiento total","Refinanciamiento","Error administrativo","Otro"]
 
-            st.subheader("Baja Masiva")
-            sel = st.multiselect(
-                "Contratos a dar de baja",
-                options=act['ID_Contrato'].tolist() if not act.empty else [],
-                key="sel_masiva"
-            )
-            mc1, mc2, mc3 = st.columns(3)
-            fb_masiva  = mc1.date_input("Fecha de baja", value=date.today(), key="fb_masiva")
-            tipo_masiva = mc2.selectbox("Tipo de baja",["ANTICIPADA","NATURAL","OTRO"], key="tipo_masiva")
-            motivo_masiva = mc3.selectbox("Motivo", MOTIVOS, key="motivo_masiva")
+            with CardContainer(title="Baja Masiva de Contratos", subtitle="Aplica baja por vencimiento o terminación a un grupo de contratos", padding="20px"):
+                sel = st.multiselect(
+                    "Contratos a dar de baja",
+                    options=act['ID_Contrato'].tolist() if not act.empty else [],
+                    key="sel_masiva"
+                )
+                mc1, mc2, mc3 = st.columns(3)
+                fb_masiva  = mc1.date_input("Fecha de baja", value=date.today(), key="fb_masiva")
+                tipo_masiva = mc2.selectbox("Tipo de baja",["ANTICIPADA","NATURAL","OTRO"], key="tipo_masiva")
+                motivo_masiva = mc3.selectbox("Motivo", MOTIVOS, key="motivo_masiva")
 
-            if sel:
-                st.info(f"Se darán de baja **{len(sel)}** contrato(s) con fecha **{fb_masiva.strftime('%d/%m/%Y')}**")
-                if st.button("Confirmar Baja Masiva", type="primary", key="btn_masiva"):
-                    conn = get_db()
-                    fecha_str = fb_masiva.isoformat()
-                    exito = 0
-                    for id_ in sel:
-                        try:
-                            conn.execute(
-                                """UPDATE contratos
-                                   SET Estatus=?,Fecha_Baja=?,Tipo_Baja=?,Motivo_Baja=?
-                                   WHERE ID_Contrato=?""",
-                                ('BAJA', fecha_str, tipo_masiva, motivo_masiva, id_)
-                            )
-                            exito += 1
-                        except Exception as e:
-                            st.error(f"Error en {id_}: {e}")
-                    conn.commit()
-                    st.success(f"{exito} contratos dados de baja con fecha {fb_masiva.strftime('%d/%m/%Y')}.")
-                    st.session_state['_refresh'] = True
-            else:
-                st.warning("Selecciona al menos un contrato de la lista.")
+                if sel:
+                    st.info(f"Se darán de baja **{len(sel)}** contrato(s) con fecha **{fb_masiva.strftime('%d/%m/%Y')}**")
+                    if PrimaryButton("Confirmar Baja Masiva", key="btn_masiva"):
+                        conn = get_db()
+                        fecha_str = fb_masiva.isoformat()
+                        exito = 0
+                        for id_ in sel:
+                            try:
+                                conn.execute(
+                                    """UPDATE contratos
+                                       SET Estatus=?,Fecha_Baja=?,Tipo_Baja=?,Motivo_Baja=?
+                                       WHERE ID_Contrato=?""",
+                                    ('BAJA', fecha_str, tipo_masiva, motivo_masiva, id_)
+                                )
+                                exito += 1
+                            except Exception as e:
+                                st.error(f"Error en {id_}: {e}")
+                        conn.commit()
+                        st.success(f"{exito} contratos dados de baja con fecha {fb_masiva.strftime('%d/%m/%Y')}.")
+                        st.session_state['_refresh'] = True
+                else:
+                    st.warning("Selecciona al menos un contrato de la lista.")
 
             st.divider()
 
@@ -9011,18 +9015,18 @@ try:
 
                 with st.container(key=f"anotpage_card_{rid}"):
                     st.markdown(f"""
-                    <div style="border:1px solid #DCE0E5;border-left:4px solid {color};background:#FFFFFF;border-radius:0 4px 4px 0;
+                    <div style="border:1px solid var(--border, #DCE0E5);border-left:4px solid {color};background:var(--bg-1, #FFFFFF);border-radius:0 6px 6px 0;
                                 padding:12px 16px;margin-bottom:8px;">
                       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
                         <span style="font-weight:700;color:{color};font-size:.92rem;">{tipo_r}</span>
-                        <span style="font-size:.78rem;color:#8A929C;">{row['Fecha']}</span>
+                        <span style="font-size:.78rem;color:var(--text-muted, #8A929C);">{row['Fecha']}</span>
                       </div>
-                      <div style="font-size:.82rem;color:#565E68;margin-bottom:4px;">
-                        <b>{row['ID_Contrato']}</b> · {cliente}
+                      <div style="font-size:.82rem;color:var(--text-secondary, #64748B);margin-bottom:4px;">
+                        <b style="color:var(--text-primary);">{row['ID_Contrato']}</b> · <span style="color:var(--text-primary);">{cliente}</span>
                         <span style="background:{est_col};color:#fff;border-radius:4px;
                                      padding:1px 7px;font-size:.72rem;margin-left:6px;">{estatus}</span>
                       </div>
-                      {"" if editing else f'<div style="color:#20242B;font-size:.9rem;white-space:pre-wrap;">{row["Texto"]}</div>'}
+                      {"" if editing else f'<div style="color:var(--text-primary, #0F172A);font-size:.9rem;white-space:pre-wrap;">{row["Texto"]}</div>'}
                     </div>
                     """, unsafe_allow_html=True)
 
@@ -9035,7 +9039,7 @@ try:
                                                    if st.session_state['anot_edit_tipo'] in TIPOS_ANOT else 0,
                                                    key=f"edit_tipo_{rid}")
                         ea1,ea2,ea3 = st.columns([1,1,3])
-                        if ea1.button("Guardar", key=f"save_{rid}", width='stretch'):
+                        if PrimaryButton("Guardar", key=f"save_{rid}", use_container_width=True):
                             if nuevo_txt.strip():
                                 get_db().execute("UPDATE anotaciones SET Texto=?, Tipo=? WHERE id=?",
                                                  (nuevo_txt.strip(), nuevo_tipo, rid))
@@ -9045,12 +9049,12 @@ try:
                                 st.session_state['_refresh'] = True
                             else:
                                 st.warning("El texto no puede estar vacío.")
-                        if ea2.button("Cancelar", key=f"cancel_{rid}", width='stretch'):
+                        if OutlinedButton("Cancelar", key=f"cancel_{rid}", use_container_width=True):
                             st.session_state['anot_edit_id'] = None
                             st.session_state['_refresh'] = True
                     else:
                         bc1, bc2, bc3 = st.columns([1,1,6])
-                        if bc1.button("Editar", key=f"ed_{rid}", width='stretch'):
+                        if OutlinedButton("Editar", key=f"ed_{rid}", use_container_width=True):
                             st.session_state['anot_edit_id']    = rid
                             st.session_state['anot_edit_texto'] = str(row['Texto'])
                             st.session_state['anot_edit_tipo']  = str(row.get('Tipo','General') or 'General')
@@ -9059,16 +9063,16 @@ try:
                         if confirm_del:
                             bc2.warning("¿Eliminar?")
                             cc1,cc2 = st.columns(2)
-                            if cc1.button("Sí, borrar", key=f"confirm_yes_{rid}", width='stretch'):
+                            if PrimaryButton("Sí, borrar", key=f"confirm_yes_{rid}", use_container_width=True):
                                 eliminar_anotacion(rid)
                                 st.session_state['anot_confirm_del'] = None
                                 st.success("Eliminada.")
                                 st.session_state['_refresh'] = True
-                            if cc2.button("No", key=f"confirm_no_{rid}", width='stretch'):
+                            if OutlinedButton("No", key=f"confirm_no_{rid}", use_container_width=True):
                                 st.session_state['anot_confirm_del'] = None
                                 st.session_state['_refresh'] = True
                         else:
-                            if bc2.button("Eliminar", key=f"del_{rid}", width='stretch'):
+                            if OutlinedButton("Eliminar", key=f"del_{rid}", use_container_width=True):
                                 st.session_state['anot_confirm_del'] = rid
                                 st.session_state['anot_edit_id']     = None
                                 st.session_state['_refresh'] = True
@@ -9367,25 +9371,26 @@ try:
         st.title("Cotizador Comercial")
         st.caption("Simula pagos, rentas y genera cotizaciones en PDF para prospectos.")
 
-        col1, col2 = st.columns([1, 1])
-        with col1:
-            st.subheader("1. Datos del Cliente y Vehículo")
-            cot_cliente = st.text_input("Nombre del Prospecto / Cliente", value="PROSPECTO EJEMPLO, S.A. DE C.V.", key="cot_cliente")
-            cot_vehiculo = st.text_input("Descripción del Vehículo / Equipo", value="NISSAN URVAN 2026", key="cot_vehiculo")
-            cot_valor = st.number_input("Valor de la Unidad (Sin IVA)", min_value=10000.0, max_value=50000000.0, value=450000.0, step=10000.0, key="cot_valor")
-            cot_incluir_iva = st.checkbox("Aplicar IVA del 16%", value=True, key="cot_incluir_iva")
+        with CardContainer(title="Parámetros de la Cotización", subtitle="Ingresa los datos del prospecto, activo y condiciones de arrendamiento", padding="20px"):
+            col1, col2 = st.columns([1, 1])
+            with col1:
+                st.markdown("**1. Datos del Cliente y Vehículo**")
+                cot_cliente = st.text_input("Nombre del Prospecto / Cliente", value="PROSPECTO EJEMPLO, S.A. DE C.V.", key="cot_cliente")
+                cot_vehiculo = st.text_input("Descripción del Vehículo / Equipo", value="NISSAN URVAN 2026", key="cot_vehiculo")
+                cot_valor = st.number_input("Valor de la Unidad (Sin IVA)", min_value=10000.0, max_value=50000000.0, value=450000.0, step=10000.0, key="cot_valor")
+                cot_incluir_iva = st.checkbox("Aplicar IVA del 16%", value=True, key="cot_incluir_iva")
 
-        with col2:
-            st.subheader("2. Condiciones Financieras")
-            c_f1, c_f2 = st.columns(2)
-            cot_anticipo = c_f1.number_input("% Anticipo a Capital", min_value=0.0, max_value=70.0, value=10.0, step=5.0, key="cot_anticipo")
-            cot_residual = c_f2.number_input("% Valor Residual", min_value=0.0, max_value=60.0, value=20.0, step=5.0, key="cot_residual")
-            
-            c_f3, c_f4 = st.columns(2)
-            cot_tasa = c_f3.number_input("Tasa Anual de Interés (%)", min_value=1.0, max_value=60.0, value=24.0, step=0.5, key="cot_tasa")
-            cot_plazo = c_f4.selectbox("Plazo (Meses)", [12, 18, 24, 36, 48, 60], index=3, key="cot_plazo")
-            
-            cot_comision = st.number_input("% Comisión por Apertura", min_value=0.0, max_value=10.0, value=2.0, step=0.5, key="cot_comision")
+            with col2:
+                st.markdown("**2. Condiciones Financieras**")
+                c_f1, c_f2 = st.columns(2)
+                cot_anticipo = c_f1.number_input("% Anticipo a Capital", min_value=0.0, max_value=70.0, value=10.0, step=5.0, key="cot_anticipo")
+                cot_residual = c_f2.number_input("% Valor Residual", min_value=0.0, max_value=60.0, value=20.0, step=5.0, key="cot_residual")
+                
+                c_f3, c_f4 = st.columns(2)
+                cot_tasa = c_f3.number_input("Tasa Anual de Interés (%)", min_value=1.0, max_value=60.0, value=24.0, step=0.5, key="cot_tasa")
+                cot_plazo = c_f4.selectbox("Plazo (Meses)", [12, 18, 24, 36, 48, 60], index=3, key="cot_plazo")
+                
+                cot_comision = st.number_input("% Comisión por Apertura", min_value=0.0, max_value=10.0, value=2.0, step=0.5, key="cot_comision")
 
         # Ejecutar Simulación
         sim = simular_cotizacion(
@@ -9398,96 +9403,94 @@ try:
             incluir_iva=cot_incluir_iva
         )
 
-        st.markdown("---")
-        st.subheader("Resumen de la Cotización")
+        with CardContainer(title="Resumen Ejecutivo y Proyección", subtitle="Cifras simuladas y gráfica de amortización mensual", padding="20px"):
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("Renta Mensual (Sin IVA)", f"${sim['renta_mensual_sin_iva']:,.2f}")
+            k2.metric("Renta Total (Con IVA)", f"${sim['renta_total_con_iva']:,.2f}")
+            k3.metric("Pago Inicial Requerido", f"${sim['pago_inicial_con_iva']:,.2f}")
+            k4.metric("TIR Anualizada Proyectada", f"{sim['tir_anual']:.2f}%")
 
-        k1, k2, k3, k4 = st.columns(4)
-        k1.metric("Renta Mensual (Sin IVA)", f"${sim['renta_mensual_sin_iva']:,.2f}")
-        k2.metric("Renta Total (Con IVA)", f"${sim['renta_total_con_iva']:,.2f}")
-        k3.metric("Pago Inicial Requerido", f"${sim['pago_inicial_con_iva']:,.2f}")
-        k4.metric("TIR Anualizada Proyectada", f"{sim['tir_anual']:.2f}%")
+            st.markdown("#### Desglose Detallado de Pagos")
+            d1, d2 = st.columns(2)
+            with d1:
+                st.markdown(f"""
+                * **Inversión Neta a Financiar:** `${sim['inversion_neta']:,.2f}`
+                * **Anticipo a Capital ({sim['pct_anticipo']}%):** `${sim['monto_anticipo']:,.2f}` (+ IVA `${sim['monto_anticipo']*0.16:,.2f}`)
+                * **Comisión por Apertura ({sim['pct_comision']}%):** `${sim['monto_comision']:,.2f}` (+ IVA `${sim['monto_comision']*0.16:,.2f}`)
+                """)
+            with d2:
+                st.markdown(f"""
+                * **Valor Residual Pactado ({sim['pct_residual']}%):** `${sim['monto_residual']:,.2f}` (+ IVA `${sim['monto_residual']*0.16:,.2f}`)
+                * **Valor Presente del Residual:** `${sim['vp_residual']:,.2f}`
+                * **Pago Inicial Total (Con IVA):** `${sim['pago_inicial_con_iva']:,.2f}`
+                """)
 
-        st.markdown("#### Desglose Detallado de Pagos")
-        d1, d2 = st.columns(2)
-        with d1:
-            st.markdown(f"""
-            * **Inversión Neta a Financiar:** `${sim['inversion_neta']:,.2f}`
-            * **Anticipo a Capital ({sim['pct_anticipo']}%):** `${sim['monto_anticipo']:,.2f}` (+ IVA `${sim['monto_anticipo']*0.16:,.2f}`)
-            * **Comisión por Apertura ({sim['pct_comision']}%):** `${sim['monto_comision']:,.2f}` (+ IVA `${sim['monto_comision']*0.16:,.2f}`)
-            """)
-        with d2:
-            st.markdown(f"""
-            * **Valor Residual Pactado ({sim['pct_residual']}%):** `${sim['monto_residual']:,.2f}` (+ IVA `${sim['monto_residual']*0.16:,.2f}`)
-            * **Valor Presente del Residual:** `${sim['vp_residual']:,.2f}`
-            * **Pago Inicial Total (Con IVA):** `${sim['pago_inicial_con_iva']:,.2f}`
-            """)
+            # Gráfica interactiva de Amortización Proyectada
+            dfa_sim = sim['tabla_amortizacion']
+            fig_sim = px.bar(
+                dfa_sim,
+                x='Mes',
+                y=['Interes', 'Capital'],
+                title=f"Amortización Proyectada de Renta Mensual (${sim['renta_mensual_sin_iva']:,.2f})",
+                labels={'value': 'Monto (MXN)', 'variable': 'Concepto'},
+                color_discrete_map={'Interes': '#1E293B', 'Capital': '#FF6B35'}
+            )
+            fig_sim.add_trace(go.Scatter(
+                x=dfa_sim['Mes'],
+                y=dfa_sim['Saldo'],
+                mode='lines+markers',
+                name='Saldo Insoluto',
+                line=dict(color='#0284C7', width=2.5)
+            ))
+            fig_sim = sfig(fig_sim, h=340)
+            st.plotly_chart(fig_sim, width="stretch", key="pc_cotizador_sim")
 
-        # Gráfica interactiva de Amortización Proyectada
-        dfa_sim = sim['tabla_amortizacion']
-        fig_sim = px.bar(
-            dfa_sim,
-            x='Mes',
-            y=['Interes', 'Capital'],
-            title=f"Amortización Proyectada de Renta Mensual (${sim['renta_mensual_sin_iva']:,.2f})",
-            labels={'value': 'Monto (MXN)', 'variable': 'Concepto'},
-            color_discrete_map={'Interes': '#1E5C4F', 'Capital': '#8FD9BE'}
-        )
-        fig_sim.add_trace(go.Scatter(
-            x=dfa_sim['Mes'],
-            y=dfa_sim['Saldo'],
-            mode='lines+markers',
-            name='Saldo Insoluto',
-            line=dict(color='#B3261E', width=2.5)
-        ))
-        fig_sim = sfig(fig_sim, h=340)
-        st.plotly_chart(fig_sim, width="stretch", key="pc_cotizador_sim")
+        with CardContainer(title="Exportación y Tabla Completa", subtitle="Descarga la cotización formal en PDF o la proyección en Excel", padding="20px"):
+            ex1, ex2 = st.columns(2)
+            with ex1:
+                pdf_bytes = generar_pdf_cotizacion(
+                    sim,
+                    cliente_nombre=cot_cliente,
+                    vehiculo_desc=cot_vehiculo,
+                    empresa_nombre=st.session_state.get('_nombre_empresa', 'O-Leasing')
+                )
+                st.download_button(
+                    "Descargar Cotización Formal en PDF",
+                    pdf_bytes,
+                    file_name=f"cotizacion_{cot_cliente.replace(' ','_')[:15]}.pdf",
+                    mime="application/pdf",
+                    type="primary",
+                    use_container_width=True
+                )
+            with ex2:
+                buf_sim = excel_con_formato(
+                    {"Amortización Proyectada": dfa_sim},
+                    currency_cols=["Renta", "Interes", "Capital", "Saldo", "Saldo_Fin"]
+                )
+                st.download_button(
+                    "Descargar Tabla en Excel",
+                    buf_sim,
+                    file_name=f"simulacion_amort_{cot_cliente.replace(' ','_')[:15]}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
 
-        # Botones de exportación
-        st.markdown("---")
-        ex1, ex2 = st.columns(2)
-        with ex1:
-            pdf_bytes = generar_pdf_cotizacion(
-                sim,
-                cliente_nombre=cot_cliente,
-                vehiculo_desc=cot_vehiculo,
-                empresa_nombre=st.session_state.get('_nombre_empresa', 'O-Leasing')
-            )
-            st.download_button(
-                "Descargar Cotización Formal en PDF",
-                pdf_bytes,
-                file_name=f"cotizacion_{cot_cliente.replace(' ','_')[:15]}.pdf",
-                mime="application/pdf",
-                type="primary",
-                use_container_width=True
-            )
-        with ex2:
-            buf_sim = excel_con_formato(
-                {"Amortización Proyectada": dfa_sim},
-                currency_cols=["Renta", "Interes", "Capital", "Saldo", "Saldo_Fin"]
-            )
-            st.download_button(
-                "Descargar Tabla en Excel",
-                buf_sim,
-                file_name=f"simulacion_amort_{cot_cliente.replace(' ','_')[:15]}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
-
-        with st.expander("Ver Tabla Completa de Amortización Proyectada"):
-            fmt_cols = {c: '${:,.2f}' for c in ['Renta', 'Interes', 'Capital', 'Saldo'] if c in dfa_sim.columns}
-            st.dataframe(
-                dfa_sim.style.format(fmt_cols),
-                width="stretch"
-            )
+            with st.expander("Ver Tabla Completa de Amortización Proyectada"):
+                fmt_cols = {c: '${:,.2f}' for c in ['Renta', 'Interes', 'Capital', 'Saldo'] if c in dfa_sim.columns}
+                st.dataframe(
+                    dfa_sim.style.format(fmt_cols),
+                    width="stretch"
+                )
 
     elif menu == "Cierre y Conciliación Mensual":
         st.title("Cierre y Conciliación Mensual")
         st.caption("Reporte de cierre contable mensual y expediente descargable en PDF o Excel.")
 
-        c1, c2 = st.columns([1, 2])
-        with c1:
-            mes_cierre = st.selectbox("Mes de Cierre", list(range(1, 13)), index=datetime.now().month - 1, format_func=lambda m: MN[m - 1], key="cierre_mes_sel")
-            anio_cierre = st.number_input("Año de Cierre", min_value=2020, max_value=2050, value=datetime.now().year, key="cierre_anio_sel")
+        with CardContainer(title="Parámetros de Cierre Mensual", subtitle="Selecciona el mes y año para consolidar el cierre", padding="20px"):
+            c1, c2 = st.columns([1, 2])
+            with c1:
+                mes_cierre = st.selectbox("Mes de Cierre", list(range(1, 13)), index=datetime.now().month - 1, format_func=lambda m: MN[m - 1], key="cierre_mes_sel")
+                anio_cierre = st.number_input("Año de Cierre", min_value=2020, max_value=2050, value=datetime.now().year, key="cierre_anio_sel")
 
         # Cargar datos de cierre
         di, dr, dc, ds, err_c = tabla_mensual_conceptos(int(anio_cierre))
@@ -9514,83 +9517,79 @@ try:
             n_conc = int(r_conc[0]) if r_conc else 0
             n_disc = int(r_disc[0]) if r_disc else 0
 
-            st.markdown("---")
-            st.subheader(f"Resumen del Cierre — {nombre_mes_sel} {anio_cierre}")
+            with CardContainer(title=f"Resumen del Cierre — {nombre_mes_sel} {anio_cierre}", subtitle="Totales contables devengados y estado de conciliación", padding="20px"):
+                k1, k2, k3, k4 = st.columns(4)
+                k1.metric("Interés Leasing (Cta 208)", f"${tot_leasing:,.2f}")
+                k2.metric("Interés Residual", f"${tot_residual:,.2f}")
+                k3.metric("Amort. Comisión", f"${tot_comision:,.2f}")
+                k4.metric("Total CFDI Facturado", f"${tot_facturado:,.2f}", f"{n_facturas} facturas")
 
-            k1, k2, k3, k4 = st.columns(4)
-            k1.metric("Interés Leasing (Cta 208)", f"${tot_leasing:,.2f}")
-            k2.metric("Interés Residual", f"${tot_residual:,.2f}")
-            k3.metric("Amort. Comisión", f"${tot_comision:,.2f}")
-            k4.metric("Total CFDI Facturado", f"${tot_facturado:,.2f}", f"{n_facturas} facturas")
+                st.markdown("#### Estado de la Conciliación del Mes")
+                kc1, kc2, kc3 = st.columns(3)
+                kc1.metric("Facturas Conciliadas (100% OK)", f"{n_conc}")
+                kc2.metric("Discrepancias / Pendientes", f"{n_disc}")
+                kc3.metric("Cobertura de Facturación", f"{(tot_facturado / max(tot_leasing, 1) * 100):.1f}%")
 
-            st.markdown("#### Estado de la Conciliación del Mes")
-            kc1, kc2, kc3 = st.columns(3)
-            kc1.metric("Facturas Conciliadas (100% OK)", f"{n_conc}")
-            kc2.metric("Discrepancias / Pendientes", f"{n_disc}")
-            kc3.metric("Cobertura de Facturación", f"{(tot_facturado / max(tot_leasing, 1) * 100):.1f}%")
-
-            st.markdown("---")
-            st.subheader("Tablas de Cierre Contable")
-
-            t_c1, t_c2 = st.tabs(["Detalle por Contrato", "Póliza Consolidada del Mes"])
-            with t_c1:
-                if di is not None and not di.empty:
-                    st.dataframe(di[[nombre_mes_sel]].style.format('{:,.2f}'), width="stretch")
-            with t_c2:
-                # Póliza consolidada mensual
-                pol_rows = [
-                    {"Cuenta": "1150-000-000", "Concepto": f"CXC Rentas {nombre_mes_sel}", "Cargo": round(tot_leasing, 2), "Abono": 0.0},
-                    {"Cuenta": "1260-000-000", "Concepto": f"CXC VP Residual {nombre_mes_sel}", "Cargo": round(tot_residual, 2), "Abono": 0.0},
-                    {"Cuenta": "2080-000-000", "Concepto": f"Intereses Leasing Devengados", "Cargo": 0.0, "Abono": round(tot_leasing, 2)},
-                    {"Cuenta": "2280-000-000", "Concepto": f"Intereses Residual Devengados", "Cargo": 0.0, "Abono": round(tot_residual, 2)},
-                ]
-                df_pol_cons = pd.DataFrame(pol_rows)
-                st.dataframe(df_pol_cons.style.format({'Cargo': '${:,.2f}', 'Abono': '${:,.2f}'}), width="stretch")
+            with CardContainer(title="Tablas de Cierre Contable", subtitle="Detalle por contrato y póliza consolidada mensual", padding="20px"):
+                t_c1, t_c2 = st.tabs(["Detalle por Contrato", "Póliza Consolidada del Mes"])
+                with t_c1:
+                    if di is not None and not di.empty:
+                        st.dataframe(di[[nombre_mes_sel]].style.format('{:,.2f}'), width="stretch")
+                with t_c2:
+                    # Póliza consolidada mensual
+                    pol_rows = [
+                        {"Cuenta": "1150-000-000", "Concepto": f"CXC Rentas {nombre_mes_sel}", "Cargo": round(tot_leasing, 2), "Abono": 0.0},
+                        {"Cuenta": "1260-000-000", "Concepto": f"CXC VP Residual {nombre_mes_sel}", "Cargo": round(tot_residual, 2), "Abono": 0.0},
+                        {"Cuenta": "2080-000-000", "Concepto": f"Intereses Leasing Devengados", "Cargo": 0.0, "Abono": round(tot_leasing, 2)},
+                        {"Cuenta": "2280-000-000", "Concepto": f"Intereses Residual Devengados", "Cargo": 0.0, "Abono": round(tot_residual, 2)},
+                    ]
+                    df_pol_cons = pd.DataFrame(pol_rows)
+                    st.dataframe(df_pol_cons.style.format({'Cargo': '${:,.2f}', 'Abono': '${:,.2f}'}), width="stretch")
 
             # Botones de exportación del Expediente de Cierre
-            st.markdown("---")
-            kpis_cierre = {
-                'interes_leasing': tot_leasing,
-                'interes_residual': tot_residual,
-                'comision': tot_comision,
-                'facturado_total': tot_facturado,
-                'contratos_activos': len(di) if di is not None else 0,
-                'conciliadas': n_conc,
-                'discrepancias': n_disc
-            }
-            
-            ex1, ex2 = st.columns(2)
-            with ex1:
-                pdf_cierre_bytes = generar_pdf_cierre_mensual(
-                    mes=int(mes_cierre),
-                    anio=int(anio_cierre),
-                    kpis=kpis_cierre,
-                    df_conciliados=di,
-                    empresa_nombre=st.session_state.get('_nombre_empresa', 'O-Leasing')
-                )
-                st.download_button(
-                    "Descargar Informe de Cierre en PDF",
-                    pdf_cierre_bytes,
-                    file_name=f"informe_cierre_{nombre_mes_sel}_{anio_cierre}.pdf",
-                    mime="application/pdf",
-                    type="primary",
-                    use_container_width=True
-                )
-            with ex2:
-                buf_cierre = excel_con_formato(
-                    {
-                        "Intereses Leasing": di[[nombre_mes_sel]] if di is not None else pd.DataFrame(),
-                        "Póliza Consolidada": df_pol_cons
-                    },
-                    currency_cols=[nombre_mes_sel, 'Cargo', 'Abono']
-                )
-                st.download_button(
-                    "Descargar Expediente en Excel",
-                    buf_cierre,
-                    file_name=f"expediente_cierre_{nombre_mes_sel}_{anio_cierre}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
+            with CardContainer(title="Expediente y Exportación", subtitle="Descarga de informes de cierre y expedientes contables", padding="20px"):
+                kpis_cierre = {
+                    'interes_leasing': tot_leasing,
+                    'interes_residual': tot_residual,
+                    'comision': tot_comision,
+                    'facturado_total': tot_facturado,
+                    'contratos_activos': len(di) if di is not None else 0,
+                    'conciliadas': n_conc,
+                    'discrepancias': n_disc
+                }
+                
+                ex1, ex2 = st.columns(2)
+                with ex1:
+                    pdf_cierre_bytes = generar_pdf_cierre_mensual(
+                        mes=int(mes_cierre),
+                        anio=int(anio_cierre),
+                        kpis=kpis_cierre,
+                        df_conciliados=di,
+                        empresa_nombre=st.session_state.get('_nombre_empresa', 'O-Leasing')
+                    )
+                    st.download_button(
+                        "Descargar Informe de Cierre en PDF",
+                        pdf_cierre_bytes,
+                        file_name=f"informe_cierre_{nombre_mes_sel}_{anio_cierre}.pdf",
+                        mime="application/pdf",
+                        type="primary",
+                        use_container_width=True
+                    )
+                with ex2:
+                    buf_cierre = excel_con_formato(
+                        {
+                            "Intereses Leasing": di[[nombre_mes_sel]] if di is not None else pd.DataFrame(),
+                            "Póliza Consolidada": df_pol_cons
+                        },
+                        currency_cols=[nombre_mes_sel, 'Cargo', 'Abono']
+                    )
+                    st.download_button(
+                        "Descargar Expediente en Excel",
+                        buf_cierre,
+                        file_name=f"expediente_cierre_{nombre_mes_sel}_{anio_cierre}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
 
     elif menu=="Cuentas (Macro)":
         st.title("Catálogo Maestro de Cuentas Contables")
@@ -9862,98 +9861,102 @@ try:
             tab1,tab2=st.tabs(["Análisis","Actualizar"])
             ML={0:"Al corriente",1:"Atraso",2:"Convenio",3:"Dev.s/pago",4:"Judicial"}
             with tab1:
-                mora=df_act['Nivel_Morosidad'].value_counts().sort_index().reset_index()
-                mora.columns=['Nivel','Cantidad']; mora['Label']=mora['Nivel'].map(ML)
-                ec1,ec2=st.columns(2)
-                with ec1:
-                    f=px.bar(mora,x='Label',y='Cantidad',color='Nivel',text_auto=True,
-                              color_continuous_scale=[[0,C['success']],[.5,C['warning']],[1,C['accent']]],title="Contratos por Nivel de Morosidad")
-                    f=sfig(f); f.update_layout(coloraxis_showscale=False)
-                    st.plotly_chart(f,width='stretch', key="pc_035")
-                    explain("Distribución por salud crediticia",
-                        "Cuántos contratos están al corriente y cuántos en mora.")
-                with ec2:
-                    vm=df_act.groupby('Nivel_Morosidad')['Valor_Sin_IVA'].sum().reset_index()
-                    vm['Label']=vm['Nivel_Morosidad'].map(ML)
-                    f2=px.pie(vm,values='Valor_Sin_IVA',names='Label',hole=0.45,title="Valor Expuesto por Nivel de Morosidad",
-                               color_discrete_map={v:cl for v,cl in zip(ML.values(),[C['success'],C['info'],C['warning'],C['accent'],C['primary']])})
-                    f2=sfig(f2); f2.update_traces(textposition='inside',textinfo='percent+label')
-                    st.plotly_chart(f2,width='stretch', key="pc_036")
-                    explain("¿Cuánto valor está en riesgo?",
-                        "Cuánto dinero de la cartera está en riesgo por mora.")
-                explain("¿Qué clientes tienen contratos en mora?",
-                        "Qué clientes tienen contratos en mora y qué tan grave es.")
-                nf=st.selectbox("Filtrar detalle por nivel",[0,1,2,3,4])
-                st.dataframe(df_act[df_act['Nivel_Morosidad']==nf][['ID_Contrato','Cliente','Vehiculo','Valor_Sin_IVA','Mensualidad_Sin_IVA','Plazo']],width='stretch', key="df_024")
+                with CardContainer(title="Distribución y Exposición Crediticia", subtitle="Monitoreo de cartera por nivel de morosidad y saldo expuesto", padding="20px"):
+                    mora=df_act['Nivel_Morosidad'].value_counts().sort_index().reset_index()
+                    mora.columns=['Nivel','Cantidad']; mora['Label']=mora['Nivel'].map(ML)
+                    ec1,ec2=st.columns(2)
+                    with ec1:
+                        f=px.bar(mora,x='Label',y='Cantidad',color='Nivel',text_auto=True,
+                                  color_continuous_scale=[[0,C['success']],[.5,C['warning']],[1,C['accent']]],title="Contratos por Nivel de Morosidad")
+                        f=sfig(f); f.update_layout(coloraxis_showscale=False)
+                        st.plotly_chart(f,width='stretch', key="pc_035")
+                        explain("Distribución por salud crediticia",
+                            "Cuántos contratos están al corriente y cuántos en mora.")
+                    with ec2:
+                        vm=df_act.groupby('Nivel_Morosidad')['Valor_Sin_IVA'].sum().reset_index()
+                        vm['Label']=vm['Nivel_Morosidad'].map(ML)
+                        f2=px.pie(vm,values='Valor_Sin_IVA',names='Label',hole=0.45,title="Valor Expuesto por Nivel de Morosidad",
+                                   color_discrete_map={v:cl for v,cl in zip(ML.values(),[C['success'],C['info'],C['warning'],C['accent'],C['primary']])})
+                        f2=sfig(f2); f2.update_traces(textposition='inside',textinfo='percent+label')
+                        st.plotly_chart(f2,width='stretch', key="pc_036")
+                        explain("¿Cuánto valor está en riesgo?",
+                            "Cuánto dinero de la cartera está en riesgo por mora.")
+
+                with CardContainer(title="Detalle de Contratos por Nivel", subtitle="Consulta clientes y vehículos clasificados en cada estatus", padding="20px"):
+                    explain("¿Qué clientes tienen contratos en mora?",
+                            "Qué clientes tienen contratos en mora y qué tan grave es.")
+                    nf=st.selectbox("Filtrar detalle por nivel",[0,1,2,3,4])
+                    st.dataframe(df_act[df_act['Nivel_Morosidad']==nf][['ID_Contrato','Cliente','Vehiculo','Valor_Sin_IVA','Mensualidad_Sin_IVA','Plazo']],width='stretch', key="df_024")
             with tab2:
-                modo=st.radio("Actualizar por:",["Cliente (todos sus contratos)","Contrato individual"],horizontal=True)
-                if modo=="Cliente (todos sus contratos)":
-                    clientes=sorted(df_act['Cliente'].dropna().unique().tolist())
-                    cli_sel=st.selectbox("Cliente",clientes)
-                    df_cli=df_act[df_act['Cliente']==cli_sel].copy()
-                    df_cli['Nivel']=df_cli['Nivel_Morosidad'].map(ML)
-                    st.caption(f"{cli_sel} tiene {len(df_cli)} contrato(s) activo(s):")
-                    st.dataframe(df_cli[['ID_Contrato','Vehiculo','Valor_Sin_IVA','Mensualidad_Sin_IVA','Nivel']],width='stretch', key="df_025")
-                    nn_cli=st.selectbox("Nuevo nivel para TODOS sus contratos",[0,1,2,3,4],
-                                format_func=lambda x:{0:"0-Al corriente",1:"1-Atraso",2:"2-Convenio",3:"3-Devuelve no paga",4:"4-Judicial"}[x],
-                                key="nn_cliente")
-                    fecha_excl_cli = None
-                    if nn_cli in [3,4]:
-                        st.markdown("---")
-                        st.caption(f"Los contratos en nivel {nn_cli} se excluirán de pólizas de parcialidades a partir de la fecha indicada.")
-                        fecha_excl_cli = st.date_input("Fecha de aplicación", value=date.today(), key="fexcl_mora_cli")
-                    if st.button(f"Actualizar los {len(df_cli)} contrato(s) de {cli_sel}"):
-                        if nn_cli in [3,4] and fecha_excl_cli:
-                            get_db().execute(
-                                "UPDATE contratos SET Nivel_Morosidad=?, Fecha_Excl_Poliza=?, Motivo_Excl_Poliza=? WHERE Cliente=? AND Estatus='ACTIVO'",
-                                (nn_cli, fecha_excl_cli.isoformat(), f"Morosidad nivel {nn_cli}", cli_sel))
-                            for idc in df_cli['ID_Contrato']:
-                                agregar_anotacion(idc, f"Nivel de morosidad actualizado a {nn_cli} ({ML[nn_cli]}) — masivo por cliente. Excluido de pólizas desde {fecha_excl_cli}.", "Alerta")
-                        elif nn_cli in [0,1,2]:
-                            get_db().execute(
-                                "UPDATE contratos SET Nivel_Morosidad=?, Fecha_Excl_Poliza=NULL, Motivo_Excl_Poliza=NULL WHERE Cliente=? AND Estatus='ACTIVO'",
-                                (nn_cli, cli_sel))
-                            for idc in df_cli['ID_Contrato']:
-                                agregar_anotacion(idc, f"Nivel de morosidad restablecido a {nn_cli} ({ML[nn_cli]}) — masivo. Exclusión de pólizas eliminada.", "Nota legal")
-                        else:
-                            get_db().execute("UPDATE contratos SET Nivel_Morosidad=? WHERE Cliente=? AND Estatus='ACTIVO'",(nn_cli,cli_sel))
-                            for idc in df_cli['ID_Contrato']:
-                                agregar_anotacion(idc,f"Nivel de morosidad actualizado a {nn_cli} ({ML[nn_cli]}) — actualización masiva por cliente ({cli_sel}).","Nota general")
-                        get_db().commit()
-                        _tocar_datos()
-                        st.success(f"Se actualizaron {len(df_cli)} contrato(s) de {cli_sel} al nivel {nn_cli} — {ML[nn_cli]}.")
-                        st.session_state['_refresh'] = True
-                else:
-                    csel=st.selectbox("Contrato",df_act['ID_Contrato']); row=df_act[df_act['ID_Contrato']==csel].iloc[0]
-                    nivel_actual = int(row['Nivel_Morosidad'])
-                    excl_actual  = row.get('Fecha_Excl_Poliza','') or ''
-                    st.info(f"**{row['Cliente']}** · Nivel actual: **{nivel_actual} — {ML.get(nivel_actual,'N/A')}**"
-                            + (f"  ·  Excluido de pólizas desde: **{excl_actual}**" if excl_actual else ""))
-                    nn=st.selectbox("Nuevo nivel",[0,1,2,3,4],format_func=lambda x:{0:"0-Al corriente",1:"1-Atraso",2:"2-Convenio",3:"3-Devuelve no paga",4:"4-Judicial"}[x])
-                    fecha_excl_mora = None
-                    if nn in [3,4]:
-                        st.markdown("---")
-                        st.caption(f"El contrato quedará excluido de pólizas de parcialidades a partir de la fecha indicada.")
-                        fecha_excl_mora = st.date_input("Fecha de aplicación", value=date.today(), key="fexcl_mora_ind")
-                    elif nn in [0,1,2] and excl_actual:
-                        st.info("Al bajar el nivel, se eliminará la exclusión de pólizas de este contrato.")
-                    if st.button("Actualizar Nivel"):
-                        if nn in [3,4] and fecha_excl_mora:
-                            get_db().execute(
-                                "UPDATE contratos SET Nivel_Morosidad=?, Fecha_Excl_Poliza=?, Motivo_Excl_Poliza=? WHERE ID_Contrato=?",
-                                (nn, fecha_excl_mora.isoformat(), f"Morosidad nivel {nn}", csel))
-                            agregar_anotacion(csel, f"Nivel de morosidad actualizado a {nn} ({ML[nn]}). Excluido de pólizas de parcialidades desde {fecha_excl_mora}.", "Alerta")
-                        elif nn in [0,1,2]:
-                            get_db().execute(
-                                "UPDATE contratos SET Nivel_Morosidad=?, Fecha_Excl_Poliza=NULL, Motivo_Excl_Poliza=NULL WHERE ID_Contrato=?",
-                                (nn, csel))
-                            agregar_anotacion(csel, f"Nivel de morosidad restablecido a {nn} ({ML[nn]}). Exclusión de pólizas eliminada.", "Nota legal")
-                        else:
-                            get_db().execute("UPDATE contratos SET Nivel_Morosidad=? WHERE ID_Contrato=?",(nn,csel))
-                        get_db().commit()
-                        _tocar_datos()
-                        st.success(f"Actualizado a nivel {nn}." + (f" Excluido de pólizas desde {fecha_excl_mora}." if nn in [3,4] and fecha_excl_mora else ""))
-                        st.session_state['_refresh'] = True
+                with CardContainer(title="Actualización de Estatus Crediticio", subtitle="Ajusta el nivel de morosidad por cliente completo o por contrato individual", padding="20px"):
+                    modo=st.radio("Actualizar por:",["Cliente (todos sus contratos)","Contrato individual"],horizontal=True)
+                    if modo=="Cliente (todos sus contratos)":
+                        clientes=sorted(df_act['Cliente'].dropna().unique().tolist())
+                        cli_sel=st.selectbox("Cliente",clientes)
+                        df_cli=df_act[df_act['Cliente']==cli_sel].copy()
+                        df_cli['Nivel']=df_cli['Nivel_Morosidad'].map(ML)
+                        st.caption(f"{cli_sel} tiene {len(df_cli)} contrato(s) activo(s):")
+                        st.dataframe(df_cli[['ID_Contrato','Vehiculo','Valor_Sin_IVA','Mensualidad_Sin_IVA','Nivel']],width='stretch', key="df_025")
+                        nn_cli=st.selectbox("Nuevo nivel para TODOS sus contratos",[0,1,2,3,4],
+                                    format_func=lambda x:{0:"0-Al corriente",1:"1-Atraso",2:"2-Convenio",3:"3-Devuelve no paga",4:"4-Judicial"}[x],
+                                    key="nn_cliente")
+                        fecha_excl_cli = None
+                        if nn_cli in [3,4]:
+                            st.markdown("---")
+                            st.caption(f"Los contratos en nivel {nn_cli} se excluirán de pólizas de parcialidades a partir de la fecha indicada.")
+                            fecha_excl_cli = st.date_input("Fecha de aplicación", value=date.today(), key="fexcl_mora_cli")
+                        if PrimaryButton(f"Actualizar los {len(df_cli)} contrato(s) de {cli_sel}", key="btn_act_mora_cli"):
+                            if nn_cli in [3,4] and fecha_excl_cli:
+                                get_db().execute(
+                                    "UPDATE contratos SET Nivel_Morosidad=?, Fecha_Excl_Poliza=?, Motivo_Excl_Poliza=? WHERE Cliente=? AND Estatus='ACTIVO'",
+                                    (nn_cli, fecha_excl_cli.isoformat(), f"Morosidad nivel {nn_cli}", cli_sel))
+                                for idc in df_cli['ID_Contrato']:
+                                    agregar_anotacion(idc, f"Nivel de morosidad actualizado a {nn_cli} ({ML[nn_cli]}) — masivo por cliente. Excluido de pólizas desde {fecha_excl_cli}.", "Alerta")
+                            elif nn_cli in [0,1,2]:
+                                get_db().execute(
+                                    "UPDATE contratos SET Nivel_Morosidad=?, Fecha_Excl_Poliza=NULL, Motivo_Excl_Poliza=NULL WHERE Cliente=? AND Estatus='ACTIVO'",
+                                    (nn_cli, cli_sel))
+                                for idc in df_cli['ID_Contrato']:
+                                    agregar_anotacion(idc, f"Nivel de morosidad restablecido a {nn_cli} ({ML[nn_cli]}) — masivo. Exclusión de pólizas eliminada.", "Nota legal")
+                            else:
+                                get_db().execute("UPDATE contratos SET Nivel_Morosidad=? WHERE Cliente=? AND Estatus='ACTIVO'",(nn_cli,cli_sel))
+                                for idc in df_cli['ID_Contrato']:
+                                    agregar_anotacion(idc,f"Nivel de morosidad actualizado a {nn_cli} ({ML[nn_cli]}) — actualización masiva por cliente ({cli_sel}).","Nota general")
+                            get_db().commit()
+                            _tocar_datos()
+                            st.success(f"Se actualizaron {len(df_cli)} contrato(s) de {cli_sel} al nivel {nn_cli} — {ML[nn_cli]}.")
+                            st.session_state['_refresh'] = True
+                    else:
+                        csel=st.selectbox("Contrato",df_act['ID_Contrato']); row=df_act[df_act['ID_Contrato']==csel].iloc[0]
+                        nivel_actual = int(row['Nivel_Morosidad'])
+                        excl_actual  = row.get('Fecha_Excl_Poliza','') or ''
+                        st.info(f"**{row['Cliente']}** · Nivel actual: **{nivel_actual} — {ML.get(nivel_actual,'N/A')}**"
+                                + (f"  ·  Excluido de pólizas desde: **{excl_actual}**" if excl_actual else ""))
+                        nn=st.selectbox("Nuevo nivel",[0,1,2,3,4],format_func=lambda x:{0:"0-Al corriente",1:"1-Atraso",2:"2-Convenio",3:"3-Devuelve no paga",4:"4-Judicial"}[x])
+                        fecha_excl_mora = None
+                        if nn in [3,4]:
+                            st.markdown("---")
+                            st.caption(f"El contrato quedará excluido de pólizas de parcialidades a partir de la fecha indicada.")
+                            fecha_excl_mora = st.date_input("Fecha de aplicación", value=date.today(), key="fexcl_mora_ind")
+                        elif nn in [0,1,2] and excl_actual:
+                            st.info("Al bajar el nivel, se eliminará la exclusión de pólizas de este contrato.")
+                        if PrimaryButton("Actualizar Nivel", key="btn_act_mora_ind"):
+                            if nn in [3,4] and fecha_excl_mora:
+                                get_db().execute(
+                                    "UPDATE contratos SET Nivel_Morosidad=?, Fecha_Excl_Poliza=?, Motivo_Excl_Poliza=? WHERE ID_Contrato=?",
+                                    (nn, fecha_excl_mora.isoformat(), f"Morosidad nivel {nn}", csel))
+                                agregar_anotacion(csel, f"Nivel de morosidad actualizado a {nn} ({ML[nn]}). Excluido de pólizas de parcialidades desde {fecha_excl_mora}.", "Alerta")
+                            elif nn in [0,1,2]:
+                                get_db().execute(
+                                    "UPDATE contratos SET Nivel_Morosidad=?, Fecha_Excl_Poliza=NULL, Motivo_Excl_Poliza=NULL WHERE ID_Contrato=?",
+                                    (nn, csel))
+                                agregar_anotacion(csel, f"Nivel de morosidad restablecido a {nn} ({ML[nn]}). Exclusión de pólizas eliminada.", "Nota legal")
+                            else:
+                                get_db().execute("UPDATE contratos SET Nivel_Morosidad=? WHERE ID_Contrato=?",(nn,csel))
+                            get_db().commit()
+                            _tocar_datos()
+                            st.success(f"Actualizado a nivel {nn}." + (f" Excluido de pólizas desde {fecha_excl_mora}." if nn in [3,4] and fecha_excl_mora else ""))
+                            st.session_state['_refresh'] = True
 
     elif menu=="Tabla Mensual por Contrato":
         st.title("Tabla Mensual de Conceptos Financieros")
@@ -10415,7 +10418,7 @@ try:
                 fig_pe_hoy = sfig(fig_pe_hoy, h=260)
                 fig_pe_hoy.add_annotation(
                     text=f"<b>{ya_hoy}/{ya_hoy+aun_no}</b>",
-                    x=0.5, y=0.5, showarrow=False, font=dict(size=15, color="#20242B")
+                    x=0.5, y=0.5, showarrow=False, font=dict(size=15, color=theme.obtener_config_actual().get("text_primary", "#1E293B"))
                 )
                 st.plotly_chart(fig_pe_hoy, width='stretch', key="pc_pe_hoy_pie")
             with st.expander(f"Ver los {aun_no} contratos que aún no llegan a su punto de equilibrio, ordenados por cercanía"):
@@ -10597,16 +10600,17 @@ try:
         if df_act.empty:
             st.info("No hay contratos registrados.")
         else:
-            opciones = ["— Todos los contratos —"] + df_act['ID_Contrato'].tolist()
-            sel = st.selectbox(
-                "Contrato",
-                opciones,
-                format_func=lambda x: x if x.startswith("—") else
-                    f"{x}  —  {df_act.loc[df_act['ID_Contrato']==x,'Cliente'].values[0]}  |  "
-                    f"{df_act.loc[df_act['ID_Contrato']==x,'Vehiculo'].values[0]}"
-                    + ("  · BAJA" if df_act.loc[df_act['ID_Contrato']==x,'Estatus'].values[0] == 'BAJA' else ""),
-                key="amort_sel_contrato"
-            )
+            with CardContainer(title="Selección de Contrato", subtitle="Elige un contrato específico o consulta la consolidación completa de cartera", padding="20px"):
+                opciones = ["— Todos los contratos —"] + df_act['ID_Contrato'].tolist()
+                sel = st.selectbox(
+                    "Contrato",
+                    opciones,
+                    format_func=lambda x: x if x.startswith("—") else
+                        f"{x}  —  {df_act.loc[df_act['ID_Contrato']==x,'Cliente'].values[0]}  |  "
+                        f"{df_act.loc[df_act['ID_Contrato']==x,'Vehiculo'].values[0]}"
+                        + ("  · BAJA" if df_act.loc[df_act['ID_Contrato']==x,'Estatus'].values[0] == 'BAJA' else ""),
+                    key="amort_sel_contrato"
+                )
 
             tab_lea, tab_res = st.tabs(["Amortización Leasing", "Acumulación Residual"])
 

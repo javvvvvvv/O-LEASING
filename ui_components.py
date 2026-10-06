@@ -152,22 +152,22 @@ div:has(.oleasing-outlined-marker) + div button:active {{
   transform: translateY(1px) !important;
 }}
 
-/* 3. CARD CONTAINER: Border-radius 12px, fondo 'Surface', elevacion/sombra sutil */
+/* 3. CARD CONTAINER: Border-radius 12px, fondo 'Surface', elevacion/sombra sutil, margen interno 20px */
 div[data-testid="stVerticalBlockBorderWrapper"]:has(.oleasing-card-marker) > div,
 .oleasing-card-container {{
   background-color: {surface} !important;
   border: 1px solid {border} !important;
   border-radius: 12px !important;
   box-shadow: {elevation} !important;
-  padding: 22px 26px !important;
+  padding: 20px !important;
   margin-bottom: 20px !important;
   transition: background-color 300ms ease-in-out, border-color 300ms ease-in-out, box-shadow 300ms ease-in-out !important;
 }}
 
 .oleasing-card-header {{
   border-bottom: 1px solid {border};
-  padding-bottom: 12px;
-  margin-bottom: 18px;
+  padding-bottom: 10px;
+  margin-bottom: 16px;
 }}
 
 .oleasing-card-title {{
@@ -184,8 +184,45 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.oleasing-card-marker) > div
   margin-top: 3px;
 }}
 
+/* DATA TABLES EMPRESARIALES: Encabezado color primario, bordes sutiles y hover effect */
+.stDataFrame, [data-testid="stDataFrame"], table, [data-testid="stTable"] {{
+  background-color: {surface} !important;
+  border: 1px solid {border} !important;
+  border-radius: 8px !important;
+  overflow: hidden !important;
+}}
+
+thead th, th, [data-testid="stTable"] th, .stDataFrame [role="columnheader"] {{
+  background-color: {primary} !important;
+  color: #FFFFFF !important;
+  font-weight: 600 !important;
+  font-size: 13px !important;
+  letter-spacing: 0.02em !important;
+  padding: 10px 14px !important;
+  border-bottom: 1px solid {border} !important;
+  border-right: 1px solid {border} !important;
+}}
+
+thead th p, th p, thead th span, th span {{
+  color: #FFFFFF !important;
+}}
+
+tbody td, td, [data-testid="stTable"] td, .stDataFrame [role="gridcell"] {{
+  border-bottom: 1px solid {border} !important;
+  border-right: 1px solid {border} !important;
+  color: {text_primary} !important;
+  padding: 10px 14px !important;
+  font-size: 13px !important;
+  transition: background-color 150ms ease-in-out !important;
+}}
+
+tbody tr:hover td, tr:hover td, [data-testid="stTable"] tr:hover td {{
+  background-color: {outlined_hover_bg} !important;
+}}
+
 /* 4. FORM INPUT: Border-radius 8px, borde gris suave, focus al color naranja de acento */
-.stTextInput input,
+.stTextInput input, .stDateInput input, .stNumberInput input, .stTextArea textarea,
+.stSelectbox > div > div, .stMultiSelect > div > div,
 div:has(> .stMarkdown .oleasing-input-marker) + div .stTextInput input,
 div:has(.oleasing-input-marker) + div input {{
   border-radius: 8px !important;
@@ -197,12 +234,27 @@ div:has(.oleasing-input-marker) + div input {{
   transition: border-color 200ms ease-in-out, box-shadow 200ms ease-in-out !important;
 }}
 
-.stTextInput input:focus,
+.stTextInput input:focus, .stDateInput input:focus, .stNumberInput input:focus, .stTextArea textarea:focus,
+.stSelectbox > div > div:focus-within, .stMultiSelect > div > div:focus-within,
 div:has(> .stMarkdown .oleasing-input-marker) + div .stTextInput input:focus,
 div:has(.oleasing-input-marker) + div input:focus {{
   border-color: {accent} !important;
   box-shadow: 0 0 0 3px {brand_soft} !important;
   outline: none !important;
+}}
+
+.stTextInput input::placeholder, .stTextArea textarea::placeholder {{
+  color: {cfg.get('text_disabled', '#94A3B8')} !important;
+}}
+
+/* LETRAS Y TIPOGRAFIA GENERAL */
+label[data-testid="stWidgetLabel"] p, label[data-testid="stWidgetLabel"] span {{
+  color: {text_primary} !important;
+  font-weight: 600 !important;
+  font-size: 13px !important;
+}}
+.stCaption, [data-testid="stCaptionContainer"] p {{
+  color: {text_secondary} !important;
 }}
 
 /* Marcadores ocultos para vinculacion DOM sin alterar el layout */
@@ -421,7 +473,7 @@ class BaseContainer(UIComponent, AbstractContextManager):
     def __init__(
         self,
         key: Optional[str] = None,
-        padding: str = "22px 26px"
+        padding: str = "20px"
     ):
         self.key = key or f"cont_{abs(hash(self.__class__.__name__))}"
         self.padding = padding
@@ -442,6 +494,7 @@ class CardContainer(BaseContainer):
     """
     Contenedor con border-radius de 12px, color de fondo 'Surface'
     (dependiendo del tema) y una sombra (elevation) muy sutil para dar profundidad.
+    Margen interno de 20px exacto.
     Soporta utilizacion con bloque `with` (context manager) o renderizado directo.
     """
 
@@ -450,7 +503,7 @@ class CardContainer(BaseContainer):
         title: Optional[str] = None,
         subtitle: Optional[str] = None,
         key: Optional[str] = None,
-        padding: str = "22px 26px",
+        padding: str = "20px",
         border: bool = True
     ):
         super().__init__(key=key, padding=padding)
