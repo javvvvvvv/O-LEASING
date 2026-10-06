@@ -61,7 +61,13 @@ def inyectar_componentes_css(theme_name: Optional[str] = None) -> None:
     Inyecta las reglas CSS empresariales para PrimaryButton, OutlinedButton,
     CardContainer y FormInput sincronizadas con el tema activo.
     """
-    cfg = theme.get_current_theme(theme_name)
+    if theme_name:
+        try:
+            cfg = theme.get_current_theme(theme_name)
+        except TypeError:
+            cfg = getattr(theme, "THEMES", {}).get(theme.normalizar_nombre_tema(theme_name), getattr(theme, "DARK_CONFIG", {}))
+    else:
+        cfg = theme.get_current_theme()
     accent = cfg.get("Accent", "#FF6B35")
     primary = cfg.get("Primary", "#1E293B")
     surface = cfg.get("Surface", "#FFFFFF")
