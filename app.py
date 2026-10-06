@@ -4907,8 +4907,8 @@ def _render_conciliacion():
             elif sub_vista == "Contratos Faltantes por Facturar (Control de Cartera / Sin CFDI)":
                 st.caption("Auditoría de cartera: contratos activos en vigencia que no cuentan con factura CFDI mensual emitida en el período seleccionado.")
                 
-                pers_disponibles = sorted([p for p in conn.execute("SELECT DISTINCT periodo FROM facturas WHERE periodo IS NOT NULL").fetchall() if p[0]], reverse=True)
-                pers_lista = [p[0] for p in pers_disponibles if str(p[0]).strip()]
+                pers_raw = [p[0] for p in conn.execute("SELECT DISTINCT periodo FROM facturas WHERE periodo IS NOT NULL ORDER BY periodo DESC").fetchall() if p and p[0] and str(p[0]).strip()]
+                pers_lista = list(dict.fromkeys(pers_raw))
                 if not pers_lista:
                     pers_lista = [hoy_ref().strftime('%Y-%m')]
                 
