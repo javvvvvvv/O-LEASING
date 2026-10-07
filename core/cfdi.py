@@ -588,14 +588,15 @@ def parse_sat_excel(file_or_bytes, reglas=None, rfc_emisor='MAR031024EZ3', contr
         cancelada = 0
         fecha_cancelacion = None
 
-        if 'CANCELAD' in estatus_str:
+        if 'VIGENTE' in estatus_str:
+            cancelada = 0
+        elif 'CANCELAD' in estatus_str:
             cancelada = 1
-        elif 'CANCELAD' in estatus_cancel_str:
-            cancelada = 1
-        elif 'PLAZO VENCIDO' in estatus_cancel_str:
+        elif any(k in estatus_cancel_str for k in ('CANCELADO', 'CANCELADA', 'PLAZO VENCIDO')) and not any(k in estatus_cancel_str for k in ('EN PROCESO', 'RECHAZAD')):
             cancelada = 1
         elif pd.notna(fec_cancel_raw) and str(fec_cancel_raw).strip() not in ('', 'NaT', 'None'):
-            cancelada = 1
+            if 'VIGENTE' not in estatus_str and not any(k in estatus_cancel_str for k in ('EN PROCESO', 'RECHAZAD')):
+                cancelada = 1
 
         if cancelada and pd.notna(fec_cancel_raw) and str(fec_cancel_raw).strip() not in ('', 'NaT', 'None'):
             if hasattr(fec_cancel_raw, 'strftime'):
