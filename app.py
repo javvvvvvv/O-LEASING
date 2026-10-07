@@ -4711,6 +4711,7 @@ def _render_conciliacion():
                     'Subtotal', 'Total', 'Estatus', 'Concepto', 'Observación', 'Fecha'
                 ])
                 df_hist['UUID'] = df_hist['UUID'].str[:8] + '…'
+                df_hist['Mes'] = df_hist['Mes'].astype(str).replace(['nan', 'None', '<NA>', 'NaN'], '—').fillna('—')
                 st.dataframe(df_hist, width='stretch', height=500, key="df_003")
 
                 all_rows = conn.execute(
@@ -4787,6 +4788,7 @@ def _render_conciliacion():
             df_comp['Cliente'] = df_comp['Cliente'].fillna('Sin Contrato / Desconocido')
             df_comp['Contrato'] = df_comp['Contrato'].fillna('—')
             df_comp['Folio'] = df_comp['Folio'].fillna('—')
+            df_comp['Mes'] = df_comp['Mes'].astype(str).replace(['nan', 'None', '<NA>', 'NaN'], '—').fillna('—')
             df_comp['Esperado'] = pd.to_numeric(df_comp['Esperado'], errors='coerce').fillna(0.0)
             df_comp['Facturado'] = pd.to_numeric(df_comp['Facturado'], errors='coerce').fillna(0.0)
             df_comp['Diferencia'] = pd.to_numeric(df_comp['Diferencia'], errors='coerce').fillna(0.0)
@@ -5365,7 +5367,7 @@ def _render_conciliacion():
                     df_rent['Cliente'] = df_rent['Cliente'].fillna('Sin Contrato / Desconocido')
                     df_rent['Contrato'] = df_rent['Contrato'].fillna('—')
                     df_rent['Folio'] = df_rent['Folio'].fillna('—')
-                    df_rent['Mes'] = df_rent['Mes'].fillna('—')
+                    df_rent['Mes'] = df_rent['Mes'].astype(str).replace(['nan', 'None', '<NA>', 'NaN'], '—').fillna('—')
 
                     for col_m in ['Renta Esp', 'Renta Fac', 'Admin Fac', 'GPS Fac', 'Esperado Total', 'Facturado Total', 'Diferencia Total']:
                         df_rent[col_m] = pd.to_numeric(df_rent[col_m], errors='coerce').fillna(0.0)
