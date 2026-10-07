@@ -44,12 +44,90 @@ NS_V3 = {
 MAX_XML_BYTES = 10 * 1024 * 1024  # Aumentado a 10MB para CFDIs grandes o con Addendas
 
 _PAT_CONTRATO = re.compile(
-    r'(?:CONTRATO\s*|RENTA\s*CONTRATO\s*|RENTA\s*)?(\d{1,4})-(\d{1,4})',
+    r'(?:[A-Za-zÑñÁÉÍÓÚáéíóú\s]*?)(\d{1,4})\s*-\s*(\d{1,4})',
     re.IGNORECASE,
 )
-_PAT_MES  = re.compile(r'\b(\d{1,3})/(\d{1,3})\b')
+_PAT_MES = re.compile(r'(?:^|[^\d/])(\d{1,3})\s*/\s*(\d{1,3})(?![/\d])')
 _PAT_UUID = re.compile(r'^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$')
 _PAT_RFC  = re.compile(r'^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$')
+
+
+def extraer_contratos_robusto(texto: str, contratos_validos: set | list | None = None) -> list[str]:
+    """Extrae numeros de contrato normalizados (formato XXXX-YYYY) de un texto o concepto.
+    Maneja conceptos con palabras pegadas (ej. RENTA0506-06, FINANCIADO0506-06),
+    meses pegados al sufijo (ej. RENTA0590-0318/24 -> 0590-0003),
+    codigos de 6 digitos sin guion (ej. RENTA068401 -> 0684-0001),
+    contratos sin sufijo (ej. RENTACONTRATO 700 -> 0700-0001),
+    y sufijos en cero (ej. RENTA0544-0 -> 0544-0001).
+    Valida contra contratos_validos si se proporciona.
+    """
+    if not texto:
+        return []
+
+    t_u = str(texto).upper()
+    detectados = []
+
+    if contratos_validos is not None and not isinstance(contratos_validos, (set, dict)):
+        contratos_validos = set(contratos_validos)
+
+    # 1. Caso de sufijo pegado a numerador de mes: e.g. 0590-0318/24 -> 0590-03 y mes 18/24
+    m_glued_mes = re.search(r'(\d{1,4})-(\d{1,2})(\d{1,2})\s*/\s*(\d{1,2})', t_u)
+    if m_glued_mes:
+        pref, suf, mes_n, plazo_n = m_glued_mes.groups()
+        c_cand = normalizar_contrato(pref, suf)
+        if not contratos_validos or c_cand in contratos_validos:
+            if c_cand not in detectados:
+                detectados.append(c_cand)
+
+    # 2. Busqueda exhaustiva con guion y prefijo de texto pegado o separado
+    for m in _PAT_CONTRATO.finditer(t_u):
+        pref, suf = m.group(1), m.group(2)
+        c_cand = normalizar_contrato(pref, suf)
+
+        if any(c.startswith(f"{pref.zfill(4)}-") for c in detectados):
+            continue
+
+        if contratos_validos and c_cand not in contratos_validos and len(suf) >= 3:
+            for cut in (2, 1):
+                alt_cand = normalizar_contrato(pref, suf[:cut])
+                if alt_cand in contratos_validos:
+                    c_cand = alt_cand
+                    break
+
+        if contratos_validos and c_cand not in contratos_validos and suf == '0':
+            posibles = [c for c in contratos_validos if c.startswith(pref.zfill(4) + '-')]
+            if len(posibles) == 1:
+                c_cand = posibles[0]
+            elif f"{pref.zfill(4)}-0001" in contratos_validos:
+                c_cand = f"{pref.zfill(4)}-0001"
+
+        if c_cand not in detectados:
+            if not contratos_validos or c_cand in contratos_validos:
+                detectados.append(c_cand)
+
+    # 3. Caso sin guion con 6 digitos: e.g. RENTA068401 -> 0684-01 -> 0684-0001
+    for m in re.finditer(r'(?:RENTA|CONTRATO)?\s*(\d{4})(\d{2})\b', t_u):
+        pref, suf = m.group(1), m.group(2)
+        c_cand = normalizar_contrato(pref, suf)
+        if contratos_validos and c_cand in contratos_validos:
+            if c_cand not in detectados:
+                detectados.append(c_cand)
+
+    # 4. Caso CONTRATO XXX sin sufijo ni guion posterior: e.g. RENTACONTRATO 700 1/36
+    for m in re.finditer(r'CONTRATO\s*(\d{1,4})(?!-)\b', t_u):
+        pref = m.group(1).zfill(4)
+        c_cand = f"{pref}-0001"
+        if contratos_validos and c_cand in contratos_validos:
+            if c_cand not in detectados:
+                detectados.append(c_cand)
+        elif contratos_validos:
+            posibles = [c for c in contratos_validos if c.startswith(pref + '-')]
+            if len(posibles) == 1:
+                if posibles[0] not in detectados:
+                    detectados.append(posibles[0])
+
+    return detectados
+
 
 # Reglas de clasificación de conceptos: qué palabras debe traer el texto del
 # CFDI para que el sistema lo reconozca como Renta, Administración, etc.
@@ -103,7 +181,7 @@ def clasificar_concepto(descripcion: str, reglas: dict) -> str:
     return 'OTRO'
 
 
-def parse_cfdi(xml_bytes: bytes, reglas: dict) -> dict:
+def parse_cfdi(xml_bytes: bytes, reglas: dict, contratos_validos: set | list | None = None) -> dict:
     """Extrae de un CFDI 3.3 / 4.0 únicamente los datos que O-Leasing necesita.
     Tolerante a cualquier codificación, BOM, espacios, ampersands sin escapar y variantes de namespace.
     """
@@ -197,34 +275,58 @@ def parse_cfdi(xml_bytes: bytes, reglas: dict) -> dict:
         )
     descripciones = ' '.join(c['desc'] for c in conceptos_raw)
 
-    # Detección exhaustiva de contratos (soporta facturas multi-contrato)
+    # Deteccion exhaustiva de contratos (soporta facturas multi-contrato y conceptos pegados)
     contratos_detectados = []
     for c in conceptos_raw:
-        for m in _PAT_CONTRATO.findall(c['desc']):
-            norm_c = normalizar_contrato(m[0], m[1])
-            if norm_c not in contratos_detectados:
-                contratos_detectados.append(norm_c)
+        for cid in extraer_contratos_robusto(c['desc'], contratos_validos):
+            if cid not in contratos_detectados:
+                contratos_detectados.append(cid)
     if not contratos_detectados:
-        for m in _PAT_CONTRATO.findall(descripciones):
-            norm_c = normalizar_contrato(m[0], m[1])
-            if norm_c not in contratos_detectados:
-                contratos_detectados.append(norm_c)
+        for cid in extraer_contratos_robusto(descripciones, contratos_validos):
+            if cid not in contratos_detectados:
+                contratos_detectados.append(cid)
 
     id_contrato = ', '.join(contratos_detectados) if len(contratos_detectados) > 1 else (contratos_detectados[0] if contratos_detectados else None)
 
     meses_detectados = []
+    # Priorizar conceptos de RENTA para no confundir con seguro/otros plazos
     for c in conceptos_raw:
         desc_c = str(c.get('desc') or '')
         clv_c = str(c.get('clave') or '')
-        if clv_c in ('OTRO', 'SEGURO', 'GESTORIA') and 'RENTA' not in desc_c.upper():
-            continue
-        for m_str, pl_str in _PAT_MES.findall(desc_c):
-            try:
-                m_val = int(m_str)
-                if m_val not in meses_detectados:
-                    meses_detectados.append(m_val)
-            except Exception:
-                pass
+        if clv_c == 'RENTA' or 'RENTA' in desc_c.upper():
+            if 'SEGURO' in desc_c.upper() and 'RENTA' not in desc_c.upper()[:10]:
+                continue
+            for m_str, pl_str in _PAT_MES.findall(desc_c):
+                try:
+                    m_val = int(m_str)
+                    if m_val not in meses_detectados:
+                        meses_detectados.append(m_val)
+                except Exception:
+                    pass
+            m_glued = re.search(r'(\d{1,4})-(\d{1,2})(\d{1,2})\s*/\s*(\d{1,2})', desc_c.upper())
+            if m_glued:
+                try:
+                    m_val = int(m_glued.group(3))
+                    if m_val not in meses_detectados:
+                        meses_detectados.append(m_val)
+                except Exception:
+                    pass
+
+    # Si no se detecto mes en conceptos de RENTA, buscar en otros conceptos que no sean seguro/gestoria
+    if not meses_detectados:
+        for c in conceptos_raw:
+            desc_c = str(c.get('desc') or '')
+            clv_c = str(c.get('clave') or '')
+            if clv_c in ('OTRO', 'SEGURO', 'GESTORIA') and 'RENTA' not in desc_c.upper():
+                continue
+            for m_str, pl_str in _PAT_MES.findall(desc_c):
+                try:
+                    m_val = int(m_str)
+                    if m_val not in meses_detectados:
+                        meses_detectados.append(m_val)
+                except Exception:
+                    pass
+
     if not meses_detectados:
         for m_str, pl_str in _PAT_MES.findall(descripciones):
             try:
@@ -291,7 +393,7 @@ def parse_cfdi(xml_bytes: bytes, reglas: dict) -> dict:
     }
 
 
-def parse_sat_excel(file_or_bytes, reglas=None, rfc_emisor='MAR031024EZ3') -> list:
+def parse_sat_excel(file_or_bytes, reglas=None, rfc_emisor='MAR031024EZ3', contratos_validos: set | list | None = None) -> list:
     """Extrae facturas de archivos Excel (.xlsx) exportados del repositorio del SAT.
     Detecta automáticamente encabezados en fila 4 o similar, normaliza columnas y extrae
     fechas, folios, importes, contratos, meses y conceptos clasificados.
@@ -391,28 +493,48 @@ def parse_sat_excel(file_or_bytes, reglas=None, rfc_emisor='MAR031024EZ3') -> li
 
         desc_text = str(r.get(c_desc, '') or '').strip() if c_desc and pd.notna(r.get(c_desc)) else ''
 
-        # Detectar contrato y mes (soporta facturas multi-contrato)
-        contratos_detectados = []
-        for m in _PAT_CONTRATO.findall(desc_text):
-            norm_c = normalizar_contrato(m[0], m[1])
-            if norm_c not in contratos_detectados:
-                contratos_detectados.append(norm_c)
+        # Detectar contrato (soporta conceptos pegados y multi-contrato)
+        contratos_detectados = extraer_contratos_robusto(desc_text, contratos_validos)
         id_contrato = ', '.join(contratos_detectados) if len(contratos_detectados) > 1 else (contratos_detectados[0] if contratos_detectados else None)
 
         # Parsear conceptos
         partes = [p.strip() for p in desc_text.split('|') if p.strip()]
         meses_detectados = []
+        # Priorizar partes de RENTA
         for p in partes:
             clv_temp = clasificar_concepto(p, reglas)
-            if clv_temp in ('OTRO', 'SEGURO', 'GESTORIA') and 'RENTA' not in p.upper():
-                continue
-            for m_str, pl_str in _PAT_MES.findall(p):
-                try:
-                    m_val = int(m_str)
-                    if m_val not in meses_detectados:
-                        meses_detectados.append(m_val)
-                except Exception:
-                    pass
+            if clv_temp == 'RENTA' or 'RENTA' in p.upper():
+                if 'SEGURO' in p.upper() and 'RENTA' not in p.upper()[:10]:
+                    continue
+                for m_str, pl_str in _PAT_MES.findall(p):
+                    try:
+                        m_val = int(m_str)
+                        if m_val not in meses_detectados:
+                            meses_detectados.append(m_val)
+                    except Exception:
+                        pass
+                m_glued = re.search(r'(\d{1,4})-(\d{1,2})(\d{1,2})\s*/\s*(\d{1,2})', p.upper())
+                if m_glued:
+                    try:
+                        m_val = int(m_glued.group(3))
+                        if m_val not in meses_detectados:
+                            meses_detectados.append(m_val)
+                    except Exception:
+                        pass
+
+        if not meses_detectados:
+            for p in partes:
+                clv_temp = clasificar_concepto(p, reglas)
+                if clv_temp in ('OTRO', 'SEGURO', 'GESTORIA') and 'RENTA' not in p.upper():
+                    continue
+                for m_str, pl_str in _PAT_MES.findall(p):
+                    try:
+                        m_val = int(m_str)
+                        if m_val not in meses_detectados:
+                            meses_detectados.append(m_val)
+                    except Exception:
+                        pass
+
         if not meses_detectados:
             for m_str, pl_str in _PAT_MES.findall(desc_text):
                 try:

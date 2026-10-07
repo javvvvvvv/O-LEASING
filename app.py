@@ -33,7 +33,7 @@
 import streamlit as st
 from ui.components import sfig, explain, estado_vacio, sz, titled_chart, titled_table
 import pandas as pd
-from core.cfdi import clasificar_concepto, normalizar_contrato, normalizar_folio, _PAT_CONTRATO, _PAT_MES
+from core.cfdi import clasificar_concepto, normalizar_contrato, normalizar_folio, _PAT_CONTRATO, _PAT_MES, extraer_contratos_robusto
 from core.cotizador import simular_cotizacion, generar_pdf_cotizacion
 from reports.cierre_mensual_pdf import generar_pdf_cierre_mensual
 import numpy as np
@@ -3037,30 +3037,48 @@ def _conciliar_factura_interna(fact: dict, _cache: dict | None = None) -> dict:
                     esperado=0.0, facturado=fact.get('total', 0.0), dif=0.0, detalle=[c_desc])
 
     conn = get_db()
-    # Detección exhaustiva de contratos (soporta contratos individuales y multi-contrato)
-    contratos_detectados = list(fact.get('contratos_detectados') or [])
+    contratos_todos_bd = _cache.get('contratos_todos_set')
+    if contratos_todos_bd is None:
+        try:
+            contratos_todos_bd = set(r[0] for r in conn.execute("SELECT ID_Contrato FROM contratos").fetchall())
+        except Exception:
+            contratos_todos_bd = set()
+        _cache['contratos_todos_set'] = contratos_todos_bd
+
+    # Deteccion exhaustiva de contratos (soporta contratos individuales, multi-contrato y conceptos pegados)
+    contratos_detectados = []
+    textos_a_evaluar = []
     for c in (fact.get('conceptos_raw') or []):
         if isinstance(c, dict) and c.get('desc'):
-            for m in _PAT_CONTRATO.findall(str(c['desc'])):
-                norm_c = normalizar_contrato(m[0], m[1])
-                if norm_c not in contratos_detectados:
-                    contratos_detectados.append(norm_c)
+            textos_a_evaluar.append(str(c['desc']))
     if fact.get('uuid'):
         try:
             rows_desc = conn.execute("SELECT descripcion FROM factura_conceptos WHERE uuid=?", (fact['uuid'],)).fetchall()
             for rd in rows_desc:
-                for m in _PAT_CONTRATO.findall(str(rd[0] or '')):
-                    norm_c = normalizar_contrato(m[0], m[1])
-                    if norm_c not in contratos_detectados:
-                        contratos_detectados.append(norm_c)
+                if rd[0]:
+                    textos_a_evaluar.append(str(rd[0]))
         except Exception:
             pass
     for raw_txt in [fact.get('id_contrato_detectado'), fact.get('id_contrato')]:
         if raw_txt:
-            for m in _PAT_CONTRATO.findall(str(raw_txt)):
-                norm_c = normalizar_contrato(m[0], m[1])
-                if norm_c not in contratos_detectados:
-                    contratos_detectados.append(norm_c)
+            textos_a_evaluar.append(str(raw_txt))
+
+    for txt_eval in textos_a_evaluar:
+        for cid in extraer_contratos_robusto(txt_eval, contratos_todos_bd):
+            if cid not in contratos_detectados:
+                contratos_detectados.append(cid)
+
+    # Si aun no se detecto con validacion a BD, intentar extraer candidatos sin filtro
+    if not contratos_detectados:
+        for txt_eval in textos_a_evaluar:
+            for cid in extraer_contratos_robusto(txt_eval, None):
+                if cid not in contratos_detectados:
+                    contratos_detectados.append(cid)
+
+    if not contratos_detectados and fact.get('contratos_detectados'):
+        for cid in fact['contratos_detectados']:
+            if cid not in contratos_detectados:
+                contratos_detectados.append(cid)
 
     if not contratos_detectados:
         return _res('SIN_CONTRATO', 'No se pudo extraer el número de contrato del XML')
@@ -3107,7 +3125,18 @@ def _conciliar_factura_interna(fact: dict, _cache: dict | None = None) -> dict:
         except Exception:
             fecha_factura = None
 
-    conceptos = fact.get('conceptos') or {}
+    conceptos = fact.get('conceptos')
+    if conceptos is None:
+        conceptos = {'RENTA': 0.0, 'ADMIN': 0.0, 'GEOLOC': 0.0,
+                     'ANTICIPO': 0.0, 'COMISION': 0.0, 'VENTA_VEHICULO': 0.0, 'INDEMNIZACION': 0.0, 'OTRO': 0.0}
+        for c in (fact.get('conceptos_raw') or []):
+            clv = c.get('clave', 'OTRO')
+            imp = float(c.get('importe', 0) or 0)
+            if clv in conceptos:
+                conceptos[clv] += imp
+            else:
+                conceptos['OTRO'] += imp
+        fact['conceptos'] = conceptos
 
     # =========================================================================
     # LÓGICA ESPECIAL PARA FACTURAS MULTI-CONTRATO (CONSOLIDACIÓN DE RENTAS/APERTURAS)
@@ -3237,26 +3266,64 @@ def _conciliar_factura_interna(fact: dict, _cache: dict | None = None) -> dict:
         _cache.setdefault('amortizaciones', {})[id_c] = dfa
 
     # Deteccion exhaustiva de meses del contrato (soporta facturas con pago acumulado de multiples meses)
-    meses_detectados = list(fact.get('meses_detectados') or [])
+    meses_detectados = []
+    # 1. Priorizar conceptos de RENTA
     for c in (fact.get('conceptos_raw') or []):
         if isinstance(c, dict):
             desc_c = str(c.get('desc') or '')
             clv_c = str(c.get('clave') or '')
-            if clv_c in ('OTRO', 'SEGURO', 'GESTORIA') and 'RENTA' not in desc_c.upper():
-                continue
-            for m_str, pl_str in _PAT_MES.findall(desc_c):
-                try:
-                    m_val = int(m_str)
-                    if 1 <= m_val <= pl and m_val not in meses_detectados:
-                        meses_detectados.append(m_val)
-                except Exception:
-                    pass
-    if fact.get('uuid'):
+            if clv_c == 'RENTA' or 'RENTA' in desc_c.upper():
+                if 'SEGURO' in desc_c.upper() and 'RENTA' not in desc_c.upper()[:10]:
+                    continue
+                for m_str, pl_str in _PAT_MES.findall(desc_c):
+                    try:
+                        m_val = int(m_str)
+                        if 1 <= m_val <= pl and m_val not in meses_detectados:
+                            meses_detectados.append(m_val)
+                    except Exception:
+                        pass
+                m_glued = re.search(r'(\d{1,4})-(\d{1,2})(\d{1,2})\s*/\s*(\d{1,2})', desc_c.upper())
+                if m_glued:
+                    try:
+                        m_val = int(m_glued.group(3))
+                        if 1 <= m_val <= pl and m_val not in meses_detectados:
+                            meses_detectados.append(m_val)
+                    except Exception:
+                        pass
+
+    if fact.get('uuid') and not meses_detectados:
         try:
             rows_c = conn.execute("SELECT descripcion, clave FROM factura_conceptos WHERE uuid=?", (fact['uuid'],)).fetchall()
             for rc in rows_c:
                 desc_c = str(rc[0] or '')
                 clv_c = str(rc[1] or '')
+                if clv_c == 'RENTA' or 'RENTA' in desc_c.upper():
+                    if 'SEGURO' in desc_c.upper() and 'RENTA' not in desc_c.upper()[:10]:
+                        continue
+                    for m_str, pl_str in _PAT_MES.findall(desc_c):
+                        try:
+                            m_val = int(m_str)
+                            if 1 <= m_val <= pl and m_val not in meses_detectados:
+                                meses_detectados.append(m_val)
+                        except Exception:
+                            pass
+                    m_glued = re.search(r'(\d{1,4})-(\d{1,2})(\d{1,2})\s*/\s*(\d{1,2})', desc_c.upper())
+                    if m_glued:
+                        try:
+                            m_val = int(m_glued.group(3))
+                            if 1 <= m_val <= pl and m_val not in meses_detectados:
+                                meses_detectados.append(m_val)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+    # 2. Si no se detecto mes en conceptos de RENTA, buscar en otros conceptos
+    if not meses_detectados:
+        for c in (fact.get('conceptos_raw') or []):
+            if isinstance(c, dict):
+                desc_c = str(c.get('desc') or '')
+                clv_c = str(c.get('clave') or '')
                 if clv_c in ('OTRO', 'SEGURO', 'GESTORIA') and 'RENTA' not in desc_c.upper():
                     continue
                 for m_str, pl_str in _PAT_MES.findall(desc_c):
@@ -3266,15 +3333,19 @@ def _conciliar_factura_interna(fact: dict, _cache: dict | None = None) -> dict:
                             meses_detectados.append(m_val)
                     except Exception:
                         pass
-        except Exception:
-            pass
-    if fact.get('mes_contrato'):
+
+    if not meses_detectados and fact.get('mes_contrato'):
         for part in str(fact['mes_contrato']).split(','):
             part = part.strip().replace('.0', '')
             if part.isdigit():
                 m_val = int(part)
                 if 1 <= m_val <= pl and m_val not in meses_detectados:
                     meses_detectados.append(m_val)
+
+    if not meses_detectados and fact.get('meses_detectados'):
+        for m_val in fact['meses_detectados']:
+            if isinstance(m_val, int) and 1 <= m_val <= pl and m_val not in meses_detectados:
+                meses_detectados.append(m_val)
 
     meses_detectados = sorted(meses_detectados)
     es_multi_mes = len(meses_detectados) > 1
@@ -3323,7 +3394,7 @@ def _conciliar_factura_interna(fact: dict, _cache: dict | None = None) -> dict:
         except Exception:
             pass
 
-    conceptos = fact['conceptos']
+    conceptos = fact.get('conceptos') or conceptos
     fila = dfa.iloc[mes - 1]
     renta_pura_esp = round(fila['Interes'] + fila['Capital'], 2)
     renta_total_esp = round(con['Mensualidad_Sin_IVA'], 2)
@@ -6081,10 +6152,14 @@ def _render_conciliacion():
                     
                     if es_multi_c:
                         pertenece = False
-                        for m in _PAT_CONTRATO.findall(desc):
-                            if normalizar_contrato(m[0], m[1]) == cid:
-                                pertenece = True
-                                break
+                        cids_det = extraer_contratos_robusto(desc, {cid})
+                        if cid in cids_det:
+                            pertenece = True
+                        if not pertenece:
+                            for m in _PAT_CONTRATO.findall(desc):
+                                if normalizar_contrato(m[0], m[1]) == cid:
+                                    pertenece = True
+                                    break
                         if not pertenece and p_num_int > 0:
                             patterns_var = [f"{p_num_int:04d}-{p_suf_int}", f"{p_num_int}-{p_suf_int:02d}", f"{p_num_int}-{p_suf_int}"]
                             for pv in patterns_var:
