@@ -598,11 +598,26 @@ def parse_sat_excel(file_or_bytes, reglas=None, rfc_emisor='MAR031024EZ3', contr
             if 'VIGENTE' not in estatus_str and not any(k in estatus_cancel_str for k in ('EN PROCESO', 'RECHAZAD')):
                 cancelada = 1
 
-        if cancelada and pd.notna(fec_cancel_raw) and str(fec_cancel_raw).strip() not in ('', 'NaT', 'None'):
+        fec_solicitud_canc = None
+        if pd.notna(fec_cancel_raw) and str(fec_cancel_raw).strip() not in ('', 'NaT', 'None'):
             if hasattr(fec_cancel_raw, 'strftime'):
-                fecha_cancelacion = fec_cancel_raw.strftime('%Y-%m-%d')
+                fec_solicitud_canc = fec_cancel_raw.strftime('%Y-%m-%d')
             else:
-                fecha_cancelacion = str(fec_cancel_raw)[:10]
+                fec_solicitud_canc = str(fec_cancel_raw)[:10]
+
+        if cancelada and fec_solicitud_canc:
+            fecha_cancelacion = fec_solicitud_canc
+
+        en_proceso_cancel = bool(not cancelada and (
+            'EN PROCESO' in estatus_cancel_str or
+            (fec_solicitud_canc and 'VIGENTE' in estatus_str)
+        ))
+
+        obs_sat = ''
+        if en_proceso_cancel:
+            obs_sat = f"En proceso de cancelación en SAT (Solicitud: {fec_solicitud_canc})"
+        elif cancelada and fecha_cancelacion:
+            obs_sat = f"[Cancelada SAT: {fecha_cancelacion}]"
 
         folio_completo = folio if folio else (serie or '')
 
@@ -627,6 +642,10 @@ def parse_sat_excel(file_or_bytes, reglas=None, rfc_emisor='MAR031024EZ3', contr
             'moneda': 'MXN',
             'cancelada': cancelada,
             'fecha_cancelacion': fecha_cancelacion,
+            'observaciones': obs_sat,
+            'msg': obs_sat,
+            'en_proceso_cancelacion': 1 if en_proceso_cancel else 0,
+            'fecha_solicitud_cancelacion': fec_solicitud_canc if en_proceso_cancel else None,
             'status': 'CANCELADA' if cancelada else 'PENDIENTE',
             'avisos_xml': []
         })

@@ -4884,6 +4884,15 @@ def _render_conciliacion():
                     return 'background-color:#FBF0DA;color:#7A5209;font-weight:600'
                 return ''
 
+            def _color_estatus_faltante(val):
+                if val == 'EN PROCESO DE CANCELACIÓN':
+                    return 'background-color:#FBF0DA;color:#7A5209;font-weight:600'
+                elif 'CANCELADA' in str(val):
+                    return 'background-color:#FAE3E1;color:#8A2019;font-weight:600'
+                elif val == 'SIN FACTURA':
+                    return 'background-color:#F1F3F5;color:#495057;font-weight:600'
+                return ''
+
             if sub_vista == "Vista Consolidada (General)":
                 f_est, fc1, fc2, fc3 = st.columns([1.5, 1.2, 1.3, 1.8])
                 with f_est:
@@ -5009,21 +5018,28 @@ def _render_conciliacion():
                 except Exception:
                     anio_f, mes_f = hoy_ref().year, hoy_ref().month
 
-                facs_per = conn.execute(
-                    "SELECT id_contrato, id_contrato_detectado FROM facturas WHERE periodo=? AND tipo='MENSUAL' AND (cancelada IS NULL OR cancelada=0)",
-                    (per_sel_falt,)
-                ).fetchall()
-                c_facturados_per = set()
+                facs_per = conn.execute("""
+                    SELECT uuid, folio, id_contrato, id_contrato_detectado, estatus, cancelada, fecha_cancelacion, observaciones
+                    FROM facturas WHERE periodo=? AND tipo='MENSUAL'
+                """, (per_sel_falt,)).fetchall()
+
+                # Mapear facturas por contrato
+                facturas_por_contrato = {}
                 for fp in facs_per:
+                    cids = set()
                     for campo in [fp['id_contrato'], fp['id_contrato_detectado']]:
                         if campo:
                             for c_item in str(campo).split(','):
-                                if c_item.strip():
-                                    c_facturados_per.add(c_item.strip())
+                                c_item = c_item.strip()
+                                if c_item:
+                                    cids.add(c_item)
+                    for cid in cids:
+                        facturas_por_contrato.setdefault(cid, []).append(dict(fp))
 
                 contratos_act = conn.execute("SELECT * FROM contratos WHERE Estatus='ACTIVO'").fetchall()
                 total_en_vigencia = 0
                 faltantes_per = []
+                c_facturados_ok = set()
                 
                 ML_MAP = {0: "0-Al corriente", 1: "1-Atraso", 2: "2-Convenio", 3: "3-Devuelve no paga", 4: "4-Judicial"}
 
@@ -5033,46 +5049,102 @@ def _render_conciliacion():
                     if mc is not None:
                         total_en_vigencia += 1
                         idc_c = c_dict['ID_Contrato']
-                        if idc_c not in c_facturados_per:
-                            nm_val = int(c_dict.get('Nivel_Morosidad') or 0)
-                            faltantes_per.append({
-                                'Contrato': idc_c,
-                                'Cliente': c_dict.get('Cliente', ''),
-                                'Vehículo': c_dict.get('Vehiculo', ''),
-                                'Mes': f"Mes {mc} de {c_dict.get('Plazo', '')}",
-                                'Renta_Esperada': round(float(c_dict.get('Mensualidad_Sin_IVA') or 0.0), 2),
-                                'Morosidad': ML_MAP.get(nm_val, f"Nivel {nm_val}"),
-                                'Nivel_Num': nm_val,
-                                'Excluido_Poliza': 'SI' if c_dict.get('Fecha_Excl_Poliza') else 'NO',
-                                'Motivo_Exclusion': c_dict.get('Motivo_Excl_Poliza') or '—',
-                            })
+                        facs_c = facturas_por_contrato.get(idc_c, [])
+                        
+                        facs_activas = [f for f in facs_c if not f['cancelada'] and f['estatus'] not in ('CANCELADA', 'OMITIDA')]
+                        facs_en_proceso = [
+                            f for f in facs_activas 
+                            if ('proceso de cancelaci' in (f.get('observaciones') or '').lower() or 
+                                'en proceso' in (f.get('observaciones') or '').lower() or
+                                (f.get('fecha_cancelacion') and not f['cancelada']))
+                        ]
+                        facs_limpias = [f for f in facs_activas if f not in facs_en_proceso]
+                        
+                        if facs_limpias:
+                            c_facturados_ok.add(idc_c)
+                            continue
 
-                cnt_facturados = len(c_facturados_per)
+                        nm_val = int(c_dict.get('Nivel_Morosidad') or 0)
+                        
+                        if facs_en_proceso:
+                            f_proc = facs_en_proceso[0]
+                            fol = f_proc.get('folio') or 'Sin Folio'
+                            fec = str(f_proc.get('fecha_cancelacion') or '2026-09-30')[:10]
+                            estatus_fact = "EN PROCESO DE CANCELACIÓN"
+                            folio_rel = fol
+                            fecha_sat = fec
+                            comentario_fact = f"Factura {fol} en proceso de cancelación en SAT (Solicitud: {fec}). Requiere verificación con facturación si procede o fue sustituida."
+                        elif facs_c:
+                            f_canc = facs_c[0]
+                            fol = f_canc.get('folio') or 'Sin Folio'
+                            fec = str(f_canc.get('fecha_cancelacion') or '')[:10]
+                            estatus_fact = "CANCELADA (SIN SUSTITUCIÓN)"
+                            folio_rel = fol
+                            fecha_sat = fec or '—'
+                            comentario_fact = f"Factura {fol} cancelada en el período ({fec}) sin factura sustituta activa."
+                        else:
+                            estatus_fact = "SIN FACTURA"
+                            folio_rel = "—"
+                            fecha_sat = "—"
+                            comentario_fact = "Sin factura CFDI registrada en el período."
+
+                        faltantes_per.append({
+                            'Contrato': idc_c,
+                            'Cliente': c_dict.get('Cliente', ''),
+                            'Vehículo': c_dict.get('Vehiculo', ''),
+                            'Mes': f"Mes {mc} de {c_dict.get('Plazo', '')}",
+                            'Renta_Esperada': round(float(c_dict.get('Mensualidad_Sin_IVA') or 0.0), 2),
+                            'Estatus_Factura': estatus_fact,
+                            'Folio_Relacionado': folio_rel,
+                            'Fecha_Solicitud_SAT': fecha_sat,
+                            'Comentario_Facturación': comentario_fact,
+                            'Morosidad': ML_MAP.get(nm_val, f"Nivel {nm_val}"),
+                            'Nivel_Num': nm_val,
+                            'Excluido_Poliza': 'SI' if c_dict.get('Fecha_Excl_Poliza') else 'NO',
+                            'Motivo_Exclusion': c_dict.get('Motivo_Excl_Poliza') or '—',
+                        })
+
+                cnt_facturados = len(c_facturados_ok)
                 cnt_faltantes = len(faltantes_per)
+                cnt_proc_canc = sum(1 for f in faltantes_per if f['Estatus_Factura'] == 'EN PROCESO DE CANCELACIÓN')
                 mto_faltante = sum(f['Renta_Esperada'] for f in faltantes_per)
 
                 kf1, kf2, kf3, kf4 = st.columns(4)
                 kf1.metric("Activos en Vigencia", f"{total_en_vigencia:,}")
-                kf2.metric("Facturados en Período", f"{cnt_facturados:,}", f"{(cnt_facturados/total_en_vigencia*100) if total_en_vigencia else 0:.1f}%")
-                kf3.metric("Faltantes por Facturar", f"{cnt_faltantes:,}")
-                kf4.metric("Renta Total Faltante", f"${mto_faltante:,.2f}")
+                kf2.metric("Facturados OK", f"{cnt_facturados:,}", f"{(cnt_facturados/total_en_vigencia*100) if total_en_vigencia else 0:.1f}%")
+                delta_canc = f"{cnt_proc_canc} en cancelación SAT" if cnt_proc_canc else None
+                kf3.metric("Pendientes a Revisar", f"{cnt_faltantes:,}", delta=delta_canc, delta_color="inverse")
+                kf4.metric("Renta a Revisar", f"${mto_faltante:,.2f}")
 
                 if not faltantes_per:
                     st.success(f"Excelente: Todos los contratos activos en vigencia ({total_en_vigencia}) tienen factura CFDI emitida en {per_sel_falt}.")
                 else:
                     df_falt = pd.DataFrame(faltantes_per)
 
-                    cm1, cm2 = st.columns([1.5, 2.5])
+                    cm1, cm2, cm3 = st.columns([1.5, 1.5, 2])
                     with cm1:
-                        filtro_mora = st.selectbox(
-                            "Filtrar por estatus de cobranza:",
-                            ["Todos los faltantes", "Al corriente (Nivel 0)", "Con atraso o convenio (Nivel 1-2)", "Deterioro / Judicial (Nivel 3-4)"],
-                            key="filtro_mora_faltante"
+                        filtro_tipo_falt = st.selectbox(
+                            "Situación de facturación:",
+                            ["Todos los pendientes", "Únicamente Sin Factura", "En Proceso de Cancelación SAT", "Canceladas sin sustitución"],
+                            key="filtro_tipo_faltante"
                         )
                     with cm2:
-                        txt_busq_falt = st.text_input("Buscar faltante por contrato o cliente:", "", key="txt_busq_falt")
+                        filtro_mora = st.selectbox(
+                            "Estatus de cobranza:",
+                            ["Todos los estatus", "Al corriente (Nivel 0)", "Con atraso o convenio (Nivel 1-2)", "Deterioro / Judicial (Nivel 3-4)"],
+                            key="filtro_mora_faltante"
+                        )
+                    with cm3:
+                        txt_busq_falt = st.text_input("Buscar por contrato, cliente o folio:", "", key="txt_busq_falt")
 
                     df_falt_v = df_falt.copy()
+                    if filtro_tipo_falt == "Únicamente Sin Factura":
+                        df_falt_v = df_falt_v[df_falt_v['Estatus_Factura'] == 'SIN FACTURA']
+                    elif filtro_tipo_falt == "En Proceso de Cancelación SAT":
+                        df_falt_v = df_falt_v[df_falt_v['Estatus_Factura'] == 'EN PROCESO DE CANCELACIÓN']
+                    elif filtro_tipo_falt == "Canceladas sin sustitución":
+                        df_falt_v = df_falt_v[df_falt_v['Estatus_Factura'] == 'CANCELADA (SIN SUSTITUCIÓN)']
+
                     if filtro_mora == "Al corriente (Nivel 0)":
                         df_falt_v = df_falt_v[df_falt_v['Nivel_Num'] == 0]
                     elif filtro_mora == "Con atraso o convenio (Nivel 1-2)":
@@ -5084,15 +5156,22 @@ def _render_conciliacion():
                         patt_f = txt_busq_falt.strip()
                         df_falt_v = df_falt_v[
                             df_falt_v['Contrato'].str.contains(patt_f, case=False, na=False) |
-                            df_falt_v['Cliente'].str.contains(patt_f, case=False, na=False)
+                            df_falt_v['Cliente'].str.contains(patt_f, case=False, na=False) |
+                            df_falt_v['Folio_Relacionado'].str.contains(patt_f, case=False, na=False)
                         ]
 
                     st.write(f"Mostrando **{len(df_falt_v):,}** contratos pendientes de facturar:")
-                    cols_falt_ver = ['Contrato', 'Cliente', 'Vehículo', 'Mes', 'Renta_Esperada', 'Morosidad', 'Excluido_Poliza', 'Motivo_Exclusion']
+                    cols_falt_ver = [
+                        'Contrato', 'Cliente', 'Vehículo', 'Mes', 'Renta_Esperada',
+                        'Estatus_Factura', 'Folio_Relacionado', 'Fecha_Solicitud_SAT',
+                        'Comentario_Facturación', 'Morosidad', 'Excluido_Poliza', 'Motivo_Exclusion'
+                    ]
                     st.dataframe(
-                        df_falt_v[cols_falt_ver].style.format({'Renta_Esperada': '${:,.2f}'}),
+                        df_falt_v[cols_falt_ver].style
+                        .format({'Renta_Esperada': '${:,.2f}'})
+                        .map(_color_estatus_faltante, subset=['Estatus_Factura']),
                         width='stretch',
-                        height=350,
+                        height=380,
                         key="grid_contratos_faltantes"
                     )
 
@@ -5167,9 +5246,9 @@ def _render_conciliacion():
                         currency_cols=['Renta_Esperada']
                     )
                     st.download_button(
-                        f"Descargar Faltantes por Facturar ({per_sel_falt}) en Excel",
+                        f"Descargar Reporte para Facturación ({per_sel_falt}) en Excel",
                         data=buf_falt,
-                        file_name=f"faltantes_facturar_{per_sel_falt}.xlsx",
+                        file_name=f"reporte_facturacion_faltantes_{per_sel_falt}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         key="btn_dl_faltantes_excel"
                     )
