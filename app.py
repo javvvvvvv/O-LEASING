@@ -2199,31 +2199,113 @@ def fmt17(base,id_c=None):
     total = dbase + int(cfg.get('digitos_contrato', 8)) + len(cfg.get('sufijo',''))
     return base.replace('-','').ljust(total, '0')
 
-def gen_contpaqi():
-    df=obtener()
-    if df.empty: return None,"Sin contratos"
-    cat=cargar_catalogo(); cuentas=set()
-    # Cuentas que el usuario dejó en blanco (o desactivó) en "Cuentas (Macro)":
-    # se excluyen a propósito y NO deben aparecer en el archivo de Contpaqi.
-    omitidas = [k for k,d in cat.items() if not (d.get('cuenta') or '').strip() or not d.get('activa', True)]
-    for _,r in df.iterrows():
-        id_c=r['ID_Contrato']; cli=r['Cliente']; plz=int(r['Plazo'])
-        for k,d in cat.items():
-            if k=='CANCELACION_ANTICIPO': continue
-            if k in omitidas: continue
-            cta=fmt17(d['cuenta'],id_c); nom=f"{id_c} {cli}"[:49]
-            ps=d['cuenta'].split('-'); bm=f"{ps[0]}-{ps[1]}-{plz:02d}-00" if len(ps)>=2 else d['cuenta']
-            cuentas.add((cta,nom,fmt17(bm)))
-    if not cuentas:
-        return None, "Todas las cuentas del catálogo están en blanco o desactivadas — no hay nada que generar. Ve a 'Cuentas (Macro)' y captura al menos una cuenta."
-    rows=[[''] * 17]*4
-    for cta,nom,mayor in cuentas:
-        p1=cta[0]; tp,qv=('A','105.01') if p1=='1' else ('D','201.01') if p1=='2' else ('H','401.38') if p1=='4' else ('G','601.84')
-        rows.append(['C',"'"+cta,nom[:49],'','\''+mayor,tp,'0','2','0','20250428','11','1','0','0','0','0',qv])
-    out=io.StringIO(); pd.DataFrame(rows).to_csv(out,index=False,header=False,encoding='utf-8-sig')
-    msg = f"Se generaron {len(cuentas)} cuentas."
+def gen_contpaqi(metodo_mayor='plazo', solo_activos=True, incluir_dataframe=False):
+    df = obtener('ACTIVO') if solo_activos else obtener()
+    if df.empty:
+        msg = "Sin contratos disponibles para generar."
+        return (None, msg, pd.DataFrame()) if incluir_dataframe else (None, msg)
+
+    cat = cargar_catalogo()
+    # Cuentas que el usuario dejo en blanco (o desactivo) en "Cuentas (Macro)":
+    # se excluyen a proposito y NO deben aparecer en el archivo de Contpaqi.
+    omitidas = [k for k, d in cat.items() if not (d.get('cuenta') or '').strip() or not d.get('activa', True)]
+    cuentas_dict = {}
+    plazos_validos = (12, 24, 36, 48)
+
+    for _, r in df.iterrows():
+        id_c = str(r['ID_Contrato'])
+        cli = str(r.get('Cliente', ''))
+        try:
+            plz = int(r.get('Plazo', 0))
+        except (ValueError, TypeError):
+            plz = 0
+
+        for k, d in cat.items():
+            if k == 'CANCELACION_ANTICIPO':
+                continue
+            if k in omitidas:
+                continue
+            cta_base = d['cuenta']
+            cta = fmt17(cta_base, id_c)
+            nom = f"{id_c} {cli}"[:49]
+
+            # Determinacion de Cuenta de Mayor / Superior (CtaSup)
+            if metodo_mayor == 'plazo' and plz in plazos_validos:
+                if cta_base == '400-01-04':
+                    bm = f"400-01-{plz:02d}-00"
+                else:
+                    ps = cta_base.split('-')
+                    bm = f"{ps[0]}-{ps[1]}-{plz:02d}-00" if len(ps) >= 2 else cta_base
+                mayor = fmt17(bm)
+            else:
+                mayor = fmt17(cta_base)
+
+            p1 = cta[0]
+            tp = 'A' if p1 == '1' else 'D' if p1 == '2' else 'H' if p1 == '4' else 'G'
+            qv = '105.01' if p1 == '1' else '201.01' if p1 == '2' else '401.38' if p1 == '4' else '601.84'
+
+            # Deduplicacion por codigo de cuenta exacto
+            cuentas_dict[cta] = {
+                'cta': cta,
+                'nom': nom,
+                'mayor': mayor,
+                'tp': tp,
+                'qv': qv,
+                'id_contrato': id_c,
+                'plazo': plz,
+            }
+
+    if not cuentas_dict:
+        msg = "Todas las cuentas del catálogo están en blanco o desactivadas — no hay nada que generar. Ve a 'Cuentas (Macro)' y captura al menos una cuenta."
+        return (None, msg, pd.DataFrame()) if incluir_dataframe else (None, msg)
+
+    # Ordenamiento determinista: agrupado por cuenta de mayor primero, luego codigo de cuenta
+    # Esto garantiza que las cuentas dependientes de una misma Cuenta de Mayor aparezcan agrupadas
+    # y nunca cambie el numero de mayor aleatoriamente de un renglon al siguiente.
+    cuentas_ordenadas = sorted(cuentas_dict.values(), key=lambda x: (x['mayor'], x['cta']))
+
+    rows = [[''] * 17] * 4
+    for item in cuentas_ordenadas:
+        rows.append([
+            'C',
+            "'" + item['cta'],
+            item['nom'][:49],
+            '',
+            "'" + item['mayor'],
+            item['tp'],
+            '0',
+            '2',
+            '0',
+            '20250428',
+            '11',
+            '1',
+            '0',
+            '0',
+            '0',
+            '0',
+            item['qv']
+        ])
+
+    out = io.StringIO()
+    pd.DataFrame(rows).to_csv(out, index=False, header=False, encoding='utf-8-sig')
+
+    df_prev = pd.DataFrame([{
+        'Código Cuenta': c['cta'],
+        'Nombre': c['nom'],
+        'Cuenta Mayor': c['mayor'],
+        'Tipo': c['tp'],
+        'Agrupador SAT': c['qv'],
+        'Contrato': c['id_contrato'],
+        'Plazo': c['plazo'],
+    } for c in cuentas_ordenadas])
+
+    cant_contratos = df['ID_Contrato'].nunique()
+    msg = f"Se generaron {len(cuentas_ordenadas):,} cuentas contables para {cant_contratos:,} contratos."
     if omitidas:
         msg += f" ({len(omitidas)} claves del catálogo se omitieron por estar en blanco/desactivadas: {', '.join(omitidas)})"
+
+    if incluir_dataframe:
+        return out.getvalue().encode('utf-8-sig'), msg, df_prev
     return out.getvalue().encode('utf-8-sig'), msg
 
 
@@ -9833,13 +9915,65 @@ try:
                 st.write(", ".join(blancas))
                 st.caption("Ve a 'Cuentas (Macro)' si alguna de éstas sí debería exportarse.")
 
+        st.markdown("---")
+        st.subheader("Configuración de Exportación")
+        col_c1, col_c2 = st.columns(2)
+        with col_c1:
+            regla_mayor = st.radio(
+                "Regla para Cuenta de Mayor (Cuenta Superior):",
+                [
+                    "Por Plazo Contractual (12, 24, 36, 48 meses — Estándar Contpaqi)",
+                    "Base Fija del Catálogo Maestro (11500000000000000, 12500000000000000...)"
+                ],
+                index=0,
+                help="Define cómo se calcula la Cuenta Superior padre. 'Por Plazo' asigna la acumuladora del plazo correspondiente (12, 24, 36 o 48 meses). 'Base Fija' asigna la cuenta de mayor principal del catálogo."
+            )
+            metodo_sel = 'plazo' if "Por Plazo" in regla_mayor else 'base'
+
+        with col_c2:
+            filtro_contratos = st.radio(
+                "Contratos a incluir:",
+                [
+                    "Solo contratos Activos (Recomendado)",
+                    "Todos los contratos (incluyendo Bajas/Terminados)"
+                ],
+                index=0,
+                help="Recomendado: Solo activos. Si seleccionas todos, los contratos con plazos atípicos se asociarán a la cuenta base fija."
+            )
+            solo_act_sel = "Solo contratos Activos" in filtro_contratos
+
         if st.button("Generar archivo Contpaqi", width='stretch'):
-            csv,msg=gen_contpaqi()
+            csv, msg, df_prev = gen_contpaqi(metodo_mayor=metodo_sel, solo_activos=solo_act_sel, incluir_dataframe=True)
             if csv:
-                st.success(msg)
-                st.download_button("Descargar CSV", csv, "cuentas_contpaqi.csv", "text/csv", width='stretch')
+                st.session_state['contpaqi_csv'] = csv
+                st.session_state['contpaqi_msg'] = msg
+                st.session_state['contpaqi_prev'] = df_prev
             else:
-                st.error(msg)
+                st.session_state.pop('contpaqi_csv', None)
+                st.session_state['contpaqi_msg'] = msg
+                st.session_state.pop('contpaqi_prev', None)
+
+        if 'contpaqi_msg' in st.session_state:
+            if 'contpaqi_csv' in st.session_state:
+                st.success(st.session_state['contpaqi_msg'])
+                df_p = st.session_state.get('contpaqi_prev')
+                if df_p is not None and not df_p.empty:
+                    st.subheader("Vista Previa del Catálogo")
+                    m_c1, m_c2, m_c3 = st.columns(3)
+                    m_c1.metric("Total Cuentas Generadas", f"{len(df_p):,}")
+                    m_c2.metric("Cuentas de Mayor Únicas", f"{df_p['Cuenta Mayor'].nunique():,}")
+                    m_c3.metric("Contratos Incluidos", f"{df_p['Contrato'].nunique():,}")
+                    st.dataframe(df_p, width='stretch', height=380, key="df_contpaqi_preview")
+                st.download_button(
+                    "Descargar CSV para Contpaqi",
+                    st.session_state['contpaqi_csv'],
+                    "cuentas_contpaqi.csv",
+                    "text/csv",
+                    width='stretch',
+                    key="btn_descargar_contpaqi"
+                )
+            else:
+                st.error(st.session_state['contpaqi_msg'])
 
     elif menu=="Análisis de Rentabilidad":
         st.title("Análisis de Rentabilidad")
