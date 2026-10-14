@@ -45,20 +45,21 @@ def test_amarre_agosto_2026():
 
 def test_amarre_multianual_todos_los_meses():
     """Verifica que cada uno de los 105 meses (2022-2030) cuadre exactamente al centavo."""
-    buf = generar_excel_auditoria(anio_filtro=None)
+    buf = generar_excel_auditoria(anio_filtro=None, filtro_estatus="TODOS")
     wb = openpyxl.load_workbook(buf, data_only=True)
 
     ws_il = wb["Intereses_Leasing_Mensual"]
     ws_ir = wb["Intereses_Residual_Mensual"]
 
-    # Extraer columnas de meses
+    # Extraer columnas de meses dinamicamente
     col_meses = {}
-    for c in range(8, ws_il.max_column):
+    for c in range(1, ws_il.max_column):
         val = ws_il.cell(row=4, column=c).value
         if val and "-" in str(val):
             parts = str(val).split("-")
-            y, m = int(parts[0]), int(parts[1])
-            col_meses[(y, m)] = c
+            if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                y, m = int(parts[0]), int(parts[1])
+                col_meses[(y, m)] = c
 
     errores = []
     for (y, m), col_idx in col_meses.items():
@@ -90,18 +91,24 @@ def test_amarre_multianual_todos_los_meses():
 
 def test_formulas_vivas_excel():
     """Verifica que el libro contenga formulas vivas y no valores planos."""
-    buf = generar_excel_auditoria(anio_filtro=2025)
+    buf = generar_excel_auditoria(anio_filtro=2025, filtro_estatus="ACTIVO")
     wb = openpyxl.load_workbook(buf, data_only=False)
 
     ws_res = wb["Resumen_Cartera"]
-    assert str(ws_res["J5"].value).startswith("="), "Inversion_Neta debe ser formula"
-    assert "RATE" in str(ws_res["O5"].value), "Tasa mensual debe usar formula RATE"
-    assert "^12" in str(ws_res["Q5"].value), "TIR debe ser formula anualizada"
-    assert "SUM" in str(ws_res["S5"].value) or "*" in str(ws_res["S5"].value), "Interes leasing debe ser formula"
+    assert str(ws_res["J5"].value).startswith("="), "Anticipo_Monto debe ser formula =H*I"
+    assert str(ws_res["K5"].value).startswith("="), "Inversion_Neta debe ser formula =H-J"
+    assert str(ws_res["M5"].value).startswith("="), "Comision_Apertura debe ser formula =H*L"
+    assert str(ws_res["P5"].value).startswith("="), "Residual_Pactado debe ser formula =H*O"
+    assert "RATE" in str(ws_res["R5"].value), "Tasa mensual debe usar formula RATE"
+    assert "^12" in str(ws_res["T5"].value), "TIR debe ser formula anualizada"
+    assert "*" in str(ws_res["V5"].value) or "SUM" in str(ws_res["V5"].value), "Interes leasing debe ser formula"
 
     ws_tot = wb["Ingreso_Financiero_Total"]
-    assert "Intereses_Leasing_Mensual" in str(ws_tot["E5"].value), "Debe tener formula inter-hoja de leasing"
-    assert "Intereses_Residual_Mensual" in str(ws_tot["E5"].value), "Debe tener formula inter-hoja de residual"
+    assert "Intereses_Leasing_Mensual" in str(ws_tot["F5"].value), "Debe tener formula inter-hoja de leasing"
+    assert "Intereses_Residual_Mensual" in str(ws_tot["F5"].value), "Debe tener formula inter-hoja de residual"
+
+    ws_cap = wb["Amortizacion_Capital_Mensual"]
+    assert "Intereses_Leasing_Mensual" in str(ws_cap["J5"].value), "Debe tener formula de capital = Renta - Intereses"
 
     ws_mod = wb["Modelo_Amortizacion_Tipo"]
     assert "=" in str(ws_mod["D9"].value), "Modelo didactico debe tener formulas de interes"
@@ -110,16 +117,18 @@ def test_formulas_vivas_excel():
 
 def test_hoja_calculo_tasa_implicita():
     """Verifica que la hoja Calculo_Tasa_Implicita contenga formulas de RATE, PV y comprobacion."""
-    buf = generar_excel_auditoria(anio_filtro=2025)
+    buf = generar_excel_auditoria(anio_filtro=2025, filtro_estatus="ACTIVO")
     wb = openpyxl.load_workbook(buf, data_only=False)
 
     assert "Calculo_Tasa_Implicita" in wb.sheetnames, "Falta la hoja Calculo_Tasa_Implicita"
     ws = wb["Calculo_Tasa_Implicita"]
-    assert str(ws["G5"].value).startswith("="), "Inversion Neta debe ser formula"
-    assert "RATE" in str(ws["K5"].value), "Tasa mensual debe usar RATE"
-    assert "PV" in str(ws["L5"].value), "Comprobacion debe usar formula PV"
-    assert str(ws["M5"].value).startswith("="), "Diferencia de cuadre debe ser formula"
-    assert "^12" in str(ws["O5"].value), "TIR anual debe ser formula"
+    assert str(ws["H5"].value).startswith("="), "Anticipo Monto debe ser formula =F*G"
+    assert str(ws["I5"].value).startswith("="), "Inversion Neta debe ser formula =F-H"
+    assert str(ws["L5"].value).startswith("="), "Residual Pactado debe ser formula =F*K"
+    assert "RATE" in str(ws["N5"].value), "Tasa mensual debe usar RATE"
+    assert "PV" in str(ws["O5"].value), "Comprobacion debe usar formula PV"
+    assert str(ws["P5"].value).startswith("="), "Diferencia de cuadre debe ser formula"
+    assert "^12" in str(ws["R5"].value), "TIR anual debe ser formula"
 
 
 if __name__ == "__main__":
@@ -140,4 +149,3 @@ if __name__ == "__main__":
     print("PASS: test_amarre_multianual_todos_los_meses")
 
     print("\nTODAS LAS PRUEBAS DE AMARRE Y CONTINUIDAD EN EL TIEMPO PASARON EXITOSAMENTE.")
-

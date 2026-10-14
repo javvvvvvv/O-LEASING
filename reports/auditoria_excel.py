@@ -18,15 +18,18 @@ auditoría financiera para toda la cartera y desglose cronológico mensual.
 
 Diseñado específicamente para auditorías financieras y fiscales (NIF C-15 /
 IFRS 16), proporcionando:
-1. Contratos en vertical (filas) y parámetros financieros con fórmulas nativas
-   de Excel (RATE, SUM, AVERAGE, IF, TIR).
+1. Contratos en vertical (filas) con unidad/vehículo adquirida, porcentajes
+   iniciales de captura (Anticipo %, Comisión %, Residual %) y fórmulas nativas
+   de Excel (=Valor*Pct, =Valor-Anticipo, =RATE, =SUM, =AVERAGE, =IF, TIR).
 2. Matrices cronológicas horizontales separadas por Año y Mes (ej. 2022-01 a 2030-09)
    para devengo de intereses leasing, amortización de capital, saldos insolutos,
    devengo de intereses de residual y saldo activo de residual.
 3. Fórmulas de suma mensual de cartera (=SUM(...)) para auditar cualquier mes
    específico (ej. Agosto 2025 o Agosto 2026).
-4. Fórmulas inter-hoja para cálculo de ingreso financiero total.
-5. Modelo demostrativo de amortización paso a paso con fórmulas dinámicas relativas.
+4. Fórmulas de amortización mensual: Capital = Renta - Intereses Leasing.
+5. Fórmulas inter-hoja para cálculo de ingreso financiero total.
+6. Consolidación de Cartera Activa (278 contratos) por defecto, eliminando
+   contratos dados de baja o sin vigencia en el periodo consultado.
 """
 
 import io
@@ -111,16 +114,27 @@ def _obtener_db_path(db_path=None):
     return cand
 
 
-def generar_excel_auditoria(anio_filtro=None, titulo_empresa=None, logo_path=None, db_path=None) -> io.BytesIO:
+def generar_excel_auditoria(
+    anio_filtro=None,
+    filtro_estatus="ACTIVO",
+    titulo_empresa=None,
+    logo_path=None,
+    db_path=None,
+    solo_con_movimiento=True
+) -> io.BytesIO:
     """Genera el libro completo de auditoria con formulas matematicas vivas.
 
     Parametros:
-      - anio_filtro: int opcional (ej. 2025). Si se proporciona, la matriz mensual
-        se enfoca en los 12 meses de ese ejercicio.
+      - anio_filtro: int opcional (ej. 2025). Si se proporciona, las matrices mensuales
+        se enfocan en los 12 meses de ese ejercicio.
         Si es None, se genera el rango multianual completo (todos los meses de la cartera).
+      - filtro_estatus: 'ACTIVO' (por defecto, cartera vigente de 278 contratos) o
+        'TODOS' / None para incluir el historico completo de bajas.
       - titulo_empresa: str opcional para membrete.
       - logo_path: ruta al logo corporativo.
       - db_path: ruta a la base de datos sqlite. Si es None, se detecta automaticamente.
+      - solo_con_movimiento: bool. Si es True y anio_filtro esta definido, omite contratos
+        que no tuvieron vigencia o movimiento en ese año.
     """
     import sqlite3
     from finanzas import calc_amort, calc_res_amort, vp_res
@@ -139,6 +153,11 @@ def generar_excel_auditoria(anio_filtro=None, titulo_empresa=None, logo_path=Non
         wb.save(buf)
         buf.seek(0)
         return buf
+
+    # Filtrar por estatus si se especifica
+    if filtro_estatus and str(filtro_estatus).strip().upper() not in ("TODOS", "ALL", "HISTORICO"):
+        est_req = str(filtro_estatus).strip().upper()
+        df_c = df_c[df_c["Estatus"].astype(str).str.strip().str.upper() == est_req]
 
     # 1. Precomputo vectorizado ultra-rapido de amortizaciones y vigencias por contrato
     contratos_pre = []
@@ -168,18 +187,24 @@ def generar_excel_auditoria(anio_filtro=None, titulo_empresa=None, logo_path=Non
         fv_y = int(fv.year)
         fv_m = int(fv.month)
 
+        es_baja = est.upper() == "BAJA"
+        fb_y, fb_m = 9999, 99
+        if es_baja and pd.notna(fb):
+            fb_y = int(fb.year)
+            fb_m = int(fb.month)
+
+        # Si hay filtro anual y se solicita solo con movimiento, omitir si termino antes o inicia despues
+        if anio_filtro is not None and solo_con_movimiento:
+            a_f = int(anio_filtro)
+            if (fa_y > a_f) or (fv_y < a_f) or (es_baja and fb_y < a_f):
+                continue
+
         ym_start = (fa_y, fa_m)
         ym_end = (fv_y, fv_m)
         if min_ym is None or ym_start < min_ym:
             min_ym = ym_start
         if max_ym is None or ym_end > max_ym:
             max_ym = ym_end
-
-        es_baja = est.upper() == "BAJA"
-        fb_y, fb_m = 9999, 99
-        if es_baja and pd.notna(fb):
-            fb_y = int(fb.year)
-            fb_m = int(fb.month)
 
         v_sin_iva = float(r.get("Valor_Sin_IVA") or 0.0)
         anticipo = float(r.get("Anticipo_Monto") or 0.0)
@@ -188,6 +213,25 @@ def generar_excel_auditoria(anio_filtro=None, titulo_empresa=None, logo_path=Non
         res_monto = float(r.get("Residual_Monto") or 0.0)
         com_monto = float(r.get("Comision_Monto") or 0.0)
         tasa_reg = round(float(r.get("Tasa_Calculada") or 0.0), 8)
+
+        # Porcentajes iniciales de captura (en base decimal para Excel: 20% = 0.20)
+        ant_pct_raw = float(r.get("Anticipo_Pct") or 0.0)
+        if ant_pct_raw > 0:
+            ant_pct = ant_pct_raw / 100.0 if ant_pct_raw > 1.0 else ant_pct_raw
+        else:
+            ant_pct = (anticipo / v_sin_iva) if v_sin_iva > 0 else 0.0
+
+        com_pct_raw = float(r.get("Comision_Apertura_Pct") or 0.0)
+        if com_pct_raw > 0:
+            com_pct = com_pct_raw / 100.0 if com_pct_raw > 1.0 else com_pct_raw
+        else:
+            com_pct = (com_monto / v_sin_iva) if v_sin_iva > 0 else 0.0
+
+        res_pct_raw = float(r.get("Residual_Pct") or 0.0)
+        if res_pct_raw > 0:
+            res_pct = res_pct_raw / 100.0 if res_pct_raw > 1.0 else res_pct_raw
+        else:
+            res_pct = (res_monto / v_sin_iva) if v_sin_iva > 0 else 0.0
 
         vpr = float(r.get("VP_Residual") or 0.0)
         if not vpr or vpr <= 0:
@@ -217,11 +261,14 @@ def generar_excel_auditoria(anio_filtro=None, titulo_empresa=None, logo_path=Non
             "fb_m": fb_m,
             "pl": pl,
             "valor": v_sin_iva,
+            "anticipo_pct": ant_pct,
             "anticipo": anticipo,
             "inversion": inv,
-            "renta": renta,
-            "residual": res_monto,
+            "comision_pct": com_pct,
             "comision": com_monto,
+            "renta": renta,
+            "residual_pct": res_pct,
+            "residual": res_monto,
             "tasa_reg": tasa_reg,
             "vpr": vpr,
             "il": il_list,
@@ -259,35 +306,38 @@ def generar_excel_auditoria(anio_filtro=None, titulo_empresa=None, logo_path=Non
     # =========================================================================
     ws_resumen = wb.create_sheet(title="Resumen_Cartera")
     cols_resumen = [
-        ("ID_Contrato", 14, Alignment(horizontal="center")),
-        ("Cliente", 34, Alignment(horizontal="left")),
-        ("Vehiculo", 26, Alignment(horizontal="left")),
-        ("Estatus", 12, Alignment(horizontal="center")),
-        ("Fecha_Alta", 13, Alignment(horizontal="center")),
-        ("Fecha_Vencimiento", 15, Alignment(horizontal="center")),
-        ("Plazo_Meses", 12, Alignment(horizontal="right")),
-        ("Valor_Sin_IVA", 16, Alignment(horizontal="right")),
-        ("Anticipo_Monto", 16, Alignment(horizontal="right")),
-        ("Inversion_Neta", 16, Alignment(horizontal="right")),
-        ("Renta_Sin_IVA", 16, Alignment(horizontal="right")),
-        ("Residual_Pactado", 16, Alignment(horizontal="right")),
-        ("Comision_Apertura", 16, Alignment(horizontal="right")),
-        ("Tasa_Mensual_Reg", 16, Alignment(horizontal="right")),
-        ("Tasa_Mensual_RATE", 18, Alignment(horizontal="right")),
-        ("Tasa_Nominal_Anual", 18, Alignment(horizontal="right")),
-        ("TIR_Anual_Efectiva", 18, Alignment(horizontal="right")),
-        ("VP_Residual", 16, Alignment(horizontal="right")),
-        ("Total_Interes_Leasing", 18, Alignment(horizontal="right")),
-        ("Total_Interes_Residual", 18, Alignment(horizontal="right")),
-        ("Ingreso_Financiero_Total", 20, Alignment(horizontal="right")),
-        ("Ganancia_Neta", 18, Alignment(horizontal="right")),
-        ("Margen_Sobre_Inv", 16, Alignment(horizontal="right")),
+        ("ID_Contrato", 14, Alignment(horizontal="center")),              # A (1)
+        ("Cliente", 34, Alignment(horizontal="left")),                    # B (2)
+        ("Vehiculo", 26, Alignment(horizontal="left")),                   # C (3)
+        ("Estatus", 12, Alignment(horizontal="center")),                  # D (4)
+        ("Fecha_Alta", 13, Alignment(horizontal="center")),               # E (5)
+        ("Fecha_Vencimiento", 15, Alignment(horizontal="center")),        # F (6)
+        ("Plazo_Meses", 12, Alignment(horizontal="right")),               # G (7)
+        ("Valor_Sin_IVA", 16, Alignment(horizontal="right")),             # H (8)
+        ("Anticipo_Pct", 13, Alignment(horizontal="right")),              # I (9)
+        ("Anticipo_Monto", 16, Alignment(horizontal="right")),            # J (10) Formula =H*I
+        ("Inversion_Neta", 16, Alignment(horizontal="right")),            # K (11) Formula =H-J
+        ("Comision_Pct", 13, Alignment(horizontal="right")),              # L (12)
+        ("Comision_Apertura", 16, Alignment(horizontal="right")),         # M (13) Formula =H*L
+        ("Renta_Sin_IVA", 16, Alignment(horizontal="right")),             # N (14)
+        ("Residual_Pct", 13, Alignment(horizontal="right")),              # O (15)
+        ("Residual_Pactado", 16, Alignment(horizontal="right")),          # P (16) Formula =H*O
+        ("Tasa_Mensual_Reg", 16, Alignment(horizontal="right")),          # Q (17)
+        ("Tasa_Mensual_RATE", 18, Alignment(horizontal="right")),         # R (18) Formula RATE
+        ("Tasa_Nominal_Anual", 18, Alignment(horizontal="right")),        # S (19) Formula =Q*12
+        ("TIR_Anual_Efectiva", 18, Alignment(horizontal="right")),        # T (20) Formula ((1+Q)^12)-1
+        ("VP_Residual", 16, Alignment(horizontal="right")),               # U (21) Formula VP
+        ("Total_Interes_Leasing", 18, Alignment(horizontal="right")),     # V (22) Formula =(N*G)-K+P
+        ("Total_Interes_Residual", 18, Alignment(horizontal="right")),    # W (23) Formula =P-U
+        ("Ingreso_Financiero_Total", 20, Alignment(horizontal="right")),  # X (24) Formula =V+W
+        ("Ganancia_Neta", 18, Alignment(horizontal="right")),             # Y (25) Formula =(N*G+P+M)-K
+        ("Margen_Sobre_Inv", 16, Alignment(horizontal="right")),          # Z (26) Formula =Y/K
     ]
 
     _preparar_encabezado_hoja(
         ws_resumen,
         "Resumen de Cartera y Parámetros Financieros",
-        "Parámetros contractuales y fórmulas matemáticas de rentabilidad por contrato",
+        "Parámetros contractuales, unidad de vehículo, porcentajes iniciales y fórmulas matemáticas de rentabilidad",
         len(cols_resumen),
         titulo_empresa=titulo_empresa,
         logo_path=logo_path
@@ -324,75 +374,90 @@ def generar_excel_auditoria(anio_filtro=None, titulo_empresa=None, logo_path=Non
         c_val.number_format = FMT_CURRENCY
         c_val.alignment = cols_resumen[7][2]
 
-        c_ant = ws_resumen.cell(row=r_idx, column=9, value=c_item["anticipo"])
+        c_apct = ws_resumen.cell(row=r_idx, column=9, value=c_item["anticipo_pct"])
+        c_apct.number_format = FMT_PCT_ANNUAL
+        c_apct.alignment = cols_resumen[8][2]
+
+        # Anticipo Monto = H * I
+        c_ant = ws_resumen.cell(row=r_idx, column=10, value=f"=H{r_idx}*I{r_idx}")
         c_ant.number_format = FMT_CURRENCY
-        c_ant.alignment = cols_resumen[8][2]
+        c_ant.alignment = cols_resumen[9][2]
 
-        # Inversion Neta = H - I
-        c_inv = ws_resumen.cell(row=r_idx, column=10, value=f"=H{r_idx}-I{r_idx}")
+        # Inversion Neta = H - J
+        c_inv = ws_resumen.cell(row=r_idx, column=11, value=f"=H{r_idx}-J{r_idx}")
         c_inv.number_format = FMT_CURRENCY
-        c_inv.alignment = cols_resumen[9][2]
+        c_inv.alignment = cols_resumen[10][2]
 
-        c_ren = ws_resumen.cell(row=r_idx, column=11, value=c_item["renta"])
-        c_ren.number_format = FMT_CURRENCY
-        c_ren.alignment = cols_resumen[10][2]
+        c_cpct = ws_resumen.cell(row=r_idx, column=12, value=c_item["comision_pct"])
+        c_cpct.number_format = FMT_PCT_ANNUAL
+        c_cpct.alignment = cols_resumen[11][2]
 
-        c_res = ws_resumen.cell(row=r_idx, column=12, value=c_item["residual"])
-        c_res.number_format = FMT_CURRENCY
-        c_res.alignment = cols_resumen[11][2]
-
-        c_com = ws_resumen.cell(row=r_idx, column=13, value=c_item["comision"])
+        # Comision Apertura = H * L
+        c_com = ws_resumen.cell(row=r_idx, column=13, value=f"=H{r_idx}*L{r_idx}")
         c_com.number_format = FMT_CURRENCY
         c_com.alignment = cols_resumen[12][2]
 
-        c_treg = ws_resumen.cell(row=r_idx, column=14, value=c_item["tasa_reg"])
+        c_ren = ws_resumen.cell(row=r_idx, column=14, value=c_item["renta"])
+        c_ren.number_format = FMT_CURRENCY
+        c_ren.alignment = cols_resumen[13][2]
+
+        c_rpct = ws_resumen.cell(row=r_idx, column=15, value=c_item["residual_pct"])
+        c_rpct.number_format = FMT_PCT_ANNUAL
+        c_rpct.alignment = cols_resumen[14][2]
+
+        # Residual Pactado = H * O
+        c_res = ws_resumen.cell(row=r_idx, column=16, value=f"=H{r_idx}*O{r_idx}")
+        c_res.number_format = FMT_CURRENCY
+        c_res.alignment = cols_resumen[15][2]
+
+        c_treg = ws_resumen.cell(row=r_idx, column=17, value=c_item["tasa_reg"])
         c_treg.number_format = FMT_PCT_RATE
-        c_treg.alignment = cols_resumen[13][2]
+        c_treg.alignment = cols_resumen[16][2]
 
         # Tasa Mensual RATE = IFERROR(RATE(Plazo, -Renta, Inversion, -Residual), Tasa_Reg)
-        c_trate = ws_resumen.cell(row=r_idx, column=15, value=f"=IFERROR(RATE(G{r_idx}, -K{r_idx}, J{r_idx}, -L{r_idx}), N{r_idx})")
+        c_trate = ws_resumen.cell(row=r_idx, column=18, value=f"=IFERROR(RATE(G{r_idx}, -N{r_idx}, K{r_idx}, -P{r_idx}), Q{r_idx})")
         c_trate.number_format = FMT_PCT_RATE
-        c_trate.alignment = cols_resumen[14][2]
+        c_trate.alignment = cols_resumen[17][2]
 
         # Tasa Nominal Anual = Tasa_Reg * 12
-        c_tnom = ws_resumen.cell(row=r_idx, column=16, value=f"=N{r_idx}*12")
+        c_tnom = ws_resumen.cell(row=r_idx, column=19, value=f"=Q{r_idx}*12")
         c_tnom.number_format = FMT_PCT_ANNUAL
-        c_tnom.alignment = cols_resumen[15][2]
+        c_tnom.alignment = cols_resumen[18][2]
 
-        # TIR Anual Efectiva = ((1 + N)^12) - 1
-        c_tir = ws_resumen.cell(row=r_idx, column=17, value=f"=((1+N{r_idx})^12)-1")
+        # TIR Anual Efectiva = ((1 + Q)^12) - 1
+        c_tir = ws_resumen.cell(row=r_idx, column=20, value=f"=((1+Q{r_idx})^12)-1")
         c_tir.number_format = FMT_PCT_ANNUAL
-        c_tir.alignment = cols_resumen[16][2]
+        c_tir.alignment = cols_resumen[19][2]
 
-        # VP Residual = IF(N>0, L/((1+N)^G), L)
-        c_vpr = ws_resumen.cell(row=r_idx, column=18, value=f"=IF(N{r_idx}>0, L{r_idx}/((1+N{r_idx})^G{r_idx}), L{r_idx})")
+        # VP Residual = IF(Q>0, P/((1+Q)^G), P)
+        c_vpr = ws_resumen.cell(row=r_idx, column=21, value=f"=IF(Q{r_idx}>0, P{r_idx}/((1+Q{r_idx})^G{r_idx}), P{r_idx})")
         c_vpr.number_format = FMT_CURRENCY
-        c_vpr.alignment = cols_resumen[17][2]
+        c_vpr.alignment = cols_resumen[20][2]
 
-        # Total Interes Leasing = (K * G) - J + L
-        c_til = ws_resumen.cell(row=r_idx, column=19, value=f"=(K{r_idx}*G{r_idx})-J{r_idx}+L{r_idx}")
+        # Total Interes Leasing = (N * G) - K + P
+        c_til = ws_resumen.cell(row=r_idx, column=22, value=f"=(N{r_idx}*G{r_idx})-K{r_idx}+P{r_idx}")
         c_til.number_format = FMT_CURRENCY
-        c_til.alignment = cols_resumen[18][2]
+        c_til.alignment = cols_resumen[21][2]
 
-        # Total Interes Residual = L - R
-        c_tir_res = ws_resumen.cell(row=r_idx, column=20, value=f"=L{r_idx}-R{r_idx}")
+        # Total Interes Residual = P - U
+        c_tir_res = ws_resumen.cell(row=r_idx, column=23, value=f"=P{r_idx}-U{r_idx}")
         c_tir_res.number_format = FMT_CURRENCY
-        c_tir_res.alignment = cols_resumen[19][2]
+        c_tir_res.alignment = cols_resumen[22][2]
 
-        # Ingreso Financiero Total = S + T
-        c_ing = ws_resumen.cell(row=r_idx, column=21, value=f"=S{r_idx}+T{r_idx}")
+        # Ingreso Financiero Total = V + W
+        c_ing = ws_resumen.cell(row=r_idx, column=24, value=f"=V{r_idx}+W{r_idx}")
         c_ing.number_format = FMT_CURRENCY
-        c_ing.alignment = cols_resumen[20][2]
+        c_ing.alignment = cols_resumen[23][2]
 
-        # Ganancia Neta = (K * G + L + M) - J
-        c_gan = ws_resumen.cell(row=r_idx, column=22, value=f"=(K{r_idx}*G{r_idx}+L{r_idx}+M{r_idx})-J{r_idx}")
+        # Ganancia Neta = (N * G + P + M) - K
+        c_gan = ws_resumen.cell(row=r_idx, column=25, value=f"=(N{r_idx}*G{r_idx}+P{r_idx}+M{r_idx})-K{r_idx}")
         c_gan.number_format = FMT_CURRENCY
-        c_gan.alignment = cols_resumen[21][2]
+        c_gan.alignment = cols_resumen[24][2]
 
-        # Margen = IF(J>0, V/J, 0)
-        c_mar = ws_resumen.cell(row=r_idx, column=23, value=f"=IF(J{r_idx}>0, V{r_idx}/J{r_idx}, 0)")
+        # Margen = IF(K>0, Y/K, 0)
+        c_mar = ws_resumen.cell(row=r_idx, column=26, value=f"=IF(K{r_idx}>0, Y{r_idx}/K{r_idx}, 0)")
         c_mar.number_format = FMT_PCT_ANNUAL
-        c_mar.alignment = cols_resumen[22][2]
+        c_mar.alignment = cols_resumen[25][2]
 
         es_par = (fila_actual - fila_inicio_datos) % 2 == 1
         for col_i in range(1, len(cols_resumen) + 1):
@@ -409,20 +474,20 @@ def generar_excel_auditoria(anio_filtro=None, titulo_empresa=None, logo_path=Non
     ws_resumen.cell(row=fila_actual, column=1, value="TOTAL CARTERA").alignment = Alignment(horizontal="center")
     ws_resumen.cell(row=fila_actual, column=2, value=f"{len(contratos_pre)} Contratos Registrados").alignment = Alignment(horizontal="left")
 
-    for c_idx in [8, 9, 10, 11, 12, 13, 18, 19, 20, 21, 22]:
+    for c_idx in [8, 10, 11, 13, 14, 16, 21, 22, 23, 24, 25]:
         letra_col = get_column_letter(c_idx)
         cell_t = ws_resumen.cell(row=fila_actual, column=c_idx, value=f"=SUM({letra_col}{fila_inicio_datos}:{letra_col}{fila_fin_datos})")
         cell_t.number_format = FMT_CURRENCY
         cell_t.alignment = Alignment(horizontal="right")
 
-    for c_idx in [14, 15, 16, 17]:
+    for c_idx in [9, 12, 15, 17, 18, 19, 20]:
         letra_col = get_column_letter(c_idx)
-        fmt_t = FMT_PCT_RATE if c_idx in [14, 15] else FMT_PCT_ANNUAL
+        fmt_t = FMT_PCT_RATE if c_idx in [17, 18] else FMT_PCT_ANNUAL
         cell_t = ws_resumen.cell(row=fila_actual, column=c_idx, value=f"=AVERAGE({letra_col}{fila_inicio_datos}:{letra_col}{fila_fin_datos})")
         cell_t.number_format = fmt_t
         cell_t.alignment = Alignment(horizontal="right")
 
-    cell_mar_tot = ws_resumen.cell(row=fila_actual, column=23, value=f"=IF(J{fila_actual}>0, V{fila_actual}/J{fila_actual}, 0)")
+    cell_mar_tot = ws_resumen.cell(row=fila_actual, column=26, value=f"=IF(K{fila_actual}>0, Y{fila_actual}/K{fila_actual}, 0)")
     cell_mar_tot.number_format = FMT_PCT_ANNUAL
     cell_mar_tot.alignment = Alignment(horizontal="right")
 
@@ -432,7 +497,7 @@ def generar_excel_auditoria(anio_filtro=None, titulo_empresa=None, logo_path=Non
         c_tot.font = FONT_TOTAL
         c_tot.border = BORDER_TOTAL
 
-    ws_resumen.freeze_panes = "C5"
+    ws_resumen.freeze_panes = "D5"
     ws_resumen.auto_filter.ref = f"A{fila_header_res}:{get_column_letter(len(cols_resumen))}{fila_fin_datos}"
 
     # =========================================================================
@@ -440,29 +505,32 @@ def generar_excel_auditoria(anio_filtro=None, titulo_empresa=None, logo_path=Non
     # =========================================================================
     ws_tasa = wb.create_sheet(title="Calculo_Tasa_Implicita")
     cols_tasa = [
-        ("ID_Contrato", 14, Alignment(horizontal="center")),
-        ("Cliente", 34, Alignment(horizontal="left")),
-        ("Estatus", 12, Alignment(horizontal="center")),
-        ("Plazo_Meses", 12, Alignment(horizontal="right")),
-        ("Valor_Sin_IVA", 16, Alignment(horizontal="right")),
-        ("Anticipo_Monto", 16, Alignment(horizontal="right")),
-        ("Inversion_Neta", 16, Alignment(horizontal="right")),
-        ("Renta_Sin_IVA", 16, Alignment(horizontal="right")),
-        ("Residual_Pactado", 16, Alignment(horizontal="right")),
-        ("Tasa_Mensual_Registrada", 16, Alignment(horizontal="right")),
-        ("Tasa_Calculada_RATE", 16, Alignment(horizontal="right")),
-        ("Comprobacion_PV", 18, Alignment(horizontal="right")),
-        ("Diferencia_Cuadre", 16, Alignment(horizontal="right")),
-        ("Tasa_Nominal_Anual", 16, Alignment(horizontal="right")),
-        ("TIR_Anual_Efectiva", 16, Alignment(horizontal="right")),
-        ("Diferencia_vs_Registrada", 16, Alignment(horizontal="right")),
-        ("Estatus_Verificacion", 16, Alignment(horizontal="center")),
+        ("ID_Contrato", 14, Alignment(horizontal="center")),              # A (1)
+        ("Cliente", 34, Alignment(horizontal="left")),                    # B (2)
+        ("Vehiculo", 26, Alignment(horizontal="left")),                   # C (3)
+        ("Estatus", 12, Alignment(horizontal="center")),                  # D (4)
+        ("Plazo_Meses", 12, Alignment(horizontal="right")),               # E (5)
+        ("Valor_Sin_IVA", 16, Alignment(horizontal="right")),             # F (6)
+        ("Anticipo_Pct", 13, Alignment(horizontal="right")),              # G (7)
+        ("Anticipo_Monto", 16, Alignment(horizontal="right")),            # H (8) Formula =F*G
+        ("Inversion_Neta", 16, Alignment(horizontal="right")),            # I (9) Formula =F-H
+        ("Renta_Sin_IVA", 16, Alignment(horizontal="right")),             # J (10)
+        ("Residual_Pct", 13, Alignment(horizontal="right")),              # K (11)
+        ("Residual_Pactado", 16, Alignment(horizontal="right")),          # L (12) Formula =F*K
+        ("Tasa_Mensual_Registrada", 16, Alignment(horizontal="right")),   # M (13)
+        ("Tasa_Calculada_RATE", 16, Alignment(horizontal="right")),       # N (14) Formula RATE
+        ("Comprobacion_PV", 18, Alignment(horizontal="right")),           # O (15) Formula PV
+        ("Diferencia_Cuadre", 16, Alignment(horizontal="right")),         # P (16) Formula =O-I
+        ("Tasa_Nominal_Anual", 16, Alignment(horizontal="right")),        # Q (17) Formula =N*12
+        ("TIR_Anual_Efectiva", 16, Alignment(horizontal="right")),        # R (18) Formula ((1+N)^12)-1
+        ("Diferencia_vs_Registrada", 16, Alignment(horizontal="right")),  # S (19) Formula =N-M
+        ("Estatus_Verificacion", 16, Alignment(horizontal="center")),     # T (20) Formula IF
     ]
 
     _preparar_encabezado_hoja(
         ws_tasa,
         "Cálculo de Tasa Implícita y Comprobación de Flujos (NIF C-15 / IFRS 16)",
-        "Determinación de tasa mensual mediante RATE(nper, -pmt, pv, -fv) y comprobación PV con diferencia cero",
+        "Determinación de tasa mensual mediante RATE(nper, -pmt, pv, -fv), unidad vehicular y comprobación PV con diferencia cero",
         len(cols_tasa),
         titulo_empresa=titulo_empresa,
         logo_path=logo_path
@@ -483,70 +551,81 @@ def generar_excel_auditoria(anio_filtro=None, titulo_empresa=None, logo_path=Non
         r_t = fila_actual_tasa
         ws_tasa.cell(row=r_t, column=1, value=c_item["id"]).alignment = cols_tasa[0][2]
         ws_tasa.cell(row=r_t, column=2, value=c_item["cliente"]).alignment = cols_tasa[1][2]
-        ws_tasa.cell(row=r_t, column=3, value=c_item["estatus"]).alignment = cols_tasa[2][2]
+        ws_tasa.cell(row=r_t, column=3, value=c_item["vehiculo"]).alignment = cols_tasa[2][2]
+        ws_tasa.cell(row=r_t, column=4, value=c_item["estatus"]).alignment = cols_tasa[3][2]
 
-        c_pl = ws_tasa.cell(row=r_t, column=4, value=c_item["pl"])
+        c_pl = ws_tasa.cell(row=r_t, column=5, value=c_item["pl"])
         c_pl.number_format = FMT_INT
-        c_pl.alignment = cols_tasa[3][2]
+        c_pl.alignment = cols_tasa[4][2]
 
-        c_val = ws_tasa.cell(row=r_t, column=5, value=c_item["valor"])
+        c_val = ws_tasa.cell(row=r_t, column=6, value=c_item["valor"])
         c_val.number_format = FMT_CURRENCY
-        c_val.alignment = cols_tasa[4][2]
+        c_val.alignment = cols_tasa[5][2]
 
-        c_ant = ws_tasa.cell(row=r_t, column=6, value=c_item["anticipo"])
+        c_apct = ws_tasa.cell(row=r_t, column=7, value=c_item["anticipo_pct"])
+        c_apct.number_format = FMT_PCT_ANNUAL
+        c_apct.alignment = cols_tasa[6][2]
+
+        # Anticipo Monto = F * G
+        c_ant = ws_tasa.cell(row=r_t, column=8, value=f"=F{r_t}*G{r_t}")
         c_ant.number_format = FMT_CURRENCY
-        c_ant.alignment = cols_tasa[5][2]
+        c_ant.alignment = cols_tasa[7][2]
 
-        # Inversion Neta = E - F
-        c_inv = ws_tasa.cell(row=r_t, column=7, value=f"=E{r_t}-F{r_t}")
+        # Inversion Neta = F - H
+        c_inv = ws_tasa.cell(row=r_t, column=9, value=f"=F{r_t}-H{r_t}")
         c_inv.number_format = FMT_CURRENCY
-        c_inv.alignment = cols_tasa[6][2]
+        c_inv.alignment = cols_tasa[8][2]
 
-        c_ren = ws_tasa.cell(row=r_t, column=8, value=c_item["renta"])
+        c_ren = ws_tasa.cell(row=r_t, column=10, value=c_item["renta"])
         c_ren.number_format = FMT_CURRENCY
-        c_ren.alignment = cols_tasa[7][2]
+        c_ren.alignment = cols_tasa[9][2]
 
-        c_res = ws_tasa.cell(row=r_t, column=9, value=c_item["residual"])
+        c_rpct = ws_tasa.cell(row=r_t, column=11, value=c_item["residual_pct"])
+        c_rpct.number_format = FMT_PCT_ANNUAL
+        c_rpct.alignment = cols_tasa[10][2]
+
+        # Residual Pactado = F * K
+        c_res = ws_tasa.cell(row=r_t, column=12, value=f"=F{r_t}*K{r_t}")
         c_res.number_format = FMT_CURRENCY
-        c_res.alignment = cols_tasa[8][2]
+        c_res.alignment = cols_tasa[11][2]
 
-        c_treg = ws_tasa.cell(row=r_t, column=10, value=c_item["tasa_reg"])
+        c_treg = ws_tasa.cell(row=r_t, column=13, value=c_item["tasa_reg"])
         c_treg.number_format = FMT_PCT_RATE
-        c_treg.alignment = cols_tasa[9][2]
+        c_treg.alignment = cols_tasa[12][2]
 
-        # Tasa RATE = IFERROR(RATE(D, -H, G, -I), J)
-        c_trate = ws_tasa.cell(row=r_t, column=11, value=f"=IFERROR(RATE(D{r_t}, -H{r_t}, G{r_t}, -I{r_t}), J{r_t})")
+        # Tasa RATE = IFERROR(RATE(E, -J, I, -L), M)
+        c_trate = ws_tasa.cell(row=r_t, column=14, value=f"=IFERROR(RATE(E{r_t}, -J{r_t}, I{r_t}, -L{r_t}), M{r_t})")
         c_trate.number_format = FMT_PCT_RATE
-        c_trate.alignment = cols_tasa[10][2]
+        c_trate.alignment = cols_tasa[13][2]
 
-        # Comprobacion PV = IF(K>0, PV(K, D, -H, -I), G)
-        c_pv = ws_tasa.cell(row=r_t, column=12, value=f"=IF(K{r_t}>0, PV(K{r_t}, D{r_t}, -H{r_t}, -I{r_t}), G{r_t})")
+        # Comprobacion PV = IF(N>0, PV(N, E, -J, -L), I)
+        c_pv = ws_tasa.cell(row=r_t, column=15, value=f"=IF(N{r_t}>0, PV(N{r_t}, E{r_t}, -J{r_t}, -L{r_t}), I{r_t})")
         c_pv.number_format = FMT_CURRENCY
-        c_pv.alignment = cols_tasa[11][2]
+        c_pv.alignment = cols_tasa[14][2]
 
-        # Diferencia Cuadre = L - G (debe dar $0.00)
-        c_dif = ws_tasa.cell(row=r_t, column=13, value=f"=L{r_t}-G{r_t}")
+        # Diferencia Cuadre = O - I (debe dar $0.00 exacto)
+        c_dif = ws_tasa.cell(row=r_t, column=16, value=f"=O{r_t}-I{r_t}")
         c_dif.number_format = FMT_CURRENCY
-        c_dif.alignment = cols_tasa[12][2]
+        c_dif.alignment = cols_tasa[15][2]
 
-        # Tasa Nominal Anual = K * 12
-        c_tnom = ws_tasa.cell(row=r_t, column=14, value=f"=K{r_t}*12")
+        # Tasa Nominal Anual = N * 12
+        c_tnom = ws_tasa.cell(row=r_t, column=17, value=f"=N{r_t}*12")
         c_tnom.number_format = FMT_PCT_ANNUAL
-        c_tnom.alignment = cols_tasa[13][2]
+        c_tnom.alignment = cols_tasa[16][2]
 
-        # TIR Anual Efectiva = ((1+K)^12)-1
-        c_tir = ws_tasa.cell(row=r_t, column=15, value=f"=((1+K{r_t})^12)-1")
+        # TIR Anual Efectiva = ((1+N)^12)-1
+        c_tir = ws_tasa.cell(row=r_t, column=18, value=f"=((1+N{r_t})^12)-1")
         c_tir.number_format = FMT_PCT_ANNUAL
-        c_tir.alignment = cols_tasa[14][2]
+        c_tir.alignment = cols_tasa[17][2]
 
-        # Diferencia RATE vs Registrada = K - J
-        c_dift = ws_tasa.cell(row=r_t, column=16, value=f"=K{r_t}-J{r_t}")
+        # Diferencia RATE vs Registrada = N - M
+        c_dift = ws_tasa.cell(row=r_t, column=19, value=f"=N{r_t}-M{r_t}")
         c_dift.number_format = FMT_PCT_RATE
-        c_dift.alignment = cols_tasa[15][2]
+        c_dift.alignment = cols_tasa[18][2]
 
-        # Estatus Verificacion = IF(ABS(M)<0.01, "EXACTO", "REVISAR")
-        c_ver = ws_tasa.cell(row=r_t, column=17, value=f'=IF(ABS(M{r_t})<0.01, "EXACTO", "REVISAR")')
-        c_ver.alignment = cols_tasa[16][2]
+        # Estatus Verificacion = IF(ABS(P)<0.01, "EXACTO", "REVISAR")
+        c_ver = ws_tasa.cell(row=r_t, column=20, value=f'=IF(ABS(P{r_t})<0.01, "EXACTO", "REVISAR")')
+        c_ver.alignment = cols_tasa[19][2]
 
         es_par_t = (fila_actual_tasa - fila_inicio_datos) % 2 == 1
         for col_i in range(1, len(cols_tasa) + 1):
@@ -562,20 +641,20 @@ def generar_excel_auditoria(anio_filtro=None, titulo_empresa=None, logo_path=Non
     ws_tasa.cell(row=fila_actual_tasa, column=1, value="TOTAL CARTERA").alignment = Alignment(horizontal="center")
     ws_tasa.cell(row=fila_actual_tasa, column=2, value=f"{len(contratos_pre)} Contratos").alignment = Alignment(horizontal="left")
 
-    for c_idx in [5, 6, 7, 8, 9, 12, 13]:
+    for c_idx in [6, 8, 9, 10, 12, 15, 16]:
         letra_col = get_column_letter(c_idx)
         cell_t = ws_tasa.cell(row=fila_actual_tasa, column=c_idx, value=f"=SUM({letra_col}{fila_inicio_datos}:{letra_col}{fila_fin_tasa})")
         cell_t.number_format = FMT_CURRENCY
         cell_t.alignment = Alignment(horizontal="right")
 
-    for c_idx in [10, 11, 14, 15, 16]:
+    for c_idx in [7, 11, 13, 14, 17, 18, 19]:
         letra_col = get_column_letter(c_idx)
-        fmt_t = FMT_PCT_RATE if c_idx in [10, 11, 16] else FMT_PCT_ANNUAL
+        fmt_t = FMT_PCT_RATE if c_idx in [13, 14, 19] else FMT_PCT_ANNUAL
         cell_t = ws_tasa.cell(row=fila_actual_tasa, column=c_idx, value=f"=AVERAGE({letra_col}{fila_inicio_datos}:{letra_col}{fila_fin_tasa})")
         cell_t.number_format = fmt_t
         cell_t.alignment = Alignment(horizontal="right")
 
-    ws_tasa.cell(row=fila_actual_tasa, column=17, value="AUDITADO").alignment = Alignment(horizontal="center")
+    ws_tasa.cell(row=fila_actual_tasa, column=20, value="AUDITADO").alignment = Alignment(horizontal="center")
 
     for col_i in range(1, len(cols_tasa) + 1):
         c_tot = ws_tasa.cell(row=fila_actual_tasa, column=col_i)
@@ -583,7 +662,7 @@ def generar_excel_auditoria(anio_filtro=None, titulo_empresa=None, logo_path=Non
         c_tot.font = FONT_TOTAL
         c_tot.border = BORDER_TOTAL
 
-    ws_tasa.freeze_panes = "C5"
+    ws_tasa.freeze_panes = "D5"
     ws_tasa.auto_filter.ref = f"A{fila_header_tasa}:{get_column_letter(len(cols_tasa))}{fila_fin_tasa}"
 
     # =========================================================================
@@ -598,6 +677,7 @@ def generar_excel_auditoria(anio_filtro=None, titulo_empresa=None, logo_path=Non
             "fixed_cols": [
                 ("ID_Contrato", 14, Alignment(horizontal="center")),
                 ("Cliente", 34, Alignment(horizontal="left")),
+                ("Vehiculo", 26, Alignment(horizontal="left")),
                 ("Estatus", 12, Alignment(horizontal="center")),
                 ("Fecha_Alta", 13, Alignment(horizontal="center")),
                 ("Fecha_Vencimiento", 15, Alignment(horizontal="center")),
@@ -614,6 +694,7 @@ def generar_excel_auditoria(anio_filtro=None, titulo_empresa=None, logo_path=Non
             "fixed_cols": [
                 ("ID_Contrato", 14, Alignment(horizontal="center")),
                 ("Cliente", 34, Alignment(horizontal="left")),
+                ("Vehiculo", 26, Alignment(horizontal="left")),
                 ("Estatus", 12, Alignment(horizontal="center")),
                 ("Fecha_Alta", 13, Alignment(horizontal="center")),
                 ("Fecha_Vencimiento", 15, Alignment(horizontal="center")),
@@ -630,6 +711,7 @@ def generar_excel_auditoria(anio_filtro=None, titulo_empresa=None, logo_path=Non
             "fixed_cols": [
                 ("ID_Contrato", 14, Alignment(horizontal="center")),
                 ("Cliente", 34, Alignment(horizontal="left")),
+                ("Vehiculo", 26, Alignment(horizontal="left")),
                 ("Estatus", 12, Alignment(horizontal="center")),
                 ("Plazo", 10, Alignment(horizontal="right")),
             ],
@@ -638,16 +720,18 @@ def generar_excel_auditoria(anio_filtro=None, titulo_empresa=None, logo_path=Non
         {
             "sheet_name": "Amortizacion_Capital_Mensual",
             "titulo": "Amortización de Capital de Cartera Mes a Mes",
-            "subtitulo": "Recuperación mensual de capital principal por contrato y suma de cartera",
-            "campo": "cap",
+            "subtitulo": "Recuperación mensual de capital principal mediante fórmula: Capital = Renta - Intereses",
+            "campo": "cap_formula",
             "fixed_cols": [
                 ("ID_Contrato", 14, Alignment(horizontal="center")),
                 ("Cliente", 34, Alignment(horizontal="left")),
+                ("Vehiculo", 26, Alignment(horizontal="left")),
                 ("Estatus", 12, Alignment(horizontal="center")),
                 ("Fecha_Alta", 13, Alignment(horizontal="center")),
                 ("Fecha_Vencimiento", 15, Alignment(horizontal="center")),
                 ("Plazo", 10, Alignment(horizontal="right")),
                 ("Inversion_Neta", 16, Alignment(horizontal="right")),
+                ("Renta_Sin_IVA", 16, Alignment(horizontal="right")),
             ],
             "col_total_nombre": "Total_Capital_Recuperado"
         },
@@ -659,6 +743,7 @@ def generar_excel_auditoria(anio_filtro=None, titulo_empresa=None, logo_path=Non
             "fixed_cols": [
                 ("ID_Contrato", 14, Alignment(horizontal="center")),
                 ("Cliente", 34, Alignment(horizontal="left")),
+                ("Vehiculo", 26, Alignment(horizontal="left")),
                 ("Estatus", 12, Alignment(horizontal="center")),
                 ("Fecha_Alta", 13, Alignment(horizontal="center")),
                 ("Fecha_Vencimiento", 15, Alignment(horizontal="center")),
@@ -675,6 +760,7 @@ def generar_excel_auditoria(anio_filtro=None, titulo_empresa=None, logo_path=Non
             "fixed_cols": [
                 ("ID_Contrato", 14, Alignment(horizontal="center")),
                 ("Cliente", 34, Alignment(horizontal="left")),
+                ("Vehiculo", 26, Alignment(horizontal="left")),
                 ("Estatus", 12, Alignment(horizontal="center")),
                 ("Fecha_Alta", 13, Alignment(horizontal="center")),
                 ("Fecha_Vencimiento", 15, Alignment(horizontal="center")),
@@ -743,37 +829,57 @@ def generar_excel_auditoria(anio_filtro=None, titulo_empresa=None, logo_path=Non
             fb_m = c_item["fb_m"]
             pl = c_item["pl"]
 
-            if n_fixed >= 4:
-                ws_m.cell(row=r_actual, column=1, value=c_item["id"]).alignment = f_cols[0][2]
-                ws_m.cell(row=r_actual, column=2, value=c_item["cliente"]).alignment = f_cols[1][2]
-                ws_m.cell(row=r_actual, column=3, value=c_item["estatus"]).alignment = f_cols[2][2]
-            if n_fixed == 4:
-                c_p = ws_m.cell(row=r_actual, column=4, value=pl)
-                c_p.number_format = FMT_INT
-                c_p.alignment = f_cols[3][2]
-            elif n_fixed >= 7:
-                ws_m.cell(row=r_actual, column=4, value=c_item["fa_str"]).alignment = f_cols[3][2]
-                ws_m.cell(row=r_actual, column=5, value=c_item["fv_str"]).alignment = f_cols[4][2]
-                c_p = ws_m.cell(row=r_actual, column=6, value=pl)
-                c_p.number_format = FMT_INT
-                c_p.alignment = f_cols[5][2]
+            ws_m.cell(row=r_actual, column=1, value=c_item["id"]).alignment = f_cols[0][2]
+            ws_m.cell(row=r_actual, column=2, value=c_item["cliente"]).alignment = f_cols[1][2]
+            ws_m.cell(row=r_actual, column=3, value=c_item["vehiculo"]).alignment = f_cols[2][2]
+            ws_m.cell(row=r_actual, column=4, value=c_item["estatus"]).alignment = f_cols[3][2]
 
-                c_monto_fijo = ws_m.cell(row=r_actual, column=7, value=c_item["residual"] if "Residual" in f_cols[6][0] else c_item["inversion"])
+            if n_fixed == 5:
+                # Ingreso_Financiero_Total
+                c_p = ws_m.cell(row=r_actual, column=5, value=pl)
+                c_p.number_format = FMT_INT
+                c_p.alignment = f_cols[4][2]
+            elif n_fixed >= 8:
+                ws_m.cell(row=r_actual, column=5, value=c_item["fa_str"]).alignment = f_cols[4][2]
+                ws_m.cell(row=r_actual, column=6, value=c_item["fv_str"]).alignment = f_cols[5][2]
+                c_p = ws_m.cell(row=r_actual, column=7, value=pl)
+                c_p.number_format = FMT_INT
+                c_p.alignment = f_cols[6][2]
+
+                c_monto_fijo = ws_m.cell(row=r_actual, column=8, value=c_item["residual"] if "Residual" in f_cols[7][0] else c_item["inversion"])
                 c_monto_fijo.number_format = FMT_CURRENCY
-                c_monto_fijo.alignment = f_cols[6][2]
+                c_monto_fijo.alignment = f_cols[7][2]
 
-            val_list = c_item.get(campo_m) if campo_m != "ingreso_total_formula" else None
+                if n_fixed == 9:
+                    # Amortizacion_Capital_Mensual tiene Renta_Sin_IVA en col 9 (Col I)
+                    c_ren_m = ws_m.cell(row=r_actual, column=9, value=c_item["renta"])
+                    c_ren_m.number_format = FMT_CURRENCY
+                    c_ren_m.alignment = f_cols[8][2]
+
+            val_list = c_item.get(campo_m) if campo_m not in ("ingreso_total_formula", "cap_formula") else None
 
             for idx_m, (y, m) in enumerate(lista_meses):
                 c_pos = start_month_col_idx + idx_m
 
                 if campo_m == "ingreso_total_formula":
                     # Formula inter-hoja viva: =Intereses_Leasing_Mensual!ColRow + Intereses_Residual_Mensual!ColRow
-                    col_letra_origen = get_column_letter(7 + 1 + idx_m)
+                    # En esas hojas, hay 8 fixed cols, por lo que los meses empiezan en col 9 (get_column_letter(8 + 1 + idx_m))
+                    col_letra_origen = get_column_letter(8 + 1 + idx_m)
                     f_val = f"=Intereses_Leasing_Mensual!{col_letra_origen}{r_actual} + Intereses_Residual_Mensual!{col_letra_origen}{r_actual}"
                     cell_val_obj = ws_m.cell(row=r_actual, column=c_pos, value=f_val)
                     cell_val_obj.number_format = FMT_CURRENCY
                     cell_val_obj.alignment = Alignment(horizontal="right")
+
+                elif campo_m == "cap_formula":
+                    # Formula viva: Capital = Renta - Intereses Leasing
+                    # Col I es Renta_Sin_IVA (col 9).
+                    # Intereses_Leasing_Mensual tiene el interes en col_letra_origen (8 + 1 + idx_m)
+                    col_letra_origen = get_column_letter(8 + 1 + idx_m)
+                    f_cap = f'=IF(Intereses_Leasing_Mensual!{col_letra_origen}{r_actual}>0, $I{r_actual}-Intereses_Leasing_Mensual!{col_letra_origen}{r_actual}, "")'
+                    cell_val_obj = ws_m.cell(row=r_actual, column=c_pos, value=f_cap)
+                    cell_val_obj.number_format = FMT_CURRENCY
+                    cell_val_obj.alignment = Alignment(horizontal="right")
+
                 else:
                     valor_celda = 0.0
                     if (y < fa_y) or (y == fa_y and m < fa_m):
@@ -832,11 +938,11 @@ def generar_excel_auditoria(anio_filtro=None, titulo_empresa=None, logo_path=Non
             c_tot_m.font = FONT_TOTAL
             c_tot_m.border = BORDER_TOTAL
 
-        ws_m.freeze_panes = "C5"
+        ws_m.freeze_panes = "D5"
         ws_m.auto_filter.ref = f"A{fila_header_res}:{get_column_letter(total_cols_m)}{f_fin_m}"
 
     # =========================================================================
-    # 3. HOJA: Matriz_Consolidada (Desglose Multi-Concepto por Mes)
+    # 4. HOJA: Matriz_Consolidada (Desglose Multi-Concepto por Mes)
     # =========================================================================
     meses_consolidada = lista_meses if len(lista_meses) <= 24 else lista_meses[-24:]
     ws_cons = wb.create_sheet(title="Matriz_Consolidada")
@@ -844,6 +950,7 @@ def generar_excel_auditoria(anio_filtro=None, titulo_empresa=None, logo_path=Non
     cols_fijas_cons = [
         ("ID_Contrato", 14, Alignment(horizontal="center")),
         ("Cliente", 34, Alignment(horizontal="left")),
+        ("Vehiculo", 26, Alignment(horizontal="left")),
         ("Plazo", 10, Alignment(horizontal="right")),
     ]
 
@@ -860,7 +967,7 @@ def generar_excel_auditoria(anio_filtro=None, titulo_empresa=None, logo_path=Non
     _preparar_encabezado_hoja(
         ws_cons,
         "Matriz Cronológica Consolidada Multi-Concepto",
-        "Interés leasing, amortización de capital, saldo insoluto e interés de residual mes por mes",
+        "Interés leasing, amortización de capital, saldo insoluto e interés de residual mes por mes con fórmulas",
         total_cols_cons,
         titulo_empresa=titulo_empresa,
         logo_path=logo_path
@@ -904,35 +1011,37 @@ def generar_excel_auditoria(anio_filtro=None, titulo_empresa=None, logo_path=Non
     for c_item in contratos_pre:
         ws_cons.cell(row=r_act_c, column=1, value=c_item["id"]).alignment = cols_fijas_cons[0][2]
         ws_cons.cell(row=r_act_c, column=2, value=c_item["cliente"]).alignment = cols_fijas_cons[1][2]
-        c_pl_c = ws_cons.cell(row=r_act_c, column=3, value=c_item["pl"])
+        ws_cons.cell(row=r_act_c, column=3, value=c_item["vehiculo"]).alignment = cols_fijas_cons[2][2]
+        c_pl_c = ws_cons.cell(row=r_act_c, column=4, value=c_item["pl"])
         c_pl_c.number_format = FMT_INT
-        c_pl_c.alignment = cols_fijas_cons[2][2]
+        c_pl_c.alignment = cols_fijas_cons[3][2]
 
-        c_col_cursor = 4
+        c_col_cursor = 5
         for y_c, m_c in meses_consolidada:
             idx_mes_global = lista_meses.index((y_c, m_c))
-            col_origen_letra = get_column_letter(7 + 1 + idx_mes_global)
+            col_origen_letra_8 = get_column_letter(8 + 1 + idx_mes_global)
+            col_origen_letra_9 = get_column_letter(9 + 1 + idx_mes_global)
 
             # 1. Int Leasing
-            f_il = f"=Intereses_Leasing_Mensual!{col_origen_letra}{r_act_c}"
+            f_il = f"=Intereses_Leasing_Mensual!{col_origen_letra_8}{r_act_c}"
             c1 = ws_cons.cell(row=r_act_c, column=c_col_cursor, value=f_il)
             c1.number_format = FMT_CURRENCY
             c1.alignment = Alignment(horizontal="right")
 
             # 2. Capital
-            f_cap = f"=Amortizacion_Capital_Mensual!{col_origen_letra}{r_act_c}"
+            f_cap = f"=Amortizacion_Capital_Mensual!{col_origen_letra_9}{r_act_c}"
             c2 = ws_cons.cell(row=r_act_c, column=c_col_cursor + 1, value=f_cap)
             c2.number_format = FMT_CURRENCY
             c2.alignment = Alignment(horizontal="right")
 
             # 3. Saldo Cap
-            f_sc = f"=Saldos_Insolutos_Mensual!{col_origen_letra}{r_act_c}"
+            f_sc = f"=Saldos_Insolutos_Mensual!{col_origen_letra_8}{r_act_c}"
             c3 = ws_cons.cell(row=r_act_c, column=c_col_cursor + 2, value=f_sc)
             c3.number_format = FMT_CURRENCY
             c3.alignment = Alignment(horizontal="right")
 
             # 4. Int Residual
-            f_ir = f"=Intereses_Residual_Mensual!{col_origen_letra}{r_act_c}"
+            f_ir = f"=Intereses_Residual_Mensual!{col_origen_letra_8}{r_act_c}"
             c4 = ws_cons.cell(row=r_act_c, column=c_col_cursor + 3, value=f_ir)
             c4.number_format = FMT_CURRENCY
             c4.alignment = Alignment(horizontal="right")
@@ -961,7 +1070,7 @@ def generar_excel_auditoria(anio_filtro=None, titulo_empresa=None, logo_path=Non
     ws_cons.cell(row=r_act_c, column=1, value="TOTAL CARTERA").alignment = Alignment(horizontal="center")
     ws_cons.cell(row=r_act_c, column=2, value=f"{len(contratos_pre)} Contratos").alignment = Alignment(horizontal="left")
 
-    for col_k in range(4, total_cols_cons + 1):
+    for col_k in range(5, total_cols_cons + 1):
         letra_col_k = get_column_letter(col_k)
         c_k_tot = ws_cons.cell(row=r_act_c, column=col_k, value=f"=SUM({letra_col_k}5:{letra_col_k}{fin_datos_cons})")
         c_k_tot.number_format = FMT_CURRENCY
@@ -973,11 +1082,11 @@ def generar_excel_auditoria(anio_filtro=None, titulo_empresa=None, logo_path=Non
         c_tot_obj.font = FONT_TOTAL
         c_tot_obj.border = BORDER_TOTAL
 
-    ws_cons.freeze_panes = "D5"
+    ws_cons.freeze_panes = "E5"
     ws_cons.auto_filter.ref = f"A4:{get_column_letter(total_cols_cons)}{fin_datos_cons}"
 
     # =========================================================================
-    # 4. HOJA: Modelo_Amortizacion_Auditoria (Demostracion Dinamica NIF C-15)
+    # 5. HOJA: Modelo_Amortizacion_Tipo (Demostracion Dinamica NIF C-15)
     # =========================================================================
     ws_mod = wb.create_sheet(title="Modelo_Amortizacion_Tipo")
     _preparar_encabezado_hoja(
@@ -993,20 +1102,22 @@ def generar_excel_auditoria(anio_filtro=None, titulo_empresa=None, logo_path=Non
     ws_mod.cell(row=4, column=2, value="='Resumen_Cartera'!A5")
     ws_mod.cell(row=4, column=4, value="CLIENTE:").font = FONT_BODY_BOLD
     ws_mod.cell(row=4, column=5, value="='Resumen_Cartera'!B5")
+    ws_mod.cell(row=4, column=7, value="UNIDAD/VEHÍCULO:").font = FONT_BODY_BOLD
+    ws_mod.cell(row=4, column=8, value="='Resumen_Cartera'!C5")
 
     ws_mod.cell(row=5, column=1, value="Inversión Neta:").font = FONT_BODY_BOLD
-    ws_mod.cell(row=5, column=2, value="='Resumen_Cartera'!J5").number_format = FMT_CURRENCY
+    ws_mod.cell(row=5, column=2, value="='Resumen_Cartera'!K5").number_format = FMT_CURRENCY
     ws_mod.cell(row=5, column=4, value="Renta Mensual:").font = FONT_BODY_BOLD
-    ws_mod.cell(row=5, column=5, value="='Resumen_Cartera'!K5").number_format = FMT_CURRENCY
+    ws_mod.cell(row=5, column=5, value="='Resumen_Cartera'!N5").number_format = FMT_CURRENCY
     ws_mod.cell(row=5, column=7, value="Plazo Meses:").font = FONT_BODY_BOLD
     ws_mod.cell(row=5, column=8, value="='Resumen_Cartera'!G5").number_format = FMT_INT
 
     ws_mod.cell(row=6, column=1, value="Residual Pactado:").font = FONT_BODY_BOLD
-    ws_mod.cell(row=6, column=2, value="='Resumen_Cartera'!L5").number_format = FMT_CURRENCY
+    ws_mod.cell(row=6, column=2, value="='Resumen_Cartera'!P5").number_format = FMT_CURRENCY
     ws_mod.cell(row=6, column=4, value="Tasa Mensual:").font = FONT_BODY_BOLD
-    ws_mod.cell(row=6, column=5, value="='Resumen_Cartera'!N5").number_format = FMT_PCT_RATE
+    ws_mod.cell(row=6, column=5, value="='Resumen_Cartera'!Q5").number_format = FMT_PCT_RATE
     ws_mod.cell(row=6, column=7, value="VP Residual:").font = FONT_BODY_BOLD
-    ws_mod.cell(row=6, column=8, value="='Resumen_Cartera'!R5").number_format = FMT_CURRENCY
+    ws_mod.cell(row=6, column=8, value="='Resumen_Cartera'!U5").number_format = FMT_CURRENCY
 
     cols_modelo = [
         ("Mes", 8, Alignment(horizontal="center")),

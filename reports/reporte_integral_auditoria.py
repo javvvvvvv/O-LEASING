@@ -14,8 +14,9 @@
 # ============================================================================
 """
 reports/reporte_integral_auditoria.py — Pantalla integral de auditoria financiera
-con informacion de contratos, calculo de tasa implicita (RATE / PV), amortizaciones
-con formulas vivas y matrices cronologicas mensuales.
+con informacion completa de contratos, unidad vehicular adquirida, porcentajes
+iniciales (anticipo, comision, residual), calculo de tasa implicita (RATE / PV),
+amortizaciones con formulas vivas y matrices cronologicas mensuales.
 """
 
 from datetime import datetime
@@ -38,7 +39,7 @@ def render_reporte_integral_auditoria(get_db_path_fn=None, tabla_mensual_fn=None
     from finanzas import calc_amort, calc_res_amort, vp_res
 
     st.title("Reporte Integral de Auditoría Financiera")
-    st.caption("Normatividad Contable NIF C-15 / IFRS 16 · Fórmulas Matemáticas Vivas, Cálculo de Tasa y Desglose Cronológico")
+    st.caption("Normatividad Contable NIF C-15 / IFRS 16 · Fórmulas Matemáticas Vivas, Parámetros Contractuales, Unidades y Desglose Cronológico")
 
     if get_db_path_fn is not None:
         db_path = get_db_path_fn()
@@ -46,23 +47,43 @@ def render_reporte_integral_auditoria(get_db_path_fn=None, tabla_mensual_fn=None
         db_path = st.session_state.get("_active_db_path") or "leasing.db"
 
     conn = sqlite3.connect(db_path)
-    df_contratos = pd.read_sql("SELECT * FROM contratos ORDER BY ID_Contrato", conn)
+    df_contratos_all = pd.read_sql("SELECT * FROM contratos ORDER BY ID_Contrato", conn)
     conn.close()
 
-    if df_contratos.empty:
+    if df_contratos_all.empty:
         st.warning("No se encontraron contratos registrados en la base de datos.")
         return
 
+    # Selector de Consolidacion de Cartera (Activa por defecto para evitar contratos que ya no existen)
+    c_sel_cartera, c_info_badge = st.columns([3, 2])
+    with c_sel_cartera:
+        tipo_cartera = st.radio(
+            "Consolidación de Cartera para Auditoría:",
+            ["Cartera Activa / Vigente (Consolidada con Cartera - 278 contratos)", "Cartera Histórica Total (715 contratos, incluye bajas)"],
+            index=0,
+            horizontal=True,
+            key="rad_consolidacion_rep_int"
+        )
+    filtro_estatus_seleccionado = "ACTIVO" if "Activa" in tipo_cartera else "TODOS"
+
+    if filtro_estatus_seleccionado == "ACTIVO":
+        df_contratos = df_contratos_all[df_contratos_all["Estatus"].astype(str).str.strip().str.upper() == "ACTIVO"].copy()
+    else:
+        df_contratos = df_contratos_all.copy()
+
+    with c_info_badge:
+        st.info(f"Mostrando **{len(df_contratos)} contratos** consolidados. Unidad vehicular, porcentajes iniciales y fórmulas matemáticas activadas.")
+
     # Tabs principales del reporte integral
     tab_tasas, tab_mensual, tab_amort, tab_excel = st.tabs([
-        "1. Cartera y Cálculo de Tasa",
+        "1. Cartera, Unidades y Cálculo de Tasa",
         "2. Explorador Cronológico Mensual",
         "3. Corrida de Amortización por Contrato",
         "4. Descarga del Libro Excel Oficial"
     ])
 
     # =========================================================================
-    # TAB 1: Cartera y Calculo de Tasa Implicita
+    # TAB 1: Cartera, Unidades, Porcentajes Iniciales y Calculo de Tasa
     # =========================================================================
     with tab_tasas:
         st.subheader("Cálculo Matemático de Tasa Implícita y Comprobación de Flujos")
@@ -75,7 +96,7 @@ def render_reporte_integral_auditoria(get_db_path_fn=None, tabla_mensual_fn=None
         tasa_prom = df_contratos["Tasa_Calculada"].mean()
 
         m_col1, m_col2, m_col3, m_col4, m_col5 = st.columns(5)
-        m_col1.metric("Contratos", f"{total_contratos:,}")
+        m_col1.metric("Contratos Consolidados", f"{total_contratos:,}")
         m_col2.metric("Inversión Neta Cartera", f"${inv_neta_total:,.2f}")
         m_col3.metric("Renta Mensual Total", f"${renta_total:,.2f}")
         m_col4.metric("Residual Total Pactado", f"${res_total:,.2f}")
@@ -103,6 +124,10 @@ def render_reporte_integral_auditoria(get_db_path_fn=None, tabla_mensual_fn=None
                 - $\\text{Inversión Neta} = \\text{Valor Activo Sin IVA} - \\text{Anticipo}$.
                 
                 **2. Solución en Excel mediante Fórmulas Nativas:**
+                - Anticipo Monto: `=Valor_Sin_IVA * Anticipo_Pct`
+                - Inversión Neta: `=Valor_Sin_IVA - Anticipo_Monto`
+                - Comisión Apertura: `=Valor_Sin_IVA * Comision_Pct`
+                - Residual Pactado: `=Valor_Sin_IVA * Residual_Pct`
                 - Tasa Implícita Mensual: `=RATE(Plazo, -Renta, Inversion_Neta, -Residual)`
                 - Comprobación de Valor Presente: `=PV(Tasa, Plazo, -Renta, -Residual)`
                 - Diferencia de Cuadre: `=PV - Inversion_Neta` (resultado exacto: `$0.00`)
@@ -117,15 +142,33 @@ def render_reporte_integral_auditoria(get_db_path_fn=None, tabla_mensual_fn=None
         for _, r in df_contratos.iterrows():
             id_c = str(r["ID_Contrato"]).strip()
             cli = str(r.get("Cliente") or "").strip()
+            veh = str(r.get("Vehiculo") or "").strip()
             pl = int(r.get("Plazo") or 0)
             val = float(r.get("Valor_Sin_IVA") or 0.0)
             ant = float(r.get("Anticipo_Monto") or 0.0)
             inv = val - ant
             ren = float(r.get("Mensualidad_Sin_IVA") or 0.0)
             res = float(r.get("Residual_Monto") or 0.0)
+            com = float(r.get("Comision_Monto") or 0.0)
             t_reg = float(r.get("Tasa_Calculada") or 0.0)
             t_nom = t_reg * 12.0
             t_tir = ((1.0 + t_reg) ** 12.0) - 1.0
+
+            # Porcentajes iniciales
+            ant_pct_raw = float(r.get("Anticipo_Pct") or 0.0)
+            ant_pct = ant_pct_raw if ant_pct_raw <= 1.0 else (ant_pct_raw / 100.0)
+            if ant_pct == 0.0 and val > 0:
+                ant_pct = ant / val
+
+            com_pct_raw = float(r.get("Comision_Apertura_Pct") or 0.0)
+            com_pct = com_pct_raw if com_pct_raw <= 1.0 else (com_pct_raw / 100.0)
+            if com_pct == 0.0 and val > 0:
+                com_pct = com / val
+
+            res_pct_raw = float(r.get("Residual_Pct") or 0.0)
+            res_pct = res_pct_raw if res_pct_raw <= 1.0 else (res_pct_raw / 100.0)
+            if res_pct == 0.0 and val > 0:
+                res_pct = res / val
 
             # Comprobacion de valor presente
             vpr_calc = vp_res(res, t_reg, pl) if pl > 0 and t_reg > 0 else res
@@ -134,13 +177,18 @@ def render_reporte_integral_auditoria(get_db_path_fn=None, tabla_mensual_fn=None
             filas_tasas.append({
                 "ID Contrato": id_c,
                 "Cliente": cli,
+                "Vehículo": veh,
                 "Estatus": str(r.get("Estatus") or "").strip(),
                 "Plazo": pl,
                 "Valor Activo": val,
-                "Anticipo": ant,
+                "Anticipo %": ant_pct,
+                "Anticipo ($)": ant,
                 "Inversión Neta": inv,
+                "Comisión %": com_pct,
+                "Comisión ($)": com,
                 "Renta": ren,
-                "Residual": res,
+                "Residual %": res_pct,
+                "Residual ($)": res,
                 "Tasa Mensual": t_reg,
                 "Tasa Nominal Anual": t_nom,
                 "TIR Efectiva Anual": t_tir,
@@ -154,24 +202,32 @@ def render_reporte_integral_auditoria(get_db_path_fn=None, tabla_mensual_fn=None
         # Filtros de busqueda
         c_f1, c_f2 = st.columns([2, 1])
         with c_f1:
-            q_filtro = st.text_input("Buscar por ID Contrato o Cliente:", key="txt_search_tasa_rep")
+            q_filtro = st.text_input("Buscar por ID Contrato, Cliente o Vehículo:", key="txt_search_tasa_rep")
         with c_f2:
             estatus_op = st.multiselect("Filtrar Estatus:", options=list(df_grid_tasas["Estatus"].unique()), default=list(df_grid_tasas["Estatus"].unique()), key="ms_estatus_rep")
 
         df_show = df_grid_tasas.copy()
         if q_filtro:
             q_clean = q_filtro.strip().lower()
-            df_show = df_show[df_show["ID Contrato"].str.lower().str.contains(q_clean) | df_show["Cliente"].str.lower().str.contains(q_clean)]
+            df_show = df_show[
+                df_show["ID Contrato"].str.lower().str.contains(q_clean) |
+                df_show["Cliente"].str.lower().str.contains(q_clean) |
+                df_show["Vehículo"].str.lower().str.contains(q_clean)
+            ]
         if estatus_op:
             df_show = df_show[df_show["Estatus"].isin(estatus_op)]
 
         # Formatear para presentacion
         df_display = df_show.copy()
         df_display["Valor Activo"] = df_display["Valor Activo"].map(lambda x: f"${x:,.2f}")
-        df_display["Anticipo"] = df_display["Anticipo"].map(lambda x: f"${x:,.2f}")
+        df_display["Anticipo %"] = df_display["Anticipo %"].map(lambda x: f"{x * 100:.2f}%")
+        df_display["Anticipo ($)"] = df_display["Anticipo ($)"].map(lambda x: f"${x:,.2f}")
         df_display["Inversión Neta"] = df_display["Inversión Neta"].map(lambda x: f"${x:,.2f}")
+        df_display["Comisión %"] = df_display["Comisión %"].map(lambda x: f"{x * 100:.2f}%")
+        df_display["Comisión ($)"] = df_display["Comisión ($)"].map(lambda x: f"${x:,.2f}")
         df_display["Renta"] = df_display["Renta"].map(lambda x: f"${x:,.2f}")
-        df_display["Residual"] = df_display["Residual"].map(lambda x: f"${x:,.2f}")
+        df_display["Residual %"] = df_display["Residual %"].map(lambda x: f"{x * 100:.2f}%")
+        df_display["Residual ($)"] = df_display["Residual ($)"].map(lambda x: f"${x:,.2f}")
         df_display["Tasa Mensual"] = df_display["Tasa Mensual"].map(lambda x: f"{x * 100:.4f}%")
         df_display["Tasa Nominal Anual"] = df_display["Tasa Nominal Anual"].map(lambda x: f"{x * 100:.2f}%")
         df_display["TIR Efectiva Anual"] = df_display["TIR Efectiva Anual"].map(lambda x: f"{x * 100:.2f}%")
@@ -204,118 +260,99 @@ def render_reporte_integral_auditoria(get_db_path_fn=None, tabla_mensual_fn=None
 
         mes_sel_num = MESES_NOMBRES.index(mes_sel_nombre) + 1
 
-        # Obtener datos del mes seleccionado
-        if tabla_mensual_fn is not None:
-            df_int_mes, df_res_mes, df_com_mes, _, _ = tabla_mensual_fn(anio_sel)
+        # Construir tabla por contrato para el mes
+        contratos_mes_list = []
+        for _, r in df_contratos.iterrows():
+            id_c = str(r["ID_Contrato"]).strip()
+            cli = str(r.get("Cliente") or "").strip()
+            veh = str(r.get("Vehiculo") or "").strip()
+            est = str(r.get("Estatus") or "").strip()
+            fa = pd.to_datetime(r.get("Fecha_Alta"))
+            fv = pd.to_datetime(r.get("Fecha_Vencimiento"))
+            fb = pd.to_datetime(r.get("Fecha_Baja"))
+
+            if pd.isna(fa) or pd.isna(fv):
+                continue
+            pl = int(r.get("Plazo") or 0)
+            if pl <= 0:
+                continue
+
+            val_sin_iva = float(r.get("Valor_Sin_IVA") or 0.0)
+            anticipo = float(r.get("Anticipo_Monto") or 0.0)
+            inv = val_sin_iva - anticipo
+            renta = float(r.get("Mensualidad_Sin_IVA") or 0.0)
+            res_monto = float(r.get("Residual_Monto") or 0.0)
+            tasa = float(r.get("Tasa_Calculada") or 0.0)
+            vpr = float(r.get("VP_Residual") or 0.0) or float(vp_res(res_monto, tasa, pl))
+
+            # Determinar si aplica al mes
+            fa_y, fa_m = int(fa.year), int(fa.month)
+            fv_y, fv_m = int(fv.year), int(fv.month)
+            fb_y, fb_m = (int(fb.year), int(fb.month)) if (est.upper() == "BAJA" and pd.notna(fb)) else (9999, 99)
+
+            en_vigencia = not ((anio_sel < fa_y) or (anio_sel == fa_y and mes_sel_num < fa_m) or
+                               (anio_sel > fv_y) or (anio_sel == fv_y and mes_sel_num > fv_m) or
+                               (anio_sel > fb_y) or (anio_sel == fb_y and mes_sel_num > fb_m))
+
+            if en_vigencia:
+                mes_plazo = (anio_sel - fa_y) * 12 + (mes_sel_num - fa_m)
+                if 0 <= mes_plazo < pl:
+                    dfa, _, _, _, _ = calc_amort(round(inv, 4), round(renta, 4), round(res_monto, 4), pl, tasa)
+                    dfr = calc_res_amort(round(vpr, 4), tasa, pl)
+
+                    il_val = float(dfa["Interes"].iloc[mes_plazo]) if mes_plazo < len(dfa) else 0.0
+                    cap_val = float(dfa["Capital"].iloc[mes_plazo]) if mes_plazo < len(dfa) else 0.0
+                    sal_val = float(dfa["Saldo"].iloc[mes_plazo]) if mes_plazo < len(dfa) else 0.0
+                    ir_val = float(dfr["Interes"].iloc[mes_plazo]) if mes_plazo < len(dfr) else 0.0
+                    ing_val = il_val + ir_val
+
+                    contratos_mes_list.append({
+                        "ID Contrato": id_c,
+                        "Cliente": cli,
+                        "Vehículo": veh,
+                        "Estatus": est,
+                        "Mes en Curso": f"Mes {mes_plazo + 1} de {pl}",
+                        "Interés Leasing": il_val,
+                        "Capital Amortizado": cap_val,
+                        "Saldo Insoluto Cierre": sal_val,
+                        "Interés Residual": ir_val,
+                        "Ingreso Financiero Total": ing_val
+                    })
+
+        if contratos_mes_list:
+            df_c_mes = pd.DataFrame(contratos_mes_list)
+
+            tot_c_il = df_c_mes["Interés Leasing"].sum()
+            tot_c_cap = df_c_mes["Capital Amortizado"].sum()
+            tot_c_sal = df_c_mes["Saldo Insoluto Cierre"].sum()
+            tot_c_ir = df_c_mes["Interés Residual"].sum()
+            tot_c_ing = df_c_mes["Ingreso Financiero Total"].sum()
+
+            kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
+            kpi_col1.metric("Contratos con Actividad", len(df_c_mes))
+            kpi_col2.metric("Interés Leasing Devengado", f"${tot_c_il:,.2f}")
+            kpi_col3.metric("Capital Amortizado Mes", f"${tot_c_cap:,.2f}")
+            kpi_col4.metric("Ingreso Financiero Total", f"${tot_c_ing:,.2f}")
+
+            df_c_disp = df_c_mes.copy()
+            df_c_disp["Interés Leasing"] = df_c_disp["Interés Leasing"].map(lambda x: f"${x:,.2f}")
+            df_c_disp["Capital Amortizado"] = df_c_disp["Capital Amortizado"].map(lambda x: f"${x:,.2f}")
+            df_c_disp["Saldo Insoluto Cierre"] = df_c_disp["Saldo Insoluto Cierre"].map(lambda x: f"${x:,.2f}")
+            df_c_disp["Interés Residual"] = df_c_disp["Interés Residual"].map(lambda x: f"${x:,.2f}")
+            df_c_disp["Ingreso Financiero Total"] = df_c_disp["Ingreso Financiero Total"].map(lambda x: f"${x:,.2f}")
+
+            st.dataframe(df_c_disp, use_container_width=True, hide_index=True)
+
+            csv_mes = df_c_mes.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                label=f"Descargar Detalle {mes_sel_nombre} {anio_sel} (CSV)",
+                data=csv_mes,
+                file_name=f"auditoria_cartera_{anio_sel}_{mes_sel_num:02d}.csv",
+                mime="text/csv",
+                key=f"dl_csv_mes_{anio_sel}_{mes_sel_num}"
+            )
         else:
-            df_int_mes, df_res_mes, df_com_mes = None, None, None
-
-        if df_int_mes is None or df_int_mes.empty:
-            st.info(f"No hay contratos activos para el año {anio_sel}.")
-        else:
-            col_mes_nombre = mes_sel_nombre
-            tot_leasing_mes = float(df_int_mes[col_mes_nombre].sum(skipna=True)) if col_mes_nombre in df_int_mes.columns else 0.0
-            tot_residual_mes = float(df_res_mes[col_mes_nombre].sum(skipna=True)) if (df_res_mes is not None and col_mes_nombre in df_res_mes.columns) else 0.0
-            tot_ingreso_mes = tot_leasing_mes + tot_residual_mes
-
-            # Tarjetas resumen del mes consultado
-            c_m1, c_m2, c_m3 = st.columns(3)
-            c_m1.metric(f"Interés Leasing ({mes_sel_nombre} {anio_sel})", f"${tot_leasing_mes:,.2f}")
-            c_m2.metric(f"Interés Residual NIF C-15", f"${tot_residual_mes:,.2f}")
-            c_m3.metric(f"Ingreso Financiero Total", f"${tot_ingreso_mes:,.2f}")
-
-            # Construir tabla por contrato para el mes
-            contratos_mes_list = []
-            for _, r in df_contratos.iterrows():
-                id_c = str(r["ID_Contrato"]).strip()
-                cli = str(r.get("Cliente") or "").strip()
-                est = str(r.get("Estatus") or "").strip()
-                fa = pd.to_datetime(r.get("Fecha_Alta"))
-                fv = pd.to_datetime(r.get("Fecha_Vencimiento"))
-                fb = pd.to_datetime(r.get("Fecha_Baja"))
-
-                if pd.isna(fa) or pd.isna(fv):
-                    continue
-                pl = int(r.get("Plazo") or 0)
-                if pl <= 0:
-                    continue
-
-                val_sin_iva = float(r.get("Valor_Sin_IVA") or 0.0)
-                anticipo = float(r.get("Anticipo_Monto") or 0.0)
-                inv = val_sin_iva - anticipo
-                renta = float(r.get("Mensualidad_Sin_IVA") or 0.0)
-                res_monto = float(r.get("Residual_Monto") or 0.0)
-                tasa = float(r.get("Tasa_Calculada") or 0.0)
-                vpr = float(r.get("VP_Residual") or 0.0) or float(vp_res(res_monto, tasa, pl))
-
-                # Determinar si aplica al mes
-                fa_y, fa_m = int(fa.year), int(fa.month)
-                fv_y, fv_m = int(fv.year), int(fv.month)
-                fb_y, fb_m = (int(fb.year), int(fb.month)) if (est.upper() == "BAJA" and pd.notna(fb)) else (9999, 99)
-
-                en_vigencia = not ((anio_sel < fa_y) or (anio_sel == fa_y and mes_sel_num < fa_m) or
-                                   (anio_sel > fv_y) or (anio_sel == fv_y and mes_sel_num > fv_m) or
-                                   (anio_sel > fb_y) or (anio_sel == fb_y and mes_sel_num > fb_m))
-
-                if en_vigencia:
-                    mes_plazo = (anio_sel - fa_y) * 12 + (mes_sel_num - fa_m)
-                    if 0 <= mes_plazo < pl:
-                        dfa, _, _, _, _ = calc_amort(round(inv, 4), round(renta, 4), round(res_monto, 4), pl, tasa)
-                        dfr = calc_res_amort(round(vpr, 4), tasa, pl)
-
-                        il_val = float(dfa["Interes"].iloc[mes_plazo]) if mes_plazo < len(dfa) else 0.0
-                        cap_val = float(dfa["Capital"].iloc[mes_plazo]) if mes_plazo < len(dfa) else 0.0
-                        sal_val = float(dfa["Saldo"].iloc[mes_plazo]) if mes_plazo < len(dfa) else 0.0
-                        ir_val = float(dfr["Interes"].iloc[mes_plazo]) if mes_plazo < len(dfr) else 0.0
-                        ing_val = il_val + ir_val
-
-                        contratos_mes_list.append({
-                            "ID Contrato": id_c,
-                            "Cliente": cli,
-                            "Estatus": est,
-                            "Mes en Curso": f"Mes {mes_plazo + 1} de {pl}",
-                            "Interés Leasing": il_val,
-                            "Capital Amortizado": cap_val,
-                            "Saldo Insoluto Cierre": sal_val,
-                            "Interés Residual": ir_val,
-                            "Ingreso Financiero Total": ing_val
-                        })
-
-            if contratos_mes_list:
-                df_c_mes = pd.DataFrame(contratos_mes_list)
-
-                # Resumen de totales del grid
-                tot_c_il = df_c_mes["Interés Leasing"].sum()
-                tot_c_cap = df_c_mes["Capital Amortizado"].sum()
-                tot_c_sal = df_c_mes["Saldo Insoluto Cierre"].sum()
-                tot_c_ir = df_c_mes["Interés Residual"].sum()
-                tot_c_ing = df_c_mes["Ingreso Financiero Total"].sum()
-
-                kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
-                kpi_col1.metric("Contratos Activos en Mes", len(df_c_mes))
-                kpi_col2.metric("Capital Amortizado Total", f"${tot_c_cap:,.2f}")
-                kpi_col3.metric("Saldo Cartera al Cierre", f"${tot_c_sal:,.2f}")
-                kpi_col4.metric("Devengo Residual Cartera", f"${tot_c_ir:,.2f}")
-
-                df_c_disp = df_c_mes.copy()
-                df_c_disp["Interés Leasing"] = df_c_disp["Interés Leasing"].map(lambda x: f"${x:,.2f}")
-                df_c_disp["Capital Amortizado"] = df_c_disp["Capital Amortizado"].map(lambda x: f"${x:,.2f}")
-                df_c_disp["Saldo Insoluto Cierre"] = df_c_disp["Saldo Insoluto Cierre"].map(lambda x: f"${x:,.2f}")
-                df_c_disp["Interés Residual"] = df_c_disp["Interés Residual"].map(lambda x: f"${x:,.2f}")
-                df_c_disp["Ingreso Financiero Total"] = df_c_disp["Ingreso Financiero Total"].map(lambda x: f"${x:,.2f}")
-
-                st.dataframe(df_c_disp, use_container_width=True, hide_index=True)
-
-                csv_mes = df_c_mes.to_csv(index=False).encode("utf-8")
-                st.download_button(
-                    label=f"Descargar Detalle {mes_sel_nombre} {anio_sel} (CSV)",
-                    data=csv_mes,
-                    file_name=f"auditoria_cartera_{anio_sel}_{mes_sel_num:02d}.csv",
-                    mime="text/csv",
-                    key=f"dl_csv_mes_{anio_sel}_{mes_sel_num}"
-                )
-            else:
-                st.info(f"No se registraron movimientos activos en {mes_sel_nombre} {anio_sel}.")
+            st.info(f"No se registraron movimientos activos en {mes_sel_nombre} {anio_sel}.")
 
     # =========================================================================
     # TAB 3: Corrida de Amortizacion por Contrato
@@ -340,7 +377,7 @@ def render_reporte_integral_auditoria(get_db_path_fn=None, tabla_mensual_fn=None
 
         c_info1, c_info2, c_info3, c_info4 = st.columns(4)
         c_info1.write(f"**Cliente:** {row_c.get('Cliente')}")
-        c_info1.write(f"**Vehículo:** {row_c.get('Vehiculo')}")
+        c_info1.write(f"**Unidad/Vehículo:** {row_c.get('Vehiculo')}")
         c_info2.write(f"**Inversión Neta:** ${inv:,.2f}")
         c_info2.write(f"**Renta Mensual:** ${renta:,.2f}")
         c_info3.write(f"**Residual Pactado:** ${res_m:,.2f}")
@@ -420,7 +457,7 @@ def render_reporte_integral_auditoria(get_db_path_fn=None, tabla_mensual_fn=None
             )
 
     # =========================================================================
-    # TAB 4: Descarga del Libro Excel de Auditoria Oficial
+    # TAB 4: Descarga del Libro Excel de Auditoria Oficial con Formulas Vivas
     # =========================================================================
     with tab_excel:
         st.subheader("Generación del Libro Oficial de Auditoría en Excel con Fórmulas Vivas")
@@ -429,15 +466,15 @@ def render_reporte_integral_auditoria(get_db_path_fn=None, tabla_mensual_fn=None
         st.markdown(
             """
             **Hojas incluidas en el Libro Oficial de Auditoría:**
-            1. **`Resumen_Cartera`**: Contratos en vertical con parámetros financieros, fórmulas `=RATE(...)`, `=SUM(...)`, `=AVERAGE(...)`.
+            1. **`Resumen_Cartera`**: Contratos en vertical con unidad vehicular, porcentajes iniciales (Anticipo %, Comisión %, Residual %), montos calculados por fórmula y rentabilidad (=RATE, =SUM, =AVERAGE).
             2. **`Calculo_Tasa_Implicita`**: Explicación matemática con fórmulas vivas de `=RATE(...)`, comprobación de flujos mediante `=PV(...)` con diferencia cero y TIR efectiva.
-            3. **`Intereses_Leasing_Mensual`**: Matriz horizontal mes a mes (`2022-01` a `2030-09`) con sumas de cartera `=SUM(...)`.
+            3. **`Intereses_Leasing_Mensual`**: Matriz horizontal con unidad vehicular y devengo mensual con sumas de cartera `=SUM(...)`.
             4. **`Intereses_Residual_Mensual`**: Matriz horizontal con devengos de intereses sobre el valor presente del residual (NIF C-15).
             5. **`Ingreso_Financiero_Total`**: Matriz calculada con fórmulas inter-hoja sumando leasing y residual en cada celda.
-            6. **`Amortizacion_Capital_Mensual`**: Matriz cronológica de recuperación de capital principal.
+            6. **`Amortizacion_Capital_Mensual`**: Matriz de amortización de capital con fórmula viva: `=IF(Intereses>0, Renta - Intereses, "")`.
             7. **`Saldos_Insolutos_Mensual`**: Matriz de saldos insolutos de cartera al cierre de cada mes.
             8. **`Saldo_Residual_Activo`**: Matriz de evolución del saldo activo de valor residual.
-            9. **`Matriz_Consolidada`**: Bloques cronológicos multi-concepto con todos los rubros lado a lado.
+            9. **`Matriz_Consolidada`**: Bloques cronológicos multi-concepto con todos los rubros lado a lado y fórmulas inter-hoja.
             10. **`Modelo_Amortizacion_Tipo`**: Modelo didáctico con fórmulas relativas paso a paso (`=Saldo*Tasa`, `=Renta-Interes`, etc.).
             """
         )
@@ -446,7 +483,8 @@ def render_reporte_integral_auditoria(get_db_path_fn=None, tabla_mensual_fn=None
         with c_opt1:
             alcance_rep = st.radio(
                 "Seleccione el Alcance del Archivo Excel:",
-                ["Histórico Multianual Completo (Todos los años 2022-2030)", "Ejercicio Fiscal Específico (Recomendado para auditoría anual)"],
+                ["Ejercicio Fiscal Específico (Recomendado para auditoría anual)", "Histórico Multianual Completo (Todos los años 2022-2030)"],
+                index=0,
                 key="radio_rep_int_alcance"
             )
         with c_opt2:
@@ -461,8 +499,13 @@ def render_reporte_integral_auditoria(get_db_path_fn=None, tabla_mensual_fn=None
             if st.button(lbl_b, type="primary", key="btn_gen_rep_int_excel"):
                 with st.spinner("Construyendo libro de auditoría con fórmulas matemáticas de Excel..."):
                     from reports.auditoria_excel import generar_excel_auditoria
-                    st.session_state['buf_rep_int'] = generar_excel_auditoria(anio_filtro=anio_excel_rep).getvalue()
-                    st.session_state['fname_rep_int'] = f"auditoria_cartera_integral_{anio_excel_rep}.xlsx" if anio_excel_rep else "auditoria_cartera_integral_multianual.xlsx"
+                    st.session_state['buf_rep_int'] = generar_excel_auditoria(
+                        anio_filtro=anio_excel_rep,
+                        filtro_estatus=filtro_estatus_seleccionado,
+                        solo_con_movimiento=True
+                    ).getvalue()
+                    suffix = f"_{anio_excel_rep}" if anio_excel_rep else "_multianual"
+                    st.session_state['fname_rep_int'] = f"auditoria_cartera_integral{suffix}.xlsx"
 
         if st.session_state.get('buf_rep_int'):
             with btn_c2:

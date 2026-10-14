@@ -1971,7 +1971,8 @@ def reporte_maestro_saldos(anio):
         
         # Agregar Columna TOTAL AÑO
         d_merged['Total Año'] = d_merged[MN].sum(axis=1)
-        
+        # Filtrar contratos sin saldo en el ejercicio consultado
+        d_merged = d_merged[(d_merged[MN] > 0.001).any(axis=1)]
         # Agregar Fila TOTAL CARTERA
         total_row = d_merged[MN + ['Valor_Sin_IVA', 'Total Año']].sum()
         total_row['Cliente'] = 'TOTAL CARTERA'
@@ -2116,6 +2117,8 @@ def reporte_maestro_mensual(anio):
         
         # Columna Total
         d_merged['Total Año'] = d_merged[MN].sum(axis=1)
+        # Filtrar contratos sin movimiento en el año consultado (eliminar contratos inactivos o sin flujo)
+        d_merged = d_merged[d_merged['Total Año'].abs() > 0.001]
         # Fila Total
         total_row = d_merged[MN + ['Valor_Sin_IVA', 'Total Año']].sum()
         total_row['Cliente'] = 'TOTAL CARTERA'
@@ -7224,6 +7227,7 @@ st.sidebar.markdown("---")
 GRUPOS = {
     "Cartera": [
         "Dashboard & Cartera",
+        "Reporte Integral de Auditoría",
         "Estado de Cuenta",
         "Carga Masiva y Altas",
         "Editar / Eliminar",
@@ -10305,19 +10309,31 @@ try:
         st.title("Reporte Maestro: Capital e Intereses")
         st.caption("Tablas de amortización y resúmenes de la cartera activa.")
 
-        with st.expander("Libro de Auditoría con Fórmulas de Excel (Cartera Completa y Desglose Mensual)", expanded=False):
-            st.info("Genera el libro oficial de auditoría con fórmulas de Excel vivas en cada celda (=SUM, =RATE, =Saldo*Tasa, etc.) para todos los contratos y meses.")
+        st.info(
+            "Accede al nuevo **Reporte Integral de Auditoría** con unidad/vehículo adquirido, "
+            "porcentajes iniciales de captura (Anticipo %, Comisión %, Residual %), cálculo de tasa implícita NIF C-15 / IFRS 16, "
+            "amortizaciones con fórmulas matemáticas vivas en cada celda y consolidación de cartera activa (278 contratos)."
+        )
+        col_banner_m1, col_banner_m2 = st.columns([1, 2])
+        with col_banner_m1:
+            if st.button("Ir al Reporte Integral de Auditoría", type="primary", key="btn_nav_directo_auditoria"):
+                st.session_state['menu_grupo'] = "Cartera"
+                st.session_state['menu_item'] = "Reporte Integral de Auditoría"
+                st.rerun()
+
+        with st.expander("Libro de Auditoría con Fórmulas de Excel (Cartera Consolidada y Desglose Mensual)", expanded=False):
+            st.info("Genera el libro oficial de auditoría con fórmulas de Excel vivas en cada celda (=SUM, =RATE, =Saldo*Tasa, etc.) para la cartera activa y meses.")
             c_aud_m1, c_aud_m2 = st.columns(2)
             with c_aud_m1:
                 if st.button("Generar Excel de Auditoría Anual", key="btn_aud_anio_m"):
                     with st.spinner("Construyendo libro de auditoría con fórmulas..."):
                         from reports.auditoria_excel import generar_excel_auditoria
-                        st.session_state['buf_aud_m'] = generar_excel_auditoria(anio_filtro=st.session_state.get('ym', datetime.now().year)).getvalue()
+                        st.session_state['buf_aud_m'] = generar_excel_auditoria(anio_filtro=st.session_state.get('ym', datetime.now().year), filtro_estatus="ACTIVO", solo_con_movimiento=True).getvalue()
             with c_aud_m2:
                 if st.button("Generar Excel de Auditoría Multianual", key="btn_aud_multi_m"):
                     with st.spinner("Construyendo libro multianual con fórmulas..."):
                         from reports.auditoria_excel import generar_excel_auditoria
-                        st.session_state['buf_aud_multi'] = generar_excel_auditoria(anio_filtro=None).getvalue()
+                        st.session_state['buf_aud_multi'] = generar_excel_auditoria(anio_filtro=None, filtro_estatus="ACTIVO").getvalue()
 
             c_dl_m1, c_dl_m2 = st.columns(2)
             with c_dl_m1:
@@ -10387,9 +10403,23 @@ try:
                 fig_exec = sfig(fig_exec, h=380)
                 st.plotly_chart(fig_exec, width='stretch', key="pc_maestro_exec")
                 
-                # Generar Excel completo con Graficas
-                buf_completo = exportar_maestro_completo(anio_m, di, dcap, drenta, dr, dc, ds, total_cap, total_int, total_renta)
-                st.download_button("Descargar Todo en un Solo Excel (con Gráficas)", buf_completo, f"reporte_maestro_completo_{anio_m}.xlsx", type="primary", use_container_width=True)
+                # Generar Excel completo con formulas vivas y formato clasico
+                c_dl_aud, c_dl_clas = st.columns(2)
+                with c_dl_aud:
+                    from reports.auditoria_excel import generar_excel_auditoria
+                    buf_aud_directo = generar_excel_auditoria(anio_filtro=anio_m, filtro_estatus="ACTIVO", solo_con_movimiento=True).getvalue()
+                    st.download_button(
+                        f"Descargar Libro con Fórmulas Vivas de Auditoría ({anio_m})",
+                        data=buf_aud_directo,
+                        file_name=f"auditoria_cartera_formulas_{anio_m}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        type="primary",
+                        use_container_width=True,
+                        key="btn_dl_maestro_aud_formulas_directo"
+                    )
+                with c_dl_clas:
+                    buf_completo = exportar_maestro_completo(anio_m, di, dcap, drenta, dr, dc, ds, total_cap, total_int, total_renta)
+                    st.download_button("Descargar Formato Maestro Clásico (con Gráficas)", buf_completo, f"reporte_maestro_completo_{anio_m}.xlsx", use_container_width=True, key="btn_dl_maestro_clasico")
                 
                 st.markdown("---")
                 
