@@ -8389,9 +8389,9 @@ try:
                 with st.expander("Exportar a PDF", expanded=False):
                     pdf_key = f"pdf_buf_{sel_ec}"
 
-                    empresa_defecto = st.session_state.get('_nombre_empresa') or get_cfg('nombre_empresa') or get_empresa_actual().get('nombre', 'Orange Leasing')
+                    empresa_defecto = st.session_state.get('_nombre_empresa') or get_cfg('nombre_empresa') or get_empresa_actual().get('nombre', 'LEASY')
                     if not empresa_defecto or str(empresa_defecto).strip().lower() == 'mi empresa':
-                        empresa_defecto = 'Orange Leasing'
+                        empresa_defecto = 'LEASY'
 
                     c_pdf1, c_pdf2 = st.columns([1.6, 1.4])
                     with c_pdf1:

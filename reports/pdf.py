@@ -54,7 +54,7 @@ def _resolver_titulo_empresa():
             return str(cfg_nom).strip()
     except Exception:
         pass
-    return "Orange Leasing"
+    return "LEASY"
 
 
 def _nombre_empresa_actual() -> str:
@@ -64,7 +64,7 @@ def _nombre_empresa_actual() -> str:
             return str(nom).strip()
     except Exception:
         pass
-    return "Orange Leasing"
+    return "LEASY"
 
 
 def _grafica_amort_para_pdf(dfa, mes_corte=None):

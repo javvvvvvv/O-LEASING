@@ -51,7 +51,7 @@ def _resolver_titulo_empresa():
             return str(cfg_nom).strip()
     except Exception:
         pass
-    return "Orange Leasing"
+    return "LEASY"
 
 
 def formatear_hoja_excel(ws, df, currency_cols=None, pct_cols=None, int_cols=None,
