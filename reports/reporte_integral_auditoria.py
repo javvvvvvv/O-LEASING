@@ -498,6 +498,9 @@ def render_reporte_integral_auditoria(get_db_path_fn=None, tabla_mensual_fn=None
             lbl_b = f"Generar Excel de Auditoría ({anio_excel_rep})" if anio_excel_rep else "Generar Excel Multianual Completo"
             if st.button(lbl_b, type="primary", key="btn_gen_rep_int_excel"):
                 with st.spinner("Construyendo libro de auditoría con fórmulas matemáticas de Excel..."):
+                    import importlib
+                    import reports.auditoria_excel
+                    importlib.reload(reports.auditoria_excel)
                     from reports.auditoria_excel import generar_excel_auditoria
                     st.session_state['buf_rep_int'] = generar_excel_auditoria(
                         anio_filtro=anio_excel_rep,

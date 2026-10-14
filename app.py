@@ -10327,11 +10327,17 @@ try:
             with c_aud_m1:
                 if st.button("Generar Excel de Auditoría Anual", key="btn_aud_anio_m"):
                     with st.spinner("Construyendo libro de auditoría con fórmulas..."):
+                        import importlib
+                        import reports.auditoria_excel
+                        importlib.reload(reports.auditoria_excel)
                         from reports.auditoria_excel import generar_excel_auditoria
                         st.session_state['buf_aud_m'] = generar_excel_auditoria(anio_filtro=st.session_state.get('ym', datetime.now().year), filtro_estatus="ACTIVO", solo_con_movimiento=True).getvalue()
             with c_aud_m2:
                 if st.button("Generar Excel de Auditoría Multianual", key="btn_aud_multi_m"):
                     with st.spinner("Construyendo libro multianual con fórmulas..."):
+                        import importlib
+                        import reports.auditoria_excel
+                        importlib.reload(reports.auditoria_excel)
                         from reports.auditoria_excel import generar_excel_auditoria
                         st.session_state['buf_aud_multi'] = generar_excel_auditoria(anio_filtro=None, filtro_estatus="ACTIVO").getvalue()
 
@@ -10406,6 +10412,9 @@ try:
                 # Generar Excel completo con formulas vivas y formato clasico
                 c_dl_aud, c_dl_clas = st.columns(2)
                 with c_dl_aud:
+                    import importlib
+                    import reports.auditoria_excel
+                    importlib.reload(reports.auditoria_excel)
                     from reports.auditoria_excel import generar_excel_auditoria
                     buf_aud_directo = generar_excel_auditoria(anio_filtro=anio_m, filtro_estatus="ACTIVO", solo_con_movimiento=True).getvalue()
                     st.download_button(

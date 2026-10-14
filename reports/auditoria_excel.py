@@ -120,7 +120,9 @@ def generar_excel_auditoria(
     titulo_empresa=None,
     logo_path=None,
     db_path=None,
-    solo_con_movimiento=True
+    solo_con_movimiento=True,
+    *args,
+    **kwargs
 ) -> io.BytesIO:
     """Genera el libro completo de auditoria con formulas matematicas vivas.
 
