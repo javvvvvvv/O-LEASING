@@ -7245,6 +7245,7 @@ GRUPOS = {
         "Cierre y Conciliación Mensual",
         "Comparar Analíticas",
         "Tablas de Amortización",
+        "Auditoría con Fórmulas",
     ],
     "Análisis": [
         "Proyección Financiera",
@@ -7291,6 +7292,7 @@ DESCRIPCIONES = {
     "Cierre y Conciliación Mensual": "Resumen ejecutivo mensual de movimientos, facturación, cobranza y pólizas para cierre de mes contable con exportación PDF.",
     "Comparar Analíticas": "Sube las analíticas contables del contador y compáralas contra lo que el sistema esperaba, con sugerencia de póliza de ajuste.",
     "Tablas de Amortización": "Consulta la tabla de amortización completa de cualquier contrato.",
+    "Auditoría con Fórmulas": "Genera el libro Excel de auditoría con fórmulas financieras vivas y matrices cronológicas mensuales.",
     "Proyección Financiera": "Proyecta el comportamiento financiero futuro de tu cartera.",
     "Cotizador Comercial": "Simulador interactivo de nuevos arrendamientos puros con desglose inicial, amortización y exportación de cotización en PDF.",
     "Análisis de Rentabilidad": "Analiza la rentabilidad de tus contratos y de la cartera en general.",
@@ -10300,6 +10302,41 @@ try:
     elif menu=="Reporte Maestro":
         st.title("Reporte Maestro: Capital e Intereses")
         st.caption("Tablas de amortización y resúmenes de la cartera activa.")
+
+        with st.expander("Libro de Auditoría con Fórmulas de Excel (Cartera Completa y Desglose Mensual)", expanded=False):
+            st.info("Genera el libro oficial de auditoría con fórmulas de Excel vivas en cada celda (=SUM, =RATE, =Saldo*Tasa, etc.) para todos los contratos y meses.")
+            c_aud_m1, c_aud_m2 = st.columns(2)
+            with c_aud_m1:
+                if st.button("Generar Excel de Auditoría Anual", key="btn_aud_anio_m"):
+                    with st.spinner("Construyendo libro de auditoría con fórmulas..."):
+                        from reports.auditoria_excel import generar_excel_auditoria
+                        st.session_state['buf_aud_m'] = generar_excel_auditoria(anio_filtro=st.session_state.get('ym', datetime.now().year)).getvalue()
+            with c_aud_m2:
+                if st.button("Generar Excel de Auditoría Multianual", key="btn_aud_multi_m"):
+                    with st.spinner("Construyendo libro multianual con fórmulas..."):
+                        from reports.auditoria_excel import generar_excel_auditoria
+                        st.session_state['buf_aud_multi'] = generar_excel_auditoria(anio_filtro=None).getvalue()
+
+            c_dl_m1, c_dl_m2 = st.columns(2)
+            with c_dl_m1:
+                if st.session_state.get('buf_aud_m'):
+                    st.download_button(
+                        f"Descargar Excel Auditoría {st.session_state.get('ym', datetime.now().year)}",
+                        data=st.session_state['buf_aud_m'],
+                        file_name=f"auditoria_cartera_formulas_{st.session_state.get('ym', datetime.now().year)}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="dl_aud_m_btn"
+                    )
+            with c_dl_m2:
+                if st.session_state.get('buf_aud_multi'):
+                    st.download_button(
+                        "Descargar Excel Auditoría Multianual",
+                        data=st.session_state['buf_aud_multi'],
+                        file_name="auditoria_cartera_formulas_multianual.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="dl_aud_multi_btn"
+                    )
+
         anio_m=st.number_input("Año del reporte maestro",min_value=2020,max_value=2050,value=datetime.now().year,step=1,key="ym")
         if st.button("Generar Reporte Maestro", type="primary"):
             di, dcap, drenta, dr, dc, ds, err = reporte_maestro_mensual(anio_m)
@@ -10928,7 +10965,7 @@ try:
                     key="amort_sel_contrato"
                 )
 
-            tab_lea, tab_res = st.tabs(["Amortización Leasing", "Acumulación Residual"])
+            tab_lea, tab_res, tab_aud = st.tabs(["Amortización Leasing", "Acumulación Residual", "Auditoría con Fórmulas (Excel)"])
 
             contratos_sel = df_act if sel.startswith("—") else df_act[df_act['ID_Contrato'] == sel]
 
@@ -11095,6 +11132,103 @@ try:
                     )
                 else:
                     st.info("Sin datos para los contratos seleccionados.")
+
+            with tab_aud:
+                st.caption("Genera y descarga el libro de auditoría oficial con fórmulas de Excel vivas para todos los contratos y matrices mensuales.")
+                st.markdown(
+                    """
+                    **Características del libro de auditoría con fórmulas:**
+                    - **Contratos en vertical** con todas las variables contractuales e inversión neta.
+                    - **Fórmulas financieras nativas** de Excel: `=RATE(...)` (tasa implícita mensual), `TIR` anual compuesta, `VP Residual`, `Ganancia` y `Margen`.
+                    - **Matrices cronológicas mensuales** por contrato con devengos de leasing, amortización de capital, saldos insolutos, devengo de intereses de residual y saldo activo de residual.
+                    - **Fórmulas de suma mensual de cartera** (`=SUM(...)`) para auditar cualquier mes del ejercicio (ej. Agosto 2025 o Agosto 2026).
+                    - **Modelo didáctico paso a paso** con fórmulas relativas de NIF C-15 / IFRS 16.
+                    """
+                )
+                col_aud_op1, col_aud_op2 = st.columns([2, 1])
+                with col_aud_op1:
+                    alcance_tab = st.radio(
+                        "Alcance del archivo:",
+                        ["Ejercicio Fiscal Seleccionado", "Histórico Multianual Completo (2022-2030)"],
+                        key="radio_amort_aud_alcance"
+                    )
+                with col_aud_op2:
+                    anio_amort_aud = None
+                    if "Seleccionado" in alcance_tab:
+                        anio_amort_aud = st.number_input("Año:", min_value=2020, max_value=2050, value=datetime.now().year, step=1, key="num_anio_amort_aud")
+
+                col_btn_aud1, col_btn_aud2 = st.columns([1, 1])
+                with col_btn_aud1:
+                    lbl_btn_a = f"Generar Excel con Fórmulas ({anio_amort_aud})" if anio_amort_aud else "Generar Excel Multianual con Fórmulas"
+                    if st.button(lbl_btn_a, type="primary", key="btn_amort_gen_aud"):
+                        with st.spinner("Construyendo libro de auditoría con fórmulas matemáticas..."):
+                            from reports.auditoria_excel import generar_excel_auditoria
+                            st.session_state['buf_amort_aud'] = generar_excel_auditoria(anio_filtro=anio_amort_aud).getvalue()
+                            st.session_state['fname_amort_aud'] = f"auditoria_cartera_formulas_{anio_amort_aud}.xlsx" if anio_amort_aud else "auditoria_cartera_formulas_multianual.xlsx"
+
+                if st.session_state.get('buf_amort_aud'):
+                    with col_btn_aud2:
+                        st.download_button(
+                            label=f"Descargar {st.session_state.get('fname_amort_aud')}",
+                            data=st.session_state['buf_amort_aud'],
+                            file_name=st.session_state['fname_amort_aud'],
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="btn_amort_dl_aud"
+                        )
+
+    # AUDITORÍA CON FÓRMULAS VIVAS
+    elif menu == "Auditoría con Fórmulas":
+        st.title("Reporte de Auditoría con Fórmulas Financieras")
+        st.caption("Libro oficial de auditoría técnica y fiscal (NIF C-15 / IFRS 16) con fórmulas vivas en Excel.")
+
+        with CardContainer(title="Libro de Auditoría con Fórmulas Matemáticas", subtitle="Contratos en vertical, parámetros financieros y matrices cronológicas mensuales con fórmulas", padding="20px"):
+            st.markdown(
+                """
+                Este reporte genera un libro de Excel oficial con **fórmulas vivas** (sin valores estáticos) diseñado para auditorías financieras y fiscales (SAT, auditores externos, comités de crédito):
+                - **Contratos en vertical** (uno por fila) con parámetros contractuales y fórmulas nativas de Excel (`Inversión Neta`, `Tasa RATE`, `TIR Anual`, `VP Residual`, `Margen`).
+                - **Matrices cronológicas horizontales** separadas por Año y Mes (`2022-01` a `2030-09`) para:
+                  1. `Intereses Leasing Mensual` (devengo individual y total de cartera por mes con `=SUM(...)`).
+                  2. `Intereses Residual Mensual` (devengo NIF C-15 y total de cartera por mes con `=SUM(...)`).
+                  3. `Ingreso Financiero Total` (fórmulas inter-hoja sumando leasing y residual en cada celda).
+                  4. `Amortización Capital Mensual` (recuperación de principal mes a mes).
+                  5. `Saldos Insolutos Mensual` (saldo de cartera activa al cierre de cada mes).
+                  6. `Saldo Residual Activo` (evolución del valor presente capitalizado del residual).
+                  7. `Matriz Consolidada` (bloques mensuales con todos los conceptos financieros lado a lado).
+                  8. `Modelo de Amortización Tipo` (demostración de la mecánica NIF C-15 con fórmulas relativas dinámicas paso a paso).
+                """
+            )
+
+            c_aud1, c_aud2 = st.columns([2, 1])
+            with c_aud1:
+                tipo_alcance_menu = st.radio(
+                    "Alcance del reporte:",
+                    ["Ejercicio Fiscal Específico (Recomendado para auditoría anual)", "Histórico Multianual Completo (Todos los años de cartera 2022-2030)"],
+                    key="radio_auditoria_menu_alcance"
+                )
+            with c_aud2:
+                anio_aud_menu = None
+                if "Específico" in tipo_alcance_menu:
+                    anio_aud_menu = st.number_input("Año del Ejercicio Fiscal:", min_value=2020, max_value=2050, value=datetime.now().year, step=1, key="num_anio_aud_menu")
+
+            st.markdown("---")
+            c_gen_menu, c_dl_menu = st.columns([1, 1])
+            with c_gen_menu:
+                lbl_menu_btn = f"Generar Excel de Auditoría {anio_aud_menu}" if anio_aud_menu else "Generar Excel de Auditoría Multianual"
+                if st.button(lbl_menu_btn, type="primary", key="btn_gen_auditoria_menu"):
+                    with st.spinner("Construyendo libro de auditoría con fórmulas de Excel..."):
+                        from reports.auditoria_excel import generar_excel_auditoria
+                        st.session_state['buf_auditoria_page'] = generar_excel_auditoria(anio_filtro=anio_aud_menu).getvalue()
+                        st.session_state['fname_auditoria_page'] = f"auditoria_cartera_formulas_{anio_aud_menu}.xlsx" if anio_aud_menu else "auditoria_cartera_formulas_multianual.xlsx"
+
+            if st.session_state.get('buf_auditoria_page'):
+                with c_dl_menu:
+                    st.download_button(
+                        label=f"Descargar Archivo Excel ({st.session_state.get('fname_auditoria_page')})",
+                        data=st.session_state['buf_auditoria_page'],
+                        file_name=st.session_state['fname_auditoria_page'],
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="dl_btn_auditoria_page"
+                    )
 
     # CONCILIACIÓN DE FACTURAS (NUEVO)
     elif menu == "Conciliación de Facturas":
