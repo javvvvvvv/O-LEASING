@@ -92,7 +92,26 @@ def _preparar_encabezado_hoja(ws, titulo_hoja, subtitulo, total_cols, titulo_emp
     ws.row_dimensions[2].height = 16
 
 
-def generar_excel_auditoria(anio_filtro=None, titulo_empresa=None, logo_path=None) -> io.BytesIO:
+def _obtener_db_path(db_path=None):
+    if db_path and os.path.exists(db_path):
+        return db_path
+    try:
+        import streamlit as st
+        p = st.session_state.get("_active_db_path")
+        if p and os.path.exists(p):
+            return p
+    except Exception:
+        pass
+    cand = os.path.join(_BASE_DIR, "leasing.db")
+    if os.path.exists(cand):
+        return cand
+    cand_data = os.path.join(_BASE_DIR, "data", "leasing.db")
+    if os.path.exists(cand_data):
+        return cand_data
+    return cand
+
+
+def generar_excel_auditoria(anio_filtro=None, titulo_empresa=None, logo_path=None, db_path=None) -> io.BytesIO:
     """Genera el libro completo de auditoria con formulas matematicas vivas.
 
     Parametros:
@@ -101,12 +120,12 @@ def generar_excel_auditoria(anio_filtro=None, titulo_empresa=None, logo_path=Non
         Si es None, se genera el rango multianual completo (todos los meses de la cartera).
       - titulo_empresa: str opcional para membrete.
       - logo_path: ruta al logo corporativo.
+      - db_path: ruta a la base de datos sqlite. Si es None, se detecta automaticamente.
     """
     import sqlite3
     from finanzas import calc_amort, calc_res_amort, vp_res
-    from app import get_db_path
 
-    db_path = get_db_path()
+    db_path = _obtener_db_path(db_path)
     conn = sqlite3.connect(db_path)
     df_c = pd.read_sql("SELECT * FROM contratos ORDER BY ID_Contrato", conn)
     conn.close()
@@ -417,7 +436,158 @@ def generar_excel_auditoria(anio_filtro=None, titulo_empresa=None, logo_path=Non
     ws_resumen.auto_filter.ref = f"A{fila_header_res}:{get_column_letter(len(cols_resumen))}{fila_fin_datos}"
 
     # =========================================================================
-    # 2. DEFINICION DE MATRICES CRONOLOGICAS HORIZONTALES
+    # 2. HOJA: Calculo_Tasa_Implicita (Explicacion Matematica y Comprobacion PV)
+    # =========================================================================
+    ws_tasa = wb.create_sheet(title="Calculo_Tasa_Implicita")
+    cols_tasa = [
+        ("ID_Contrato", 14, Alignment(horizontal="center")),
+        ("Cliente", 34, Alignment(horizontal="left")),
+        ("Estatus", 12, Alignment(horizontal="center")),
+        ("Plazo_Meses", 12, Alignment(horizontal="right")),
+        ("Valor_Sin_IVA", 16, Alignment(horizontal="right")),
+        ("Anticipo_Monto", 16, Alignment(horizontal="right")),
+        ("Inversion_Neta", 16, Alignment(horizontal="right")),
+        ("Renta_Sin_IVA", 16, Alignment(horizontal="right")),
+        ("Residual_Pactado", 16, Alignment(horizontal="right")),
+        ("Tasa_Mensual_Registrada", 16, Alignment(horizontal="right")),
+        ("Tasa_Calculada_RATE", 16, Alignment(horizontal="right")),
+        ("Comprobacion_PV", 18, Alignment(horizontal="right")),
+        ("Diferencia_Cuadre", 16, Alignment(horizontal="right")),
+        ("Tasa_Nominal_Anual", 16, Alignment(horizontal="right")),
+        ("TIR_Anual_Efectiva", 16, Alignment(horizontal="right")),
+        ("Diferencia_vs_Registrada", 16, Alignment(horizontal="right")),
+        ("Estatus_Verificacion", 16, Alignment(horizontal="center")),
+    ]
+
+    _preparar_encabezado_hoja(
+        ws_tasa,
+        "Cálculo de Tasa Implícita y Comprobación de Flujos (NIF C-15 / IFRS 16)",
+        "Determinación de tasa mensual mediante RATE(nper, -pmt, pv, -fv) y comprobación PV con diferencia cero",
+        len(cols_tasa),
+        titulo_empresa=titulo_empresa,
+        logo_path=logo_path
+    )
+
+    fila_header_tasa = 4
+    ws_tasa.row_dimensions[fila_header_tasa].height = 28
+    for idx, (nom_col, ancho, alig) in enumerate(cols_tasa, start=1):
+        c = ws_tasa.cell(row=fila_header_tasa, column=idx, value=nom_col)
+        c.fill = FILL_HEADER
+        c.font = FONT_HEADER
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        c.border = BORDER_CELL
+        ws_tasa.column_dimensions[get_column_letter(idx)].width = ancho
+
+    fila_actual_tasa = fila_inicio_datos
+    for c_item in contratos_pre:
+        r_t = fila_actual_tasa
+        ws_tasa.cell(row=r_t, column=1, value=c_item["id"]).alignment = cols_tasa[0][2]
+        ws_tasa.cell(row=r_t, column=2, value=c_item["cliente"]).alignment = cols_tasa[1][2]
+        ws_tasa.cell(row=r_t, column=3, value=c_item["estatus"]).alignment = cols_tasa[2][2]
+
+        c_pl = ws_tasa.cell(row=r_t, column=4, value=c_item["pl"])
+        c_pl.number_format = FMT_INT
+        c_pl.alignment = cols_tasa[3][2]
+
+        c_val = ws_tasa.cell(row=r_t, column=5, value=c_item["valor"])
+        c_val.number_format = FMT_CURRENCY
+        c_val.alignment = cols_tasa[4][2]
+
+        c_ant = ws_tasa.cell(row=r_t, column=6, value=c_item["anticipo"])
+        c_ant.number_format = FMT_CURRENCY
+        c_ant.alignment = cols_tasa[5][2]
+
+        # Inversion Neta = E - F
+        c_inv = ws_tasa.cell(row=r_t, column=7, value=f"=E{r_t}-F{r_t}")
+        c_inv.number_format = FMT_CURRENCY
+        c_inv.alignment = cols_tasa[6][2]
+
+        c_ren = ws_tasa.cell(row=r_t, column=8, value=c_item["renta"])
+        c_ren.number_format = FMT_CURRENCY
+        c_ren.alignment = cols_tasa[7][2]
+
+        c_res = ws_tasa.cell(row=r_t, column=9, value=c_item["residual"])
+        c_res.number_format = FMT_CURRENCY
+        c_res.alignment = cols_tasa[8][2]
+
+        c_treg = ws_tasa.cell(row=r_t, column=10, value=c_item["tasa_reg"])
+        c_treg.number_format = FMT_PCT_RATE
+        c_treg.alignment = cols_tasa[9][2]
+
+        # Tasa RATE = IFERROR(RATE(D, -H, G, -I), J)
+        c_trate = ws_tasa.cell(row=r_t, column=11, value=f"=IFERROR(RATE(D{r_t}, -H{r_t}, G{r_t}, -I{r_t}), J{r_t})")
+        c_trate.number_format = FMT_PCT_RATE
+        c_trate.alignment = cols_tasa[10][2]
+
+        # Comprobacion PV = IF(K>0, PV(K, D, -H, -I), G)
+        c_pv = ws_tasa.cell(row=r_t, column=12, value=f"=IF(K{r_t}>0, PV(K{r_t}, D{r_t}, -H{r_t}, -I{r_t}), G{r_t})")
+        c_pv.number_format = FMT_CURRENCY
+        c_pv.alignment = cols_tasa[11][2]
+
+        # Diferencia Cuadre = L - G (debe dar $0.00)
+        c_dif = ws_tasa.cell(row=r_t, column=13, value=f"=L{r_t}-G{r_t}")
+        c_dif.number_format = FMT_CURRENCY
+        c_dif.alignment = cols_tasa[12][2]
+
+        # Tasa Nominal Anual = K * 12
+        c_tnom = ws_tasa.cell(row=r_t, column=14, value=f"=K{r_t}*12")
+        c_tnom.number_format = FMT_PCT_ANNUAL
+        c_tnom.alignment = cols_tasa[13][2]
+
+        # TIR Anual Efectiva = ((1+K)^12)-1
+        c_tir = ws_tasa.cell(row=r_t, column=15, value=f"=((1+K{r_t})^12)-1")
+        c_tir.number_format = FMT_PCT_ANNUAL
+        c_tir.alignment = cols_tasa[14][2]
+
+        # Diferencia RATE vs Registrada = K - J
+        c_dift = ws_tasa.cell(row=r_t, column=16, value=f"=K{r_t}-J{r_t}")
+        c_dift.number_format = FMT_PCT_RATE
+        c_dift.alignment = cols_tasa[15][2]
+
+        # Estatus Verificacion = IF(ABS(M)<0.01, "EXACTO", "REVISAR")
+        c_ver = ws_tasa.cell(row=r_t, column=17, value=f'=IF(ABS(M{r_t})<0.01, "EXACTO", "REVISAR")')
+        c_ver.alignment = cols_tasa[16][2]
+
+        es_par_t = (fila_actual_tasa - fila_inicio_datos) % 2 == 1
+        for col_i in range(1, len(cols_tasa) + 1):
+            cell_obj = ws_tasa.cell(row=r_t, column=col_i)
+            cell_obj.border = BORDER_CELL
+            cell_obj.font = FONT_BODY
+            if es_par_t:
+                cell_obj.fill = FILL_ZEBRA
+
+        fila_actual_tasa += 1
+
+    fila_fin_tasa = fila_actual_tasa - 1
+    ws_tasa.cell(row=fila_actual_tasa, column=1, value="TOTAL CARTERA").alignment = Alignment(horizontal="center")
+    ws_tasa.cell(row=fila_actual_tasa, column=2, value=f"{len(contratos_pre)} Contratos").alignment = Alignment(horizontal="left")
+
+    for c_idx in [5, 6, 7, 8, 9, 12, 13]:
+        letra_col = get_column_letter(c_idx)
+        cell_t = ws_tasa.cell(row=fila_actual_tasa, column=c_idx, value=f"=SUM({letra_col}{fila_inicio_datos}:{letra_col}{fila_fin_tasa})")
+        cell_t.number_format = FMT_CURRENCY
+        cell_t.alignment = Alignment(horizontal="right")
+
+    for c_idx in [10, 11, 14, 15, 16]:
+        letra_col = get_column_letter(c_idx)
+        fmt_t = FMT_PCT_RATE if c_idx in [10, 11, 16] else FMT_PCT_ANNUAL
+        cell_t = ws_tasa.cell(row=fila_actual_tasa, column=c_idx, value=f"=AVERAGE({letra_col}{fila_inicio_datos}:{letra_col}{fila_fin_tasa})")
+        cell_t.number_format = fmt_t
+        cell_t.alignment = Alignment(horizontal="right")
+
+    ws_tasa.cell(row=fila_actual_tasa, column=17, value="AUDITADO").alignment = Alignment(horizontal="center")
+
+    for col_i in range(1, len(cols_tasa) + 1):
+        c_tot = ws_tasa.cell(row=fila_actual_tasa, column=col_i)
+        c_tot.fill = FILL_TOTAL
+        c_tot.font = FONT_TOTAL
+        c_tot.border = BORDER_TOTAL
+
+    ws_tasa.freeze_panes = "C5"
+    ws_tasa.auto_filter.ref = f"A{fila_header_tasa}:{get_column_letter(len(cols_tasa))}{fila_fin_tasa}"
+
+    # =========================================================================
+    # 3. DEFINICION DE MATRICES CRONOLOGICAS HORIZONTALES
     # =========================================================================
     matrices_config = [
         {

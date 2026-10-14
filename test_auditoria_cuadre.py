@@ -108,6 +108,20 @@ def test_formulas_vivas_excel():
     assert "=" in str(ws_mod["F9"].value), "Modelo didactico debe tener formulas de capital"
 
 
+def test_hoja_calculo_tasa_implicita():
+    """Verifica que la hoja Calculo_Tasa_Implicita contenga formulas de RATE, PV y comprobacion."""
+    buf = generar_excel_auditoria(anio_filtro=2025)
+    wb = openpyxl.load_workbook(buf, data_only=False)
+
+    assert "Calculo_Tasa_Implicita" in wb.sheetnames, "Falta la hoja Calculo_Tasa_Implicita"
+    ws = wb["Calculo_Tasa_Implicita"]
+    assert str(ws["G5"].value).startswith("="), "Inversion Neta debe ser formula"
+    assert "RATE" in str(ws["K5"].value), "Tasa mensual debe usar RATE"
+    assert "PV" in str(ws["L5"].value), "Comprobacion debe usar formula PV"
+    assert str(ws["M5"].value).startswith("="), "Diferencia de cuadre debe ser formula"
+    assert "^12" in str(ws["O5"].value), "TIR anual debe ser formula"
+
+
 if __name__ == "__main__":
     print("Ejecutando test_amarre_agosto_2026...")
     test_amarre_agosto_2026()
@@ -116,6 +130,10 @@ if __name__ == "__main__":
     print("Ejecutando test_formulas_vivas_excel...")
     test_formulas_vivas_excel()
     print("PASS: test_formulas_vivas_excel")
+
+    print("Ejecutando test_hoja_calculo_tasa_implicita...")
+    test_hoja_calculo_tasa_implicita()
+    print("PASS: test_hoja_calculo_tasa_implicita")
 
     print("Ejecutando test_amarre_multianual_todos_los_meses...")
     test_amarre_multianual_todos_los_meses()

@@ -7181,7 +7181,7 @@ st.sidebar.markdown(f'<div class="saludo-sidebar">{_saludo}</div>', unsafe_allow
 # cambian DESDE dónde estás viendo el sistema) — antes flotaban como dos
 # widgets sueltos, sin nada que los agrupara visualmente como una sola
 # sección de contexto. Ahora comparten una sola tarjeta.
-with st.sidebar.container(key="contexto_wrap", border=True):
+with st.sidebar.container(border=True):
     st.markdown('<div class="emp-label">Empresa activa</div>', unsafe_allow_html=True)
     _emp_lista = get_empresas_permitidas()
     _emp_nombres = [e['nombre'] for e in _emp_lista]
@@ -7245,6 +7245,7 @@ GRUPOS = {
         "Cierre y Conciliación Mensual",
         "Comparar Analíticas",
         "Tablas de Amortización",
+        "Reporte Integral de Auditoría",
         "Auditoría con Fórmulas",
     ],
     "Análisis": [
@@ -7292,6 +7293,7 @@ DESCRIPCIONES = {
     "Cierre y Conciliación Mensual": "Resumen ejecutivo mensual de movimientos, facturación, cobranza y pólizas para cierre de mes contable con exportación PDF.",
     "Comparar Analíticas": "Sube las analíticas contables del contador y compáralas contra lo que el sistema esperaba, con sugerencia de póliza de ajuste.",
     "Tablas de Amortización": "Consulta la tabla de amortización completa de cualquier contrato.",
+    "Reporte Integral de Auditoría": "Reporte completo e integrado con información contractual, cálculo de tasa implícita, amortizaciones con fórmulas vivas y matrices cronológicas mensuales.",
     "Auditoría con Fórmulas": "Genera el libro Excel de auditoría con fórmulas financieras vivas y matrices cronológicas mensuales.",
     "Proyección Financiera": "Proyecta el comportamiento financiero futuro de tu cartera.",
     "Cotizador Comercial": "Simulador interactivo de nuevos arrendamientos puros con desglose inicial, amortización y exportación de cotización en PDF.",
@@ -11176,59 +11178,14 @@ try:
                             key="btn_amort_dl_aud"
                         )
 
-    # AUDITORÍA CON FÓRMULAS VIVAS
-    elif menu == "Auditoría con Fórmulas":
-        st.title("Reporte de Auditoría con Fórmulas Financieras")
-        st.caption("Libro oficial de auditoría técnica y fiscal (NIF C-15 / IFRS 16) con fórmulas vivas en Excel.")
-
-        with CardContainer(title="Libro de Auditoría con Fórmulas Matemáticas", subtitle="Contratos en vertical, parámetros financieros y matrices cronológicas mensuales con fórmulas", padding="20px"):
-            st.markdown(
-                """
-                Este reporte genera un libro de Excel oficial con **fórmulas vivas** (sin valores estáticos) diseñado para auditorías financieras y fiscales (SAT, auditores externos, comités de crédito):
-                - **Contratos en vertical** (uno por fila) con parámetros contractuales y fórmulas nativas de Excel (`Inversión Neta`, `Tasa RATE`, `TIR Anual`, `VP Residual`, `Margen`).
-                - **Matrices cronológicas horizontales** separadas por Año y Mes (`2022-01` a `2030-09`) para:
-                  1. `Intereses Leasing Mensual` (devengo individual y total de cartera por mes con `=SUM(...)`).
-                  2. `Intereses Residual Mensual` (devengo NIF C-15 y total de cartera por mes con `=SUM(...)`).
-                  3. `Ingreso Financiero Total` (fórmulas inter-hoja sumando leasing y residual en cada celda).
-                  4. `Amortización Capital Mensual` (recuperación de principal mes a mes).
-                  5. `Saldos Insolutos Mensual` (saldo de cartera activa al cierre de cada mes).
-                  6. `Saldo Residual Activo` (evolución del valor presente capitalizado del residual).
-                  7. `Matriz Consolidada` (bloques mensuales con todos los conceptos financieros lado a lado).
-                  8. `Modelo de Amortización Tipo` (demostración de la mecánica NIF C-15 con fórmulas relativas dinámicas paso a paso).
-                """
-            )
-
-            c_aud1, c_aud2 = st.columns([2, 1])
-            with c_aud1:
-                tipo_alcance_menu = st.radio(
-                    "Alcance del reporte:",
-                    ["Ejercicio Fiscal Específico (Recomendado para auditoría anual)", "Histórico Multianual Completo (Todos los años de cartera 2022-2030)"],
-                    key="radio_auditoria_menu_alcance"
-                )
-            with c_aud2:
-                anio_aud_menu = None
-                if "Específico" in tipo_alcance_menu:
-                    anio_aud_menu = st.number_input("Año del Ejercicio Fiscal:", min_value=2020, max_value=2050, value=datetime.now().year, step=1, key="num_anio_aud_menu")
-
-            st.markdown("---")
-            c_gen_menu, c_dl_menu = st.columns([1, 1])
-            with c_gen_menu:
-                lbl_menu_btn = f"Generar Excel de Auditoría {anio_aud_menu}" if anio_aud_menu else "Generar Excel de Auditoría Multianual"
-                if st.button(lbl_menu_btn, type="primary", key="btn_gen_auditoria_menu"):
-                    with st.spinner("Construyendo libro de auditoría con fórmulas de Excel..."):
-                        from reports.auditoria_excel import generar_excel_auditoria
-                        st.session_state['buf_auditoria_page'] = generar_excel_auditoria(anio_filtro=anio_aud_menu).getvalue()
-                        st.session_state['fname_auditoria_page'] = f"auditoria_cartera_formulas_{anio_aud_menu}.xlsx" if anio_aud_menu else "auditoria_cartera_formulas_multianual.xlsx"
-
-            if st.session_state.get('buf_auditoria_page'):
-                with c_dl_menu:
-                    st.download_button(
-                        label=f"Descargar Archivo Excel ({st.session_state.get('fname_auditoria_page')})",
-                        data=st.session_state['buf_auditoria_page'],
-                        file_name=st.session_state['fname_auditoria_page'],
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="dl_btn_auditoria_page"
-                    )
+    # REPORTE INTEGRAL DE AUDITORÍA Y FÓRMULAS VIVAS
+    elif menu in ("Reporte Integral de Auditoría", "Auditoría con Fórmulas"):
+        from reports.reporte_integral_auditoria import render_reporte_integral_auditoria
+        render_reporte_integral_auditoria(
+            get_db_path_fn=get_db_path,
+            tabla_mensual_fn=tabla_mensual_conceptos,
+            totales_intereses_fn=totales_intereses_desde_tabla_mensual
+        )
 
     # CONCILIACIÓN DE FACTURAS (NUEVO)
     elif menu == "Conciliación de Facturas":
