@@ -41,7 +41,17 @@ LOGO_OLEASING_PNG_DEFAULT = os.path.join(_BASE_DIR, "assets", "o-leasing-logo.pn
 
 def _resolver_titulo_empresa():
     import streamlit as st
-    return st.session_state.get('_nombre_empresa', 'Mi Empresa')
+    val = st.session_state.get('_nombre_empresa')
+    if val and str(val).strip() and str(val).strip().lower() != 'mi empresa':
+        return str(val).strip()
+    try:
+        from models.configuracion import get_cfg
+        cfg_nom = get_cfg('nombre_empresa')
+        if cfg_nom and str(cfg_nom).strip() and str(cfg_nom).strip().lower() != 'mi empresa':
+            return str(cfg_nom).strip()
+    except Exception:
+        pass
+    return "Orange Leasing"
 
 
 def formatear_hoja_excel(ws, df, currency_cols=None, pct_cols=None, int_cols=None,

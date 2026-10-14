@@ -178,7 +178,7 @@ DEFAULT_DB  = os.path.join(BASE_DIR, "leasing.db")
 # Populate session state early
 try:
     get_db_path()
-    st.session_state['_nombre_empresa'] = get_cfg('nombre_empresa', get_empresa_actual().get('nombre', 'Mi Empresa'))
+    st.session_state['_nombre_empresa'] = get_cfg('nombre_empresa', get_empresa_actual().get('nombre', 'Orange Leasing'))
 except:
     pass
 
@@ -8388,7 +8388,31 @@ try:
             if inv > 0:
                 with st.expander("Exportar a PDF", expanded=False):
                     pdf_key = f"pdf_buf_{sel_ec}"
+
+                    empresa_defecto = st.session_state.get('_nombre_empresa') or get_cfg('nombre_empresa') or get_empresa_actual().get('nombre', 'Orange Leasing')
+                    if not empresa_defecto or str(empresa_defecto).strip().lower() == 'mi empresa':
+                        empresa_defecto = 'Orange Leasing'
+
+                    c_pdf1, c_pdf2 = st.columns([1.6, 1.4])
+                    with c_pdf1:
+                        nombre_empresa_input = st.text_input(
+                            "Nombre de la empresa en encabezado PDF:",
+                            value=empresa_defecto,
+                            key=f"ec_nombre_empresa_{sel_ec}",
+                            help="Nombre o razón social que encabezará el Estado de Cuenta en el PDF."
+                        )
+                    with c_pdf2:
+                        incluir_atraso_check = st.checkbox(
+                            "Incluir leyenda de atraso / meses pendientes",
+                            value=False,
+                            key=f"ec_incluir_atraso_{sel_ec}",
+                            help="Desmarcado por defecto: el PDF no mostrará si el contrato va atrasado ni los meses pendientes de pago."
+                        )
+
                     if st.button("Generar Documento PDF", width='stretch', key="ec_pdf_gen_btn"):
+                        nom_final = (nombre_empresa_input or '').strip() or empresa_defecto
+                        st.session_state['_nombre_empresa'] = nom_final
+                        set_cfg('nombre_empresa', nom_final)
                         with st.spinner("Creando PDF... (puede tomar un par de segundos)"):
                             dfa_pdf, _, _, _, _ = calc_amort(round(inv,4), r_m, res, pl, t)
                             dfa_pdf = dfa_pdf.copy()
@@ -8408,7 +8432,9 @@ try:
                             _avp_pdf = calcular_avance_pago(row) if str(row.get('Estatus','')).upper() != 'BAJA' else None
                             pdf_buf = pdf_estado_cuenta(
                                 row, dfa_pdf, dfr=dfr_pdf, avance=_avp_pdf, mes_corte=mes_corte_ec,
-                                fecha_hoy_txt=fecha_larga(hoy_ref())
+                                fecha_hoy_txt=fecha_larga(hoy_ref()),
+                                mostrar_atraso=incluir_atraso_check,
+                                nombre_empresa=nom_final
                             )
                             st.session_state[pdf_key] = pdf_buf
 

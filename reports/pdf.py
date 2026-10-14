@@ -44,16 +44,27 @@ LOGO_ORANGE_PNG_DEFAULT   = os.path.join(_BASE_DIR, "assets", "orange-crew-logo.
 
 def _resolver_titulo_empresa():
     import streamlit as st
-    return st.session_state.get('_nombre_empresa', 'Mi Empresa')
+    val = st.session_state.get('_nombre_empresa')
+    if val and str(val).strip() and str(val).strip().lower() != 'mi empresa':
+        return str(val).strip()
+    try:
+        from models.configuracion import get_cfg
+        cfg_nom = get_cfg('nombre_empresa')
+        if cfg_nom and str(cfg_nom).strip() and str(cfg_nom).strip().lower() != 'mi empresa':
+            return str(cfg_nom).strip()
+    except Exception:
+        pass
+    return "Orange Leasing"
 
 
 def _nombre_empresa_actual() -> str:
-    if _resolver_titulo_empresa:
-        try:
-            return _resolver_titulo_empresa() or "Mi Empresa"
-        except Exception:
-            return "Mi Empresa"
-    return "Mi Empresa"
+    try:
+        nom = _resolver_titulo_empresa()
+        if nom and str(nom).strip() and str(nom).strip().lower() != 'mi empresa':
+            return str(nom).strip()
+    except Exception:
+        pass
+    return "Orange Leasing"
 
 
 def _grafica_amort_para_pdf(dfa, mes_corte=None):
@@ -116,11 +127,11 @@ def _pie_pdf_marca(epeq, logo_path=None):
     return Paragraph("Generado con O-Leasing · una app de Orange", epeq)
 
 
-def pdf_estado_cuenta(row, dfa, dfr=None, avance=None, mes_corte=None, fecha_hoy_txt="", logo_path=None):
+def pdf_estado_cuenta(row, dfa, dfr=None, avance=None, mes_corte=None, fecha_hoy_txt="", logo_path=None, mostrar_atraso=False, nombre_empresa=None):
     """Genera el Estado de Cuenta de un contrato en PDF, con la misma
     información que se ve en pantalla (datos generales, avisos de baja/
-    avance de pago, y la gráfica de amortización) para imprimir o mandar
-    por correo."""
+    avance de pago opcional, y la gráfica de amortización) para imprimir o
+    mandar por correo."""
     logo_path = logo_path or LOGO_OLEASING_PNG_DEFAULT
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=letter, rightMargin=34, leftMargin=34, topMargin=34, bottomMargin=34)
@@ -130,7 +141,9 @@ def pdf_estado_cuenta(row, dfa, dfr=None, avance=None, mes_corte=None, fecha_hoy
     enota = es['Normal']; enota.fontSize = 8; enota.textColor = rl_colors.HexColor("#565E68")
     epeq = es['Normal']; epeq.fontSize = 7; epeq.textColor = rl_colors.HexColor("#8A929C"); epeq.alignment = 1
 
-    _nombre_emp = _nombre_empresa_actual()
+    _nombre_emp = (nombre_empresa or '').strip()
+    if not _nombre_emp or _nombre_emp.lower() == 'mi empresa':
+        _nombre_emp = _nombre_empresa_actual()
     elems = []
     if os.path.exists(logo_path):
         try:
@@ -152,7 +165,7 @@ def pdf_estado_cuenta(row, dfa, dfr=None, avance=None, mes_corte=None, fecha_hoy
         _fb = str(row.get('Fecha_Baja','') or '')[:10]
         elems.append(Paragraph(f"<b><font color='#B3261E'>CONTRATO DADO DE BAJA</font></b> — {_fb or 'sin fecha capturada'}", es['Normal']))
         elems.append(Spacer(1, 6))
-    if avance and avance.get('estado') == 'ATRASADO':
+    if mostrar_atraso and avance and avance.get('estado') == 'ATRASADO':
         elems.append(Paragraph(
             f"<b><font color='#B3261E'>Va atrasado {avance['meses_atraso']} mes(es)</font></b> — "
             f"faltan el/los mes(es) {', '.join(str(m) for m in avance['meses_faltantes'][:10])}", es['Normal']))
