@@ -14,7 +14,8 @@
 # ============================================================================
 """
 reports/auditoria_excel.py — Generador de libro de Excel con fórmulas de
-auditoría financiera para toda la cartera y desglose cronológico mensual.
+auditoría financiera para toda la cartera, desglose mensual de devengos y
+matrices completas de saldos insolutos, saldos de intereses y saldos de residual.
 
 Diseñado específicamente para auditorías financieras y fiscales (NIF C-15 /
 IFRS 16), proporcionando:
@@ -22,14 +23,17 @@ IFRS 16), proporcionando:
    iniciales de captura (Anticipo %, Comisión %, Residual %) y fórmulas nativas
    de Excel (=Valor*Pct, =Valor-Anticipo, =RATE, =SUM, =AVERAGE, =IF, TIR).
 2. Matrices cronológicas horizontales separadas por Año y Mes (ej. 2022-01 a 2030-09)
-   para devengo de intereses leasing, amortización de capital, saldos insolutos,
-   devengo de intereses de residual y saldo activo de residual.
-3. Fórmulas de suma mensual de cartera (=SUM(...)) para auditar cualquier mes
-   específico (ej. Agosto 2025 o Agosto 2026).
-4. Fórmulas de amortización mensual: Capital = Renta - Intereses Leasing.
-5. Fórmulas inter-hoja para cálculo de ingreso financiero total.
-6. Consolidación de Cartera Activa (278 contratos) por defecto, eliminando
-   contratos dados de baja o sin vigencia en el periodo consultado.
+   para:
+   - Devengo de intereses leasing e intereses de residual.
+   - Amortización mensual de capital (Capital = Renta - Intereses).
+   - Saldos insolutos de capital mes a mes.
+   - Saldos de intereses por devengar mes a mes.
+   - Saldos totales de cartera (Capital + Intereses) con fórmulas vivas.
+   - Saldos de valor residual activo mes a mes.
+   - Saldos exigibles globales (Cartera + Residual) con fórmulas vivas.
+   - Matriz consolidada de flujos y matriz consolidada de saldos.
+3. Fórmulas de suma mensual de cartera (=SUM(...)) en todas las matrices.
+4. Consolidación de Cartera Activa (278 contratos) por defecto.
 """
 
 import io
@@ -161,7 +165,7 @@ def generar_excel_auditoria(
         est_req = str(filtro_estatus).strip().upper()
         df_c = df_c[df_c["Estatus"].astype(str).str.strip().str.upper() == est_req]
 
-    # 1. Precomputo vectorizado ultra-rapido de amortizaciones y vigencias por contrato
+    # 1. Precomputo vectorizado ultra-rapido de amortizaciones, devengos y saldos por contrato
     contratos_pre = []
     min_ym = None
     max_ym = None
@@ -248,6 +252,10 @@ def generar_excel_auditoria(
         ir_list = [round(float(x), 2) for x in dfr["Interes"].tolist()]
         sr_list = [round(float(x), 2) for x in dfr["Saldo_Fin"].tolist()]
 
+        # Saldo de intereses remanentes por devengar al cierre de cada mes (0 a pl - 1)
+        sint_list = [round(sum(il_list[idx + 1:]), 2) for idx in range(pl)]
+        tot_interes = round(sum(il_list), 2)
+
         contratos_pre.append({
             "id": id_c,
             "cliente": cli,
@@ -276,6 +284,8 @@ def generar_excel_auditoria(
             "il": il_list,
             "cap": cap_list,
             "sal": sal_list,
+            "sint": sint_list,
+            "tot_interes": tot_interes,
             "ir": ir_list,
             "sr": sr_list,
         })
@@ -668,9 +678,10 @@ def generar_excel_auditoria(
     ws_tasa.auto_filter.ref = f"A{fila_header_tasa}:{get_column_letter(len(cols_tasa))}{fila_fin_tasa}"
 
     # =========================================================================
-    # 3. DEFINICION DE MATRICES CRONOLOGICAS HORIZONTALES
+    # 3. DEFINICION DE MATRICES CRONOLOGICAS HORIZONTALES (DEVENGOS Y SALDOS)
     # =========================================================================
     matrices_config = [
+        # --- BLOQUE 1: DEVENGOS Y FLUJOS MENSUALES ---
         {
             "sheet_name": "Intereses_Leasing_Mensual",
             "titulo": "Intereses de Leasing Devengados Mes a Mes",
@@ -737,10 +748,11 @@ def generar_excel_auditoria(
             ],
             "col_total_nombre": "Total_Capital_Recuperado"
         },
+        # --- BLOQUE 2: SALDOS INSOLUTOS, SALDOS DE INTERESES Y SALDOS DE CARTERA ---
         {
-            "sheet_name": "Saldos_Insolutos_Mensual",
+            "sheet_name": "Saldos_Capital_Mensual",
             "titulo": "Saldos Insolutos de Capital al Cierre de Cada Mes",
-            "subtitulo": "Saldo insoluto de cartera activa al término de cada período contable",
+            "subtitulo": "Saldo insoluto de capital de cada contrato y suma de cartera al cierre de cada período",
             "campo": "sal",
             "fixed_cols": [
                 ("ID_Contrato", 14, Alignment(horizontal="center")),
@@ -752,7 +764,38 @@ def generar_excel_auditoria(
                 ("Plazo", 10, Alignment(horizontal="right")),
                 ("Inversion_Neta", 16, Alignment(horizontal="right")),
             ],
-            "col_total_nombre": "Saldo_Final_Cierre"
+            "col_total_nombre": "Saldo_Capital_Cierre"
+        },
+        {
+            "sheet_name": "Saldos_Intereses_Mensual",
+            "titulo": "Saldos de Intereses por Devengar al Cierre de Cada Mes",
+            "subtitulo": "Intereses remanentes pendientes por devengar/cobrar por contrato y total de cartera",
+            "campo": "sint",
+            "fixed_cols": [
+                ("ID_Contrato", 14, Alignment(horizontal="center")),
+                ("Cliente", 34, Alignment(horizontal="left")),
+                ("Vehiculo", 26, Alignment(horizontal="left")),
+                ("Estatus", 12, Alignment(horizontal="center")),
+                ("Fecha_Alta", 13, Alignment(horizontal="center")),
+                ("Fecha_Vencimiento", 15, Alignment(horizontal="center")),
+                ("Plazo", 10, Alignment(horizontal="right")),
+                ("Total_Interes_Pactado", 16, Alignment(horizontal="right")),
+            ],
+            "col_total_nombre": "Saldo_Interes_Cierre"
+        },
+        {
+            "sheet_name": "Saldos_Cartera_Total",
+            "titulo": "Saldo Total de Cartera al Cierre de Cada Mes (Capital + Intereses)",
+            "subtitulo": "Fórmula inter-hoja viva sumando saldo insoluto de capital más saldo de intereses por devengar",
+            "campo": "saldo_total_cartera_formula",
+            "fixed_cols": [
+                ("ID_Contrato", 14, Alignment(horizontal="center")),
+                ("Cliente", 34, Alignment(horizontal="left")),
+                ("Vehiculo", 26, Alignment(horizontal="left")),
+                ("Estatus", 12, Alignment(horizontal="center")),
+                ("Plazo", 10, Alignment(horizontal="right")),
+            ],
+            "col_total_nombre": "Saldo_Cartera_Cierre"
         },
         {
             "sheet_name": "Saldo_Residual_Activo",
@@ -769,7 +812,21 @@ def generar_excel_auditoria(
                 ("Plazo", 10, Alignment(horizontal="right")),
                 ("Residual_Pactado", 16, Alignment(horizontal="right")),
             ],
-            "col_total_nombre": "Saldo_Residual_Final"
+            "col_total_nombre": "Saldo_Residual_Cierre"
+        },
+        {
+            "sheet_name": "Saldos_Exigible_Global",
+            "titulo": "Saldo Total Exigible Global de Cartera (Capital + Intereses + Residual)",
+            "subtitulo": "Fórmula inter-hoja viva sumando saldo total de cartera más saldo de valor residual activo",
+            "campo": "saldo_exigible_global_formula",
+            "fixed_cols": [
+                ("ID_Contrato", 14, Alignment(horizontal="center")),
+                ("Cliente", 34, Alignment(horizontal="left")),
+                ("Vehiculo", 26, Alignment(horizontal="left")),
+                ("Estatus", 12, Alignment(horizontal="center")),
+                ("Plazo", 10, Alignment(horizontal="right")),
+            ],
+            "col_total_nombre": "Saldo_Global_Cierre"
         },
     ]
 
@@ -837,7 +894,7 @@ def generar_excel_auditoria(
             ws_m.cell(row=r_actual, column=4, value=c_item["estatus"]).alignment = f_cols[3][2]
 
             if n_fixed == 5:
-                # Ingreso_Financiero_Total
+                # Ingreso_Financiero_Total, Saldos_Cartera_Total o Saldos_Exigible_Global
                 c_p = ws_m.cell(row=r_actual, column=5, value=pl)
                 c_p.number_format = FMT_INT
                 c_p.alignment = f_cols[4][2]
@@ -848,7 +905,14 @@ def generar_excel_auditoria(
                 c_p.number_format = FMT_INT
                 c_p.alignment = f_cols[6][2]
 
-                c_monto_fijo = ws_m.cell(row=r_actual, column=8, value=c_item["residual"] if "Residual" in f_cols[7][0] else c_item["inversion"])
+                if "Residual" in f_cols[7][0]:
+                    val_col8 = c_item["residual"]
+                elif "Interes" in f_cols[7][0]:
+                    val_col8 = c_item["tot_interes"]
+                else:
+                    val_col8 = c_item["inversion"]
+
+                c_monto_fijo = ws_m.cell(row=r_actual, column=8, value=val_col8)
                 c_monto_fijo.number_format = FMT_CURRENCY
                 c_monto_fijo.alignment = f_cols[7][2]
 
@@ -858,14 +922,16 @@ def generar_excel_auditoria(
                     c_ren_m.number_format = FMT_CURRENCY
                     c_ren_m.alignment = f_cols[8][2]
 
-            val_list = c_item.get(campo_m) if campo_m not in ("ingreso_total_formula", "cap_formula") else None
+            val_list = c_item.get(campo_m) if campo_m not in (
+                "ingreso_total_formula", "cap_formula",
+                "saldo_total_cartera_formula", "saldo_exigible_global_formula"
+            ) else None
 
             for idx_m, (y, m) in enumerate(lista_meses):
                 c_pos = start_month_col_idx + idx_m
 
                 if campo_m == "ingreso_total_formula":
-                    # Formula inter-hoja viva: =Intereses_Leasing_Mensual!ColRow + Intereses_Residual_Mensual!ColRow
-                    # En esas hojas, hay 8 fixed cols, por lo que los meses empiezan en col 9 (get_column_letter(8 + 1 + idx_m))
+                    # Formula inter-hoja: =Intereses_Leasing_Mensual!ColRow + Intereses_Residual_Mensual!ColRow
                     col_letra_origen = get_column_letter(8 + 1 + idx_m)
                     f_val = f"=Intereses_Leasing_Mensual!{col_letra_origen}{r_actual} + Intereses_Residual_Mensual!{col_letra_origen}{r_actual}"
                     cell_val_obj = ws_m.cell(row=r_actual, column=c_pos, value=f_val)
@@ -874,11 +940,26 @@ def generar_excel_auditoria(
 
                 elif campo_m == "cap_formula":
                     # Formula viva: Capital = Renta - Intereses Leasing
-                    # Col I es Renta_Sin_IVA (col 9).
-                    # Intereses_Leasing_Mensual tiene el interes en col_letra_origen (8 + 1 + idx_m)
                     col_letra_origen = get_column_letter(8 + 1 + idx_m)
                     f_cap = f'=IF(Intereses_Leasing_Mensual!{col_letra_origen}{r_actual}>0, $I{r_actual}-Intereses_Leasing_Mensual!{col_letra_origen}{r_actual}, "")'
                     cell_val_obj = ws_m.cell(row=r_actual, column=c_pos, value=f_cap)
+                    cell_val_obj.number_format = FMT_CURRENCY
+                    cell_val_obj.alignment = Alignment(horizontal="right")
+
+                elif campo_m == "saldo_total_cartera_formula":
+                    # Formula viva: Saldo Total Cartera = Saldo Capital + Saldo Intereses
+                    col_letra_origen = get_column_letter(8 + 1 + idx_m)
+                    f_val = f"=Saldos_Capital_Mensual!{col_letra_origen}{r_actual} + Saldos_Intereses_Mensual!{col_letra_origen}{r_actual}"
+                    cell_val_obj = ws_m.cell(row=r_actual, column=c_pos, value=f_val)
+                    cell_val_obj.number_format = FMT_CURRENCY
+                    cell_val_obj.alignment = Alignment(horizontal="right")
+
+                elif campo_m == "saldo_exigible_global_formula":
+                    # Formula viva: Saldo Global = Saldo Cartera Total + Saldo Residual Activo
+                    col_tot_letra = get_column_letter(5 + 1 + idx_m)
+                    col_res_letra = get_column_letter(8 + 1 + idx_m)
+                    f_val = f"=Saldos_Cartera_Total!{col_tot_letra}{r_actual} + Saldo_Residual_Activo!{col_res_letra}{r_actual}"
+                    cell_val_obj = ws_m.cell(row=r_actual, column=c_pos, value=f_val)
                     cell_val_obj.number_format = FMT_CURRENCY
                     cell_val_obj.alignment = Alignment(horizontal="right")
 
@@ -901,7 +982,7 @@ def generar_excel_auditoria(
 
             letra_ini_mes = get_column_letter(start_month_col_idx)
             letra_fin_mes = get_column_letter(end_month_col_idx)
-            if campo_m in ["sal", "sr"]:
+            if campo_m in ["sal", "sint", "sr", "saldo_total_cartera_formula", "saldo_exigible_global_formula"]:
                 cell_row_tot = ws_m.cell(row=r_actual, column=col_total_row_idx, value=f"=MAX({letra_ini_mes}{r_actual}:{letra_fin_mes}{r_actual})")
             else:
                 cell_row_tot = ws_m.cell(row=r_actual, column=col_total_row_idx, value=f"=SUM({letra_ini_mes}{r_actual}:{letra_fin_mes}{r_actual})")
@@ -943,8 +1024,56 @@ def generar_excel_auditoria(
         ws_m.freeze_panes = "D5"
         ws_m.auto_filter.ref = f"A{fila_header_res}:{get_column_letter(total_cols_m)}{f_fin_m}"
 
+    # Hoja de compatibilidad previa Saldos_Insolutos_Mensual (copia referenciada a Saldos_Capital_Mensual)
+    if "Saldos_Capital_Mensual" in wb.sheetnames:
+        ws_insol = wb.create_sheet(title="Saldos_Insolutos_Mensual")
+        ws_cap_ref = wb["Saldos_Capital_Mensual"]
+        _preparar_encabezado_hoja(
+            ws_insol,
+            "Saldos Insolutos de Capital al Cierre de Cada Mes",
+            "Saldo insoluto de cartera activa al término de cada período contable",
+            ws_cap_ref.max_column,
+            titulo_empresa=titulo_empresa,
+            logo_path=logo_path
+        )
+        for r_k in range(fila_header_res, ws_cap_ref.max_row + 1):
+            for c_k in range(1, ws_cap_ref.max_column + 1):
+                val_orig = ws_cap_ref.cell(row=r_k, column=c_k).value
+                cell_dest = ws_insol.cell(row=r_k, column=c_k)
+                if r_k == fila_header_res:
+                    cell_dest.value = val_orig
+                    cell_dest.fill = FILL_HEADER
+                    cell_dest.font = FONT_HEADER
+                    cell_dest.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+                    ws_insol.column_dimensions[get_column_letter(c_k)].width = ws_cap_ref.column_dimensions[get_column_letter(c_k)].width
+                elif r_k == ws_cap_ref.max_row:
+                    letra_c_k = get_column_letter(c_k)
+                    if c_k == 1:
+                        cell_dest.value = "TOTAL CARTERA"
+                    elif c_k == 2:
+                        cell_dest.value = f"{len(contratos_pre)} Contratos"
+                    elif c_k >= 9:
+                        cell_dest.value = f"=SUM({letra_c_k}5:{letra_c_k}{r_k - 1})"
+                        cell_dest.number_format = FMT_CURRENCY
+                    cell_dest.fill = FILL_TOTAL
+                    cell_dest.font = FONT_TOTAL
+                    cell_dest.border = BORDER_TOTAL
+                else:
+                    if c_k <= 8:
+                        cell_dest.value = f"=Saldos_Capital_Mensual!{get_column_letter(c_k)}{r_k}"
+                        if c_k in [7]:
+                            cell_dest.number_format = FMT_INT
+                        elif c_k in [8]:
+                            cell_dest.number_format = FMT_CURRENCY
+                    else:
+                        letra_c_k = get_column_letter(c_k)
+                        cell_dest.value = f"=Saldos_Capital_Mensual!{letra_c_k}{r_k}"
+                        cell_dest.number_format = FMT_CURRENCY
+                    cell_dest.border = BORDER_CELL
+                    cell_dest.font = FONT_BODY
+
     # =========================================================================
-    # 4. HOJA: Matriz_Consolidada (Desglose Multi-Concepto por Mes)
+    # 4. HOJA: Matriz_Consolidada (Desglose Multi-Concepto de Flujos por Mes)
     # =========================================================================
     meses_consolidada = lista_meses if len(lista_meses) <= 24 else lista_meses[-24:]
     ws_cons = wb.create_sheet(title="Matriz_Consolidada")
@@ -968,7 +1097,7 @@ def generar_excel_auditoria(
 
     _preparar_encabezado_hoja(
         ws_cons,
-        "Matriz Cronológica Consolidada Multi-Concepto",
+        "Matriz Cronológica Consolidada Multi-Concepto (Flujos y Devengos)",
         "Interés leasing, amortización de capital, saldo insoluto e interés de residual mes por mes con fórmulas",
         total_cols_cons,
         titulo_empresa=titulo_empresa,
@@ -1037,7 +1166,7 @@ def generar_excel_auditoria(
             c2.alignment = Alignment(horizontal="right")
 
             # 3. Saldo Cap
-            f_sc = f"=Saldos_Insolutos_Mensual!{col_origen_letra_8}{r_act_c}"
+            f_sc = f"=Saldos_Capital_Mensual!{col_origen_letra_8}{r_act_c}"
             c3 = ws_cons.cell(row=r_act_c, column=c_col_cursor + 2, value=f_sc)
             c3.number_format = FMT_CURRENCY
             c3.alignment = Alignment(horizontal="right")
@@ -1088,7 +1217,144 @@ def generar_excel_auditoria(
     ws_cons.auto_filter.ref = f"A4:{get_column_letter(total_cols_cons)}{fin_datos_cons}"
 
     # =========================================================================
-    # 5. HOJA: Modelo_Amortizacion_Tipo (Demostracion Dinamica NIF C-15)
+    # 5. HOJA: Matriz_Consolidada_Saldos (Desglose Multi-Concepto de Saldos por Mes)
+    # =========================================================================
+    ws_cons_s = wb.create_sheet(title="Matriz_Consolidada_Saldos")
+
+    conceptos_saldos_mes = [
+        ("Saldo_Capital", 15),
+        ("Saldo_Intereses", 15),
+        ("Saldo_Cartera", 16),
+        ("Saldo_Residual", 15),
+        ("Saldo_Global", 16),
+    ]
+
+    total_cols_cons_s = len(cols_fijas_cons) + len(meses_consolidada) * len(conceptos_saldos_mes)
+
+    _preparar_encabezado_hoja(
+        ws_cons_s,
+        "Matriz Cronológica Consolidada de Saldos de Cartera",
+        "Saldos de capital, saldos de intereses por devengar, saldos totales de cartera y saldos de residual mes por mes",
+        total_cols_cons_s,
+        titulo_empresa=titulo_empresa,
+        logo_path=logo_path
+    )
+
+    ws_cons_s.row_dimensions[3].height = 20
+    ws_cons_s.row_dimensions[4].height = 22
+
+    for idx_f, (n_f, anc_f, al_f) in enumerate(cols_fijas_cons, start=1):
+        ws_cons_s.merge_cells(start_row=3, start_column=idx_f, end_row=4, end_column=idx_f)
+        c_f = ws_cons_s.cell(row=3, column=idx_f, value=n_f)
+        c_f.fill = FILL_HEADER
+        c_f.font = FONT_HEADER
+        c_f.alignment = Alignment(horizontal="center", vertical="center")
+        c_f.border = BORDER_CELL
+        ws_cons_s.column_dimensions[get_column_letter(idx_f)].width = anc_f
+
+    curr_col_s = len(cols_fijas_cons) + 1
+    for y_c, m_c in meses_consolidada:
+        mes_etiqueta = f"{y_c:04d}-{m_c:02d}"
+        col_ini_bloque = curr_col_s
+        col_fin_bloque = curr_col_s + len(conceptos_saldos_mes) - 1
+
+        ws_cons_s.merge_cells(start_row=3, start_column=col_ini_bloque, end_row=3, end_column=col_fin_bloque)
+        c_bloque = ws_cons_s.cell(row=3, column=col_ini_bloque, value=mes_etiqueta)
+        c_bloque.fill = FILL_HEADER
+        c_bloque.font = FONT_HEADER
+        c_bloque.alignment = Alignment(horizontal="center", vertical="center")
+        c_bloque.border = BORDER_CELL
+
+        for c_nombre, c_ancho in conceptos_saldos_mes:
+            c_sub = ws_cons_s.cell(row=4, column=curr_col_s, value=c_nombre)
+            c_sub.fill = FILL_SUBHEADER
+            c_sub.font = FONT_SUBHEADER
+            c_sub.alignment = Alignment(horizontal="center", vertical="center")
+            c_sub.border = BORDER_CELL
+            ws_cons_s.column_dimensions[get_column_letter(curr_col_s)].width = c_ancho
+            curr_col_s += 1
+
+    r_act_cs = 5
+    for c_item in contratos_pre:
+        ws_cons_s.cell(row=r_act_cs, column=1, value=c_item["id"]).alignment = cols_fijas_cons[0][2]
+        ws_cons_s.cell(row=r_act_cs, column=2, value=c_item["cliente"]).alignment = cols_fijas_cons[1][2]
+        ws_cons_s.cell(row=r_act_cs, column=3, value=c_item["vehiculo"]).alignment = cols_fijas_cons[2][2]
+        c_pl_s = ws_cons_s.cell(row=r_act_cs, column=4, value=c_item["pl"])
+        c_pl_s.number_format = FMT_INT
+        c_pl_s.alignment = cols_fijas_cons[3][2]
+
+        c_col_cursor_s = 5
+        for y_c, m_c in meses_consolidada:
+            idx_mes_global = lista_meses.index((y_c, m_c))
+            col_origen_letra_8 = get_column_letter(8 + 1 + idx_mes_global)
+
+            # 1. Saldo Capital
+            f_scap = f"=Saldos_Capital_Mensual!{col_origen_letra_8}{r_act_cs}"
+            cs1 = ws_cons_s.cell(row=r_act_cs, column=c_col_cursor_s, value=f_scap)
+            cs1.number_format = FMT_CURRENCY
+            cs1.alignment = Alignment(horizontal="right")
+
+            # 2. Saldo Intereses por Devengar
+            f_sint = f"=Saldos_Intereses_Mensual!{col_origen_letra_8}{r_act_cs}"
+            cs2 = ws_cons_s.cell(row=r_act_cs, column=c_col_cursor_s + 1, value=f_sint)
+            cs2.number_format = FMT_CURRENCY
+            cs2.alignment = Alignment(horizontal="right")
+
+            # 3. Saldo Cartera Total = Saldo Cap + Saldo Int
+            letra_scap = get_column_letter(c_col_cursor_s)
+            letra_sint = get_column_letter(c_col_cursor_s + 1)
+            f_scart = f"={letra_scap}{r_act_cs} + {letra_sint}{r_act_cs}"
+            cs3 = ws_cons_s.cell(row=r_act_cs, column=c_col_cursor_s + 2, value=f_scart)
+            cs3.number_format = FMT_CURRENCY
+            cs3.alignment = Alignment(horizontal="right")
+
+            # 4. Saldo Residual Activo
+            f_sres = f"=Saldo_Residual_Activo!{col_origen_letra_8}{r_act_cs}"
+            cs4 = ws_cons_s.cell(row=r_act_cs, column=c_col_cursor_s + 3, value=f_sres)
+            cs4.number_format = FMT_CURRENCY
+            cs4.alignment = Alignment(horizontal="right")
+
+            # 5. Saldo Global Integral = Saldo Cartera + Saldo Residual
+            letra_scart = get_column_letter(c_col_cursor_s + 2)
+            letra_sres = get_column_letter(c_col_cursor_s + 3)
+            f_sglob = f"={letra_scart}{r_act_cs} + {letra_sres}{r_act_cs}"
+            cs5 = ws_cons_s.cell(row=r_act_cs, column=c_col_cursor_s + 4, value=f_sglob)
+            cs5.number_format = FMT_CURRENCY
+            cs5.alignment = Alignment(horizontal="right")
+
+            c_col_cursor_s += 5
+
+        es_par_cons_s = (r_act_cs - 5) % 2 == 1
+        for col_idx in range(1, total_cols_cons_s + 1):
+            cell_item = ws_cons_s.cell(row=r_act_cs, column=col_idx)
+            cell_item.border = BORDER_CELL
+            cell_item.font = FONT_BODY
+            if es_par_cons_s:
+                cell_item.fill = FILL_ZEBRA
+
+        r_act_cs += 1
+
+    fin_datos_cons_s = r_act_cs - 1
+    ws_cons_s.cell(row=r_act_cs, column=1, value="TOTAL CARTERA").alignment = Alignment(horizontal="center")
+    ws_cons_s.cell(row=r_act_cs, column=2, value=f"{len(contratos_pre)} Contratos").alignment = Alignment(horizontal="left")
+
+    for col_k in range(5, total_cols_cons_s + 1):
+        letra_col_k = get_column_letter(col_k)
+        c_k_tot = ws_cons_s.cell(row=r_act_cs, column=col_k, value=f"=SUM({letra_col_k}5:{letra_col_k}{fin_datos_cons_s})")
+        c_k_tot.number_format = FMT_CURRENCY
+        c_k_tot.alignment = Alignment(horizontal="right")
+
+    for col_k in range(1, total_cols_cons_s + 1):
+        c_tot_obj = ws_cons_s.cell(row=r_act_cs, column=col_k)
+        c_tot_obj.fill = FILL_TOTAL
+        c_tot_obj.font = FONT_TOTAL
+        c_tot_obj.border = BORDER_TOTAL
+
+    ws_cons_s.freeze_panes = "E5"
+    ws_cons_s.auto_filter.ref = f"A4:{get_column_letter(total_cols_cons_s)}{fin_datos_cons_s}"
+
+    # =========================================================================
+    # 6. HOJA: Modelo_Amortizacion_Tipo (Demostracion Dinamica NIF C-15)
     # =========================================================================
     ws_mod = wb.create_sheet(title="Modelo_Amortizacion_Tipo")
     _preparar_encabezado_hoja(

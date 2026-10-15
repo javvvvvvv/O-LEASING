@@ -131,6 +131,39 @@ def test_hoja_calculo_tasa_implicita():
     assert "^12" in str(ws["R5"].value), "TIR anual debe ser formula"
 
 
+def test_matrices_saldos_formulas():
+    """Verifica que existan las 5 matrices de saldos con formulas vivas inter-hoja."""
+    buf = generar_excel_auditoria(anio_filtro=2025, filtro_estatus="ACTIVO")
+    wb = openpyxl.load_workbook(buf, data_only=False)
+
+    hojas_esperadas = [
+        "Saldos_Capital_Mensual",
+        "Saldos_Intereses_Mensual",
+        "Saldos_Cartera_Total",
+        "Saldo_Residual_Activo",
+        "Saldos_Exigible_Global",
+        "Matriz_Consolidada_Saldos"
+    ]
+    for h in hojas_esperadas:
+        assert h in wb.sheetnames, f"Falta la hoja de saldos: {h}"
+
+    ws_cart = wb["Saldos_Cartera_Total"]
+    val_cart = str(ws_cart["J5"].value)
+    assert "Saldos_Capital_Mensual" in val_cart, "Saldos_Cartera_Total debe referenciar a Saldos_Capital_Mensual"
+    assert "Saldos_Intereses_Mensual" in val_cart, "Saldos_Cartera_Total debe referenciar a Saldos_Intereses_Mensual"
+    assert "+" in val_cart, "Saldos_Cartera_Total debe ser suma viva de capital + intereses"
+
+    ws_exig = wb["Saldos_Exigible_Global"]
+    val_exig = str(ws_exig["J5"].value)
+    assert "Saldos_Cartera_Total" in val_exig, "Saldos_Exigible_Global debe referenciar a Saldos_Cartera_Total"
+    assert "Saldo_Residual_Activo" in val_exig, "Saldos_Exigible_Global debe referenciar a Saldo_Residual_Activo"
+    assert "+" in val_exig, "Saldos_Exigible_Global debe ser suma viva de cartera total + residual"
+
+    ws_mcs = wb["Matriz_Consolidada_Saldos"]
+    val_mcs_cart = str(ws_mcs["I6"].value)
+    assert "+" in val_mcs_cart, "Matriz_Consolidada_Saldos debe sumar capital e intereses de cartera"
+
+
 if __name__ == "__main__":
     print("Ejecutando test_amarre_agosto_2026...")
     test_amarre_agosto_2026()
@@ -144,8 +177,13 @@ if __name__ == "__main__":
     test_hoja_calculo_tasa_implicita()
     print("PASS: test_hoja_calculo_tasa_implicita")
 
+    print("Ejecutando test_matrices_saldos_formulas...")
+    test_matrices_saldos_formulas()
+    print("PASS: test_matrices_saldos_formulas")
+
     print("Ejecutando test_amarre_multianual_todos_los_meses...")
     test_amarre_multianual_todos_los_meses()
     print("PASS: test_amarre_multianual_todos_los_meses")
 
-    print("\nTODAS LAS PRUEBAS DE AMARRE Y CONTINUIDAD EN EL TIEMPO PASARON EXITOSAMENTE.")
+    print("\nTODAS LAS PRUEBAS DE AMARRE, SALDOS Y CONTINUIDAD EN EL TIEMPO PASARON EXITOSAMENTE.")
+

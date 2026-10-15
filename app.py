@@ -10465,6 +10465,37 @@ try:
     elif menu=="Reporte Maestro Saldos":
         st.title("Reporte Maestro: Saldos Insolutos")
         st.caption("Tablas de saldos insolutos mensuales de la cartera activa.")
+
+        st.info("Para consultar las matrices consolidadas con fórmulas vivas de Excel (=RATE, =PV, =SUM, suma cruzada de celdas), unidad vehicular, porcentajes iniciales y saldos de capital, intereses y cartera total, acceda al **Reporte Integral de Auditoría**.")
+        c_nav1, c_nav2 = st.columns([1, 1])
+        with c_nav1:
+            if st.button("Ir al Reporte Integral de Auditoría", key="btn_nav_rep_audit_saldos"):
+                st.session_state["menu"] = "Reporte Integral de Auditoría"
+                st.rerun()
+        with c_nav2:
+            if st.button("Descargar Libro con Fórmulas Vivas de Saldos (Excel)", key="btn_dl_audit_saldos_direct"):
+                with st.spinner("Generando libro oficial con fórmulas vivas de saldos..."):
+                    import importlib
+                    import reports.auditoria_excel
+                    importlib.reload(reports.auditoria_excel)
+                    from reports.auditoria_excel import generar_excel_auditoria
+                    st.session_state["buf_maestro_saldos_audit"] = generar_excel_auditoria(
+                        anio_filtro=datetime.now().year,
+                        filtro_estatus="ACTIVO",
+                        solo_con_movimiento=True
+                    ).getvalue()
+                    st.session_state["fname_maestro_saldos_audit"] = f"auditoria_cartera_saldos_{datetime.now().year}.xlsx"
+
+        if st.session_state.get("buf_maestro_saldos_audit"):
+            st.download_button(
+                label=f"Descargar {st.session_state.get('fname_maestro_saldos_audit')} (Fórmulas Vivas)",
+                data=st.session_state["buf_maestro_saldos_audit"],
+                file_name=st.session_state["fname_maestro_saldos_audit"],
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_btn_ready_maestro_saldos_audit"
+            )
+        st.markdown("---")
+
         anio_s=st.number_input("Año del reporte de saldos",min_value=2020,max_value=2050,value=datetime.now().year,step=1,key="ys")
         if st.button("Generar Reporte de Saldos", type="primary"):
             dcap, dint, dtot, dres, err = reporte_maestro_saldos(anio_s)

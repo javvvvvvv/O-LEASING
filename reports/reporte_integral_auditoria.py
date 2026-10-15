@@ -75,11 +75,12 @@ def render_reporte_integral_auditoria(get_db_path_fn=None, tabla_mensual_fn=None
         st.info(f"Mostrando **{len(df_contratos)} contratos** consolidados. Unidad vehicular, porcentajes iniciales y fórmulas matemáticas activadas.")
 
     # Tabs principales del reporte integral
-    tab_tasas, tab_mensual, tab_amort, tab_excel = st.tabs([
+    tab_tasas, tab_mensual, tab_saldos, tab_amort, tab_excel = st.tabs([
         "1. Cartera, Unidades y Cálculo de Tasa",
-        "2. Explorador Cronológico Mensual",
-        "3. Corrida de Amortización por Contrato",
-        "4. Descarga del Libro Excel Oficial"
+        "2. Devengo y Flujos Mensuales",
+        "3. Saldos de Cartera (Capital, Intereses, Total y Residual)",
+        "4. Corrida de Amortización y Saldos por Contrato",
+        "5. Descarga del Libro Excel Oficial con Fórmulas Vivas"
     ])
 
     # =========================================================================
@@ -355,11 +356,155 @@ def render_reporte_integral_auditoria(get_db_path_fn=None, tabla_mensual_fn=None
             st.info(f"No se registraron movimientos activos en {mes_sel_nombre} {anio_sel}.")
 
     # =========================================================================
-    # TAB 3: Corrida de Amortizacion por Contrato
+    # TAB 3: Saldos de Cartera (Capital, Intereses, Total y Residual)
+    # =========================================================================
+    with tab_saldos:
+        st.subheader("Saldos de Cartera: Capital Insoluto, Intereses Remanentes, Total y Residual")
+        st.caption("Consulte mes a mes los saldos exigibles de capital insoluto, intereses remanentes por devengar y saldo de cartera consolidada por contrato con fórmulas de comprobación.")
+
+        col_s_y, col_s_m = st.columns(2)
+        with col_s_y:
+            anio_sel_s = st.number_input("Año a consultar (Saldos):", min_value=2022, max_value=2030, value=2025, step=1, key="num_saldos_anio")
+        with col_s_m:
+            mes_sel_nombre_s = st.selectbox("Mes a consultar (Saldos):", options=MESES_NOMBRES, index=7, key="sb_saldos_mes")  # Default Agosto
+
+        mes_sel_num_s = MESES_NOMBRES.index(mes_sel_nombre_s) + 1
+
+        # Construir tabla por contrato para el mes
+        saldos_mes_list = []
+        for _, r in df_contratos.iterrows():
+            id_c = str(r["ID_Contrato"]).strip()
+            cli = str(r.get("Cliente") or "").strip()
+            veh = str(r.get("Vehiculo") or "").strip()
+            est = str(r.get("Estatus") or "").strip()
+            fa = pd.to_datetime(r.get("Fecha_Alta"))
+            fv = pd.to_datetime(r.get("Fecha_Vencimiento"))
+            fb = pd.to_datetime(r.get("Fecha_Baja"))
+
+            if pd.isna(fa) or pd.isna(fv):
+                continue
+            pl = int(r.get("Plazo") or 0)
+            if pl <= 0:
+                continue
+
+            val_sin_iva = float(r.get("Valor_Sin_IVA") or 0.0)
+            anticipo = float(r.get("Anticipo_Monto") or 0.0)
+            inv = val_sin_iva - anticipo
+            renta = float(r.get("Mensualidad_Sin_IVA") or 0.0)
+            res_monto = float(r.get("Residual_Monto") or 0.0)
+            tasa = float(r.get("Tasa_Calculada") or 0.0)
+            vpr = float(r.get("VP_Residual") or 0.0) or float(vp_res(res_monto, tasa, pl))
+
+            fa_y, fa_m = int(fa.year), int(fa.month)
+            fv_y, fv_m = int(fv.year), int(fv.month)
+            fb_y, fb_m = (int(fb.year), int(fb.month)) if (est.upper() == "BAJA" and pd.notna(fb)) else (9999, 99)
+
+            en_vigencia = not ((anio_sel_s < fa_y) or (anio_sel_s == fa_y and mes_sel_num_s < fa_m) or
+                               (anio_sel_s > fv_y) or (anio_sel_s == fv_y and mes_sel_num_s > fv_m) or
+                               (anio_sel_s > fb_y) or (anio_sel_s == fb_y and mes_sel_num_s > fb_m))
+
+            if en_vigencia:
+                mes_plazo = (anio_sel_s - fa_y) * 12 + (mes_sel_num_s - fa_m)
+                if 0 <= mes_plazo < pl:
+                    dfa, _, _, _, _ = calc_amort(round(inv, 4), round(renta, 4), round(res_monto, 4), pl, tasa)
+                    dfr = calc_res_amort(round(vpr, 4), tasa, pl)
+
+                    sal_cap = float(dfa["Saldo"].iloc[mes_plazo]) if mes_plazo < len(dfa) else 0.0
+                    il_vals = [float(x) for x in dfa["Interes"].tolist()]
+                    # Saldo de intereses remanentes por devengar al cierre del mes
+                    sal_int = round(sum(il_vals[mes_plazo + 1:]), 2)
+                    sal_cartera = round(sal_cap + sal_int, 2)
+                    sal_res = float(dfr["Saldo_Fin"].iloc[mes_plazo]) if mes_plazo < len(dfr) else 0.0
+                    sal_global = round(sal_cartera + sal_res, 2)
+
+                    saldos_mes_list.append({
+                        "ID Contrato": id_c,
+                        "Cliente": cli,
+                        "Vehículo": veh,
+                        "Estatus": est,
+                        "Mes en Curso": f"Mes {mes_plazo + 1} de {pl}",
+                        "Saldo Capital": sal_cap,
+                        "Saldo Intereses": sal_int,
+                        "Saldo Cartera (Cap + Int)": sal_cartera,
+                        "Saldo Residual": sal_res,
+                        "Saldo Global Exigible": sal_global
+                    })
+
+        if saldos_mes_list:
+            df_s_mes = pd.DataFrame(saldos_mes_list)
+
+            tot_s_cap = df_s_mes["Saldo Capital"].sum()
+            tot_s_int = df_s_mes["Saldo Intereses"].sum()
+            tot_s_cart = df_s_mes["Saldo Cartera (Cap + Int)"].sum()
+            tot_s_res = df_s_mes["Saldo Residual"].sum()
+            tot_s_glob = df_s_mes["Saldo Global Exigible"].sum()
+
+            skpi_col1, skpi_col2, skpi_col3, skpi_col4, skpi_col5 = st.columns(5)
+            skpi_col1.metric("Saldo Capital Insoluto", f"${tot_s_cap:,.2f}")
+            skpi_col2.metric("Saldo Intereses Remanentes", f"${tot_s_int:,.2f}")
+            skpi_col3.metric("Saldo Cartera (Cap + Int)", f"${tot_s_cart:,.2f}")
+            skpi_col4.metric("Saldo Residual Activo", f"${tot_s_res:,.2f}")
+            skpi_col5.metric("Saldo Global Exigible", f"${tot_s_glob:,.2f}")
+
+            with st.expander("Metodología y Fórmulas Matemáticas de Saldos de Cartera", expanded=False):
+                st.markdown(
+                    """
+                    **Definición de Saldos de Cartera:**
+                    - **Saldo Capital Insoluto**: Saldo principal deudor del contrato al cierre del mes tras aplicar la amortización de capital (`Saldo_Anterior - Capital_Mes`).
+                    - **Saldo Intereses Remanentes**: Total de intereses pactados del contrato pendientes de devengar/cobrar desde el siguiente mes hasta el vencimiento:
+                    $$\\text{Saldo Intereses}_t = \\sum_{k=t+1}^{n} \\text{Interés}_k$$
+                    - **Saldo Total de Cartera**: Total exigible de cartera por mensualidades restantes:
+                    $$\\text{Saldo Cartera} = \\text{Saldo Capital} + \\text{Saldo Intereses}$$
+                    - **Saldo Residual Activo**: Valor presente o saldo acumulado del valor residual pactado al término del contrato.
+                    - **Saldo Global Exigible**: Deuda total integral de la operación:
+                    $$\\text{Saldo Global} = \\text{Saldo Cartera} + \\text{Saldo Residual}$$
+                    """
+                )
+
+            # Filtros de busqueda
+            s_f1, s_f2 = st.columns([2, 1])
+            with s_f1:
+                q_s_filtro = st.text_input("Buscar en saldos por ID Contrato, Cliente o Vehículo:", key="txt_search_saldos_rep")
+            with s_f2:
+                s_estatus_op = st.multiselect("Filtrar Estatus (Saldos):", options=list(df_s_mes["Estatus"].unique()), default=list(df_s_mes["Estatus"].unique()), key="ms_estatus_saldos_rep")
+
+            df_s_show = df_s_mes.copy()
+            if q_s_filtro:
+                q_clean = q_s_filtro.strip().lower()
+                df_s_show = df_s_show[
+                    df_s_show["ID Contrato"].str.lower().str.contains(q_clean) |
+                    df_s_show["Cliente"].str.lower().str.contains(q_clean) |
+                    df_s_show["Vehículo"].str.lower().str.contains(q_clean)
+                ]
+            if s_estatus_op:
+                df_s_show = df_s_show[df_s_show["Estatus"].isin(s_estatus_op)]
+
+            df_s_disp = df_s_show.copy()
+            df_s_disp["Saldo Capital"] = df_s_disp["Saldo Capital"].map(lambda x: f"${x:,.2f}")
+            df_s_disp["Saldo Intereses"] = df_s_disp["Saldo Intereses"].map(lambda x: f"${x:,.2f}")
+            df_s_disp["Saldo Cartera (Cap + Int)"] = df_s_disp["Saldo Cartera (Cap + Int)"].map(lambda x: f"${x:,.2f}")
+            df_s_disp["Saldo Residual"] = df_s_disp["Saldo Residual"].map(lambda x: f"${x:,.2f}")
+            df_s_disp["Saldo Global Exigible"] = df_s_disp["Saldo Global Exigible"].map(lambda x: f"${x:,.2f}")
+
+            st.dataframe(df_s_disp, use_container_width=True, hide_index=True)
+
+            csv_saldos = df_s_show.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                label=f"Descargar Saldos {mes_sel_nombre_s} {anio_sel_s} (CSV)",
+                data=csv_saldos,
+                file_name=f"auditoria_saldos_cartera_{anio_sel_s}_{mes_sel_num_s:02d}.csv",
+                mime="text/csv",
+                key=f"dl_csv_saldos_{anio_sel_s}_{mes_sel_num_s}"
+            )
+        else:
+            st.info(f"No se registraron movimientos activos en {mes_sel_nombre_s} {anio_sel_s}.")
+
+    # =========================================================================
+    # TAB 4: Corrida de Amortizacion y Saldos por Contrato
     # =========================================================================
     with tab_amort:
-        st.subheader("Corrida de Amortización con Fórmulas por Contrato")
-        st.caption("Inspeccione la tabla de amortización detallada paso a paso para cualquier contrato seleccionado.")
+        st.subheader("Corrida de Amortización y Saldos con Fórmulas por Contrato")
+        st.caption("Inspeccione la tabla de amortización detallada paso a paso y la evolución de los saldos de capital, intereses y cartera para cualquier contrato seleccionado.")
 
         contratos_ids = [str(x).strip() for x in df_contratos["ID_Contrato"].tolist()]
         contrato_elegido = st.selectbox("Seleccione el Contrato:", options=contratos_ids, key="sb_contrato_amort_rep")
@@ -389,6 +534,7 @@ def render_reporte_integral_auditoria(get_db_path_fn=None, tabla_mensual_fn=None
             dfa, _, _, _, _ = calc_amort(round(inv, 4), round(renta, 4), round(res_m, 4), pl, tasa)
             dfr = calc_res_amort(round(vpr, 4), tasa, pl)
 
+            il_all_c = [float(x) for x in dfa["Interes"].tolist()]
             filas_corrida = []
             s_ini = inv
             vpr_ini = vpr
@@ -402,17 +548,23 @@ def render_reporte_integral_auditoria(get_db_path_fn=None, tabla_mensual_fn=None
                 vpr_fin = float(dfr["Saldo_Fin"].iloc[m_i])
                 ing_tot = int_l + int_r
 
+                sal_int_rem = round(sum(il_all_c[m_i + 1:]), 2)
+                sal_cart_tot = round(s_fin + sal_int_rem, 2)
+                sal_glob_tot = round(sal_cart_tot + vpr_fin, 2)
+
                 filas_corrida.append({
                     "Mes": m_i + 1,
-                    "Saldo Inicial": s_ini,
+                    "Saldo Inicial Capital": s_ini,
                     "Tasa Mensual": tasa,
                     "Interés Leasing": int_l,
                     "Renta Mensual": renta,
                     "Capital Amortizado": cap_l,
-                    "Saldo Final": s_fin,
-                    "VP Residual Inicial": vpr_ini,
-                    "Interés Residual": int_r,
+                    "Saldo Final Capital": s_fin,
+                    "Saldo Intereses": sal_int_rem,
+                    "Saldo Cartera (Cap + Int)": sal_cart_tot,
                     "VP Residual Final": vpr_fin,
+                    "Saldo Global Exigible": sal_glob_tot,
+                    "Interés Residual": int_r,
                     "Ingreso Total": ing_tot
                 })
                 s_ini = s_fin
@@ -434,15 +586,17 @@ def render_reporte_integral_auditoria(get_db_path_fn=None, tabla_mensual_fn=None
 
             # Formatear para tabla
             df_corrida_disp = df_corrida.copy()
-            df_corrida_disp["Saldo Inicial"] = df_corrida_disp["Saldo Inicial"].map(lambda x: f"${x:,.2f}")
+            df_corrida_disp["Saldo Inicial Capital"] = df_corrida_disp["Saldo Inicial Capital"].map(lambda x: f"${x:,.2f}")
             df_corrida_disp["Tasa Mensual"] = df_corrida_disp["Tasa Mensual"].map(lambda x: f"{x * 100:.4f}%")
             df_corrida_disp["Interés Leasing"] = df_corrida_disp["Interés Leasing"].map(lambda x: f"${x:,.2f}")
             df_corrida_disp["Renta Mensual"] = df_corrida_disp["Renta Mensual"].map(lambda x: f"${x:,.2f}")
             df_corrida_disp["Capital Amortizado"] = df_corrida_disp["Capital Amortizado"].map(lambda x: f"${x:,.2f}")
-            df_corrida_disp["Saldo Final"] = df_corrida_disp["Saldo Final"].map(lambda x: f"${x:,.2f}")
-            df_corrida_disp["VP Residual Inicial"] = df_corrida_disp["VP Residual Inicial"].map(lambda x: f"${x:,.2f}")
-            df_corrida_disp["Interés Residual"] = df_corrida_disp["Interés Residual"].map(lambda x: f"${x:,.2f}")
+            df_corrida_disp["Saldo Final Capital"] = df_corrida_disp["Saldo Final Capital"].map(lambda x: f"${x:,.2f}")
+            df_corrida_disp["Saldo Intereses"] = df_corrida_disp["Saldo Intereses"].map(lambda x: f"${x:,.2f}")
+            df_corrida_disp["Saldo Cartera (Cap + Int)"] = df_corrida_disp["Saldo Cartera (Cap + Int)"].map(lambda x: f"${x:,.2f}")
             df_corrida_disp["VP Residual Final"] = df_corrida_disp["VP Residual Final"].map(lambda x: f"${x:,.2f}")
+            df_corrida_disp["Saldo Global Exigible"] = df_corrida_disp["Saldo Global Exigible"].map(lambda x: f"${x:,.2f}")
+            df_corrida_disp["Interés Residual"] = df_corrida_disp["Interés Residual"].map(lambda x: f"${x:,.2f}")
             df_corrida_disp["Ingreso Total"] = df_corrida_disp["Ingreso Total"].map(lambda x: f"${x:,.2f}")
 
             st.dataframe(df_corrida_disp, use_container_width=True, hide_index=True)
@@ -457,7 +611,7 @@ def render_reporte_integral_auditoria(get_db_path_fn=None, tabla_mensual_fn=None
             )
 
     # =========================================================================
-    # TAB 4: Descarga del Libro Excel de Auditoria Oficial con Formulas Vivas
+    # TAB 5: Descarga del Libro Excel de Auditoria Oficial con Formulas Vivas
     # =========================================================================
     with tab_excel:
         st.subheader("Generación del Libro Oficial de Auditoría en Excel con Fórmulas Vivas")
@@ -470,12 +624,16 @@ def render_reporte_integral_auditoria(get_db_path_fn=None, tabla_mensual_fn=None
             2. **`Calculo_Tasa_Implicita`**: Explicación matemática con fórmulas vivas de `=RATE(...)`, comprobación de flujos mediante `=PV(...)` con diferencia cero y TIR efectiva.
             3. **`Intereses_Leasing_Mensual`**: Matriz horizontal con unidad vehicular y devengo mensual con sumas de cartera `=SUM(...)`.
             4. **`Intereses_Residual_Mensual`**: Matriz horizontal con devengos de intereses sobre el valor presente del residual (NIF C-15).
-            5. **`Ingreso_Financiero_Total`**: Matriz calculada con fórmulas inter-hoja sumando leasing y residual en cada celda.
+            5. **`Ingreso_Financiero_Total`**: Matriz calculada con fórmulas inter-hoja sumando leasing y residual en cada celda (`=Intereses_Leasing_Mensual!{col}{r} + Intereses_Residual_Mensual!{col}{r}`).
             6. **`Amortizacion_Capital_Mensual`**: Matriz de amortización de capital con fórmula viva: `=IF(Intereses>0, Renta - Intereses, "")`.
-            7. **`Saldos_Insolutos_Mensual`**: Matriz de saldos insolutos de cartera al cierre de cada mes.
-            8. **`Saldo_Residual_Activo`**: Matriz de evolución del saldo activo de valor residual.
-            9. **`Matriz_Consolidada`**: Bloques cronológicos multi-concepto con todos los rubros lado a lado y fórmulas inter-hoja.
-            10. **`Modelo_Amortizacion_Tipo`**: Modelo didáctico con fórmulas relativas paso a paso (`=Saldo*Tasa`, `=Renta-Interes`, etc.).
+            7. **`Saldos_Capital_Mensual`**: Matriz de saldos insolutos de capital mes a mes.
+            8. **`Saldos_Intereses_Mensual`**: Matriz de saldo de intereses remanentes por devengar/cobrar mes a mes.
+            9. **`Saldos_Cartera_Total`**: Matriz de saldo total exigible de cartera con fórmula viva: `=Saldos_Capital_Mensual!{col}{r} + Saldos_Intereses_Mensual!{col}{r}`.
+            10. **`Saldo_Residual_Activo`**: Matriz de evolución del saldo de valor residual activo mes a mes.
+            11. **`Saldos_Exigible_Global`**: Matriz de saldo exigible integral con fórmula viva: `=Saldos_Cartera_Total!{col}{r} + Saldo_Residual_Activo!{col}{r}`.
+            12. **`Matriz_Consolidada`**: Bloques cronológicos multi-concepto con todos los rubros de devengo y amortización lado a lado.
+            13. **`Matriz_Consolidada_Saldos`**: Bloques cronológicos multi-concepto con los 5 rubros de saldos lado a lado y fórmulas inter-hoja vivas.
+            14. **`Modelo_Amortizacion_Tipo`**: Modelo didáctico con fórmulas relativas paso a paso (`=Saldo*Tasa`, `=Renta-Interes`, etc.).
             """
         )
 
