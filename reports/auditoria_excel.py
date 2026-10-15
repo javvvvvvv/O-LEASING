@@ -24,7 +24,7 @@ Diseñado específicamente para auditorías financieras y fiscales (NIF C-15 / I
    (Anticipo %, Comisión %, Residual %) y fórmulas nativas de Excel (=RATE, =PV, =SUM, =AVERAGE).
 3. Todas las cifras limitadas a 2 decimales ($#,##0.00 y 0.00%), excepto tasas completas
    con precisión total a 8 decimales (0.00000000%).
-4. Hoja dinámica 'Matriz_Consolidada' con lista desplegable para seleccionar contrato,
+4. Hoja dinámica 'Modelo_Amortizacion_Tipo' con lista desplegable para seleccionar contrato,
    actualización automática mediante fórmulas =VLOOKUP y corte al mes exacto del plazo.
 5. Matrices cronológicas horizontales con fórmulas vivas de derivación mensual:
    - Intereses_Leasing_Mensual
@@ -35,8 +35,8 @@ Diseñado específicamente para auditorías financieras y fiscales (NIF C-15 / I
    - Saldos_Intereses_Mensual
    - Saldos_Cartera_Total
    - Saldos_Exigible_Global
-   - Matriz_Consolidada_Cartera
-   - Matriz_Consolidada_Saldos
+   - Matriz_Consolidada (flujos consolidados de cartera)
+   - Matriz_Consolidada_Saldos (saldos consolidados de cartera)
 """
 
 import io
@@ -48,6 +48,7 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.drawing.image import Image as OpenpyxlImage
+from openpyxl.workbook.defined_name import DefinedName
 
 if getattr(sys, "frozen", False):
     _BASE_DIR = os.path.dirname(sys.executable)
@@ -98,7 +99,7 @@ def _obtener_nombre_empresa():
 
 def _preparar_encabezado_hoja(ws, titulo_hoja, subtitulo, total_cols, titulo_empresa=None, logo_path=None):
     ws.cell(row=1, column=1, value=f"O-LEASING · UNA APP DE ORANGE CREW · {titulo_hoja}").font = FONT_TITLE
-    ws.cell(row=2, column=1, value=f"{subtitulo} · Auditoría Financiera NIF C-15 / IFRS 16 · Orange Crew").font = FONT_SUBTITLE
+    ws.cell(row=2, column=1, value=f"{subtitulo} · Auditoría Financiera NIF C-15 / IFRS 16 · Desarrollado por Orange Crew").font = FONT_SUBTITLE
     if total_cols > 1:
         ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=min(total_cols, 15))
         ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=min(total_cols, 15))
@@ -194,20 +195,21 @@ def _construir_caratula_ejecutiva(ws, titulo_empresa, fila_tot_resumen, anio_fil
         c_h.border = BORDER_CELL
         ws.column_dimensions[get_column_letter(idx_hi)].width = anc_h
 
+    # Descripciones en texto plano sin iniciar con '=' para evitar errores de compilacion en Excel
     indice_filas = [
-        ("1", "Resumen_Cartera", "Padrón completo de contratos en vertical con unidad vehicular, porcentajes y rentabilidad.", "=RATE, =PV, =SUM, =AVERAGE"),
-        ("2", "Calculo_Tasa_Implicita", "Metodología NIF C-15 / IFRS 16 de cálculo de tasa mensual y comprobación a diferencia cero.", "=RATE, =PV, =PV-Inversion, TIR"),
-        ("3", "Matriz_Consolidada", "Matriz interactiva con selector de contrato (desplegable) y corte automático exacto al plazo.", "=VLOOKUP, =ROUND(Saldo*Tasa, 2), =IF"),
-        ("4", "Intereses_Leasing_Mensual", "Matriz horizontal de intereses de leasing devengados mes a mes por contrato.", "=IF(Saldo_Ant>0, ROUND(Saldo_Ant*Tasa, 2), '')"),
-        ("5", "Intereses_Residual_Mensual", "Matriz horizontal de intereses sobre el valor presente del residual (NIF C-15).", "=IF(Saldo_Res_Ant>0, ROUND(Saldo_Res*Tasa, 2), '')"),
-        ("6", "Ingreso_Financiero_Total", "Matriz de ingreso financiero consolidado (Leasing + Residual) mes a mes.", "=Intereses_Leasing_Mensual! + Residual!"),
-        ("7", "Amortizacion_Capital_Mensual", "Matriz horizontal de amortización de principal mes a mes.", "=IF(Leasing>0, Renta - Leasing, '')"),
-        ("8", "Saldos_Capital_Mensual", "Saldo insoluto de principal mes a mes al cierre de cada periodo contable.", "=IF(Cap>0, Saldo_Ant - Cap, '')"),
-        ("9", "Saldos_Intereses_Mensual", "Saldo de intereses remanentes por devengar/cobrar desde cada corte mensual.", "=IF(Int>0, Saldo_Ant - Int, '')"),
-        ("10", "Saldos_Cartera_Total", "Saldo total exigible de mensualidades restantes (Capital + Intereses).", "=Saldos_Capital! + Saldos_Intereses!"),
-        ("11", "Saldo_Residual_Activo", "Evolución mensual del saldo activo del valor residual pactado.", "=IF(Int_Res>0, Saldo_Ant + Int_Res, '')"),
-        ("12", "Saldos_Exigible_Global", "Deuda integral total de cartera más valor residual activo.", "=Saldos_Cartera_Total! + Saldo_Residual!"),
-        ("13", "Matriz_Consolidada_Cartera", "Bloques cronológicos multi-concepto con leasing, residual, ingreso y capital de cartera.", "Fórmulas inter-hoja vivas"),
+        ("1", "Resumen_Cartera", "Padrón completo de contratos en vertical con unidad vehicular, porcentajes y rentabilidad.", "RATE, PV, SUM, AVERAGE"),
+        ("2", "Calculo_Tasa_Implicita", "Metodología NIF C-15 / IFRS 16 de cálculo de tasa mensual y comprobación a diferencia cero.", "RATE, PV, Comprobación PV, TIR"),
+        ("3", "Modelo_Amortizacion_Tipo", "Demostración dinámica con selector desplegable de contrato y corte automático exacto al plazo.", "VLOOKUP, Saldo*Tasa, Renta-Interés, Corte"),
+        ("4", "Intereses_Leasing_Mensual", "Matriz horizontal de intereses de leasing devengados mes a mes por contrato.", "IF(Saldo_Ant>0, ROUND(Saldo_Ant*Tasa, 2), '')"),
+        ("5", "Intereses_Residual_Mensual", "Matriz horizontal de intereses sobre el valor presente del residual (NIF C-15).", "IF(Saldo_Res_Ant>0, ROUND(Saldo_Res*Tasa, 2), '')"),
+        ("6", "Ingreso_Financiero_Total", "Matriz de ingreso financiero consolidado (Leasing + Residual) mes a mes.", "Intereses_Leasing_Mensual! + Residual!"),
+        ("7", "Amortizacion_Capital_Mensual", "Matriz horizontal de amortización de principal mes a mes.", "IF(Leasing>0, Renta - Leasing, '')"),
+        ("8", "Saldos_Capital_Mensual", "Saldo insoluto de principal mes a mes al cierre de cada periodo contable.", "IF(Cap>0, Saldo_Ant - Cap, '')"),
+        ("9", "Saldos_Intereses_Mensual", "Saldo de intereses remanentes por devengar/cobrar desde cada corte mensual.", "IF(Int>0, Saldo_Ant - Int, '')"),
+        ("10", "Saldos_Cartera_Total", "Saldo total exigible de mensualidades restantes (Capital + Intereses).", "Saldos_Capital! + Saldos_Intereses!"),
+        ("11", "Saldo_Residual_Activo", "Evolución mensual del saldo activo del valor residual pactado.", "IF(Int_Res>0, Saldo_Ant + Int_Res, '')"),
+        ("12", "Saldos_Exigible_Global", "Deuda integral total de cartera más valor residual activo.", "Saldos_Cartera_Total! + Saldo_Residual!"),
+        ("13", "Matriz_Consolidada", "Bloques cronológicos multi-concepto con leasing, residual, ingreso y capital de cartera.", "Fórmulas inter-hoja vivas"),
         ("14", "Matriz_Consolidada_Saldos", "Bloques cronológicos multi-concepto con los 5 rubros de saldos lado a lado.", "Fórmulas inter-hoja vivas"),
     ]
 
@@ -279,8 +281,9 @@ def generar_excel_auditoria(
     Garantiza:
     1. Cifras a 2 decimales ($#,##0.00 y 0.00%), excepto tasas completas a 8 decimales (0.00000000%).
     2. Formulas vivas en Intereses_Leasing_Mensual, Intereses_Residual_Mensual y Saldo_Residual_Activo.
-    3. Hoja Matriz_Consolidada interactiva con lista desplegable y corte exacto al plazo.
-    4. Logotipos de O-Leasing y Orange Crew con membretes institucionales.
+    3. Hoja Modelo_Amortizacion_Tipo interactiva con lista desplegable y corte exacto al plazo.
+    4. Matriz_Consolidada y Matriz_Consolidada_Saldos como matrices cronologicas de cartera.
+    5. Logotipos de O-Leasing y Orange Crew con membretes institucionales.
     """
     import sqlite3
     from finanzas import calc_amort, calc_res_amort, vp_res
@@ -650,6 +653,10 @@ def generar_excel_auditoria(
     ws_resumen.freeze_panes = "D5"
     ws_resumen.auto_filter.ref = f"A{fila_header_res}:{get_column_letter(len(cols_resumen))}{fila_fin_datos}"
 
+    # Registro de Nombre Definido Global para listas desplegables (compatible con todas las versiones de Excel)
+    dn_contratos = DefinedName("CONTRATOS_LISTA", attr_text=f"'Resumen_Cartera'!$A$5:$A${fila_fin_datos}")
+    wb.defined_names.add(dn_contratos)
+
     # Construir contenido ejecutivo e indice en la caratula
     _construir_caratula_ejecutiva(ws_caratula, titulo_empresa, fila_actual, anio_filtro, len(contratos_pre))
 
@@ -815,37 +822,36 @@ def generar_excel_auditoria(
     ws_tasa.auto_filter.ref = f"A{fila_header_tasa}:{get_column_letter(len(cols_tasa))}{fila_fin_tasa}"
 
     # =========================================================================
-    # 3. HOJA: Matriz_Consolidada (INTERACTIVA: Selector de Contrato y Corte al Plazo)
+    # 3. HOJA: Modelo_Amortizacion_Tipo (INTERACTIVA: Selector y Corte al Plazo)
     # =========================================================================
-    ws_cons = wb.create_sheet(title="Matriz_Consolidada")
+    ws_mod = wb.create_sheet(title="Modelo_Amortizacion_Tipo")
     _preparar_encabezado_hoja(
-        ws_cons,
-        "Matriz Consolidada Dinámica por Contrato",
+        ws_mod,
+        "Modelo de Amortización Dinámica con Fórmulas Nativas",
         "Seleccione cualquier contrato en la lista desplegable; la tabla actualiza todos los datos y se corta al mes exacto de terminación",
-        15,
+        14,
         titulo_empresa=titulo_empresa,
         logo_path=logo_path
     )
 
-    # Insercion de Logotipo en Matriz Consolidada
     try:
         if os.path.exists(LOGO_OLEASING_PNG_DEFAULT):
-            img_oleasing_m = OpenpyxlImage(LOGO_OLEASING_PNG_DEFAULT)
-            img_oleasing_m.width = 150
-            img_oleasing_m.height = 33
-            ws_cons.add_image(img_oleasing_m, "K2")
+            img_oleasing_mod = OpenpyxlImage(LOGO_OLEASING_PNG_DEFAULT)
+            img_oleasing_mod.width = 150
+            img_oleasing_mod.height = 33
+            ws_mod.add_image(img_oleasing_mod, "K2")
     except Exception:
         pass
 
     # Bloque de Control y Seleccion de Contrato
-    ws_cons.row_dimensions[4].height = 24
-    ws_cons.cell(row=4, column=2, value="SELECCIONAR CONTRATO:").font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
-    ws_cons.cell(row=4, column=2).fill = FILL_HEADER
-    ws_cons.cell(row=4, column=2).alignment = Alignment(horizontal="center", vertical="center")
-    ws_cons.cell(row=4, column=2).border = BORDER_CELL
+    ws_mod.row_dimensions[4].height = 24
+    ws_mod.cell(row=4, column=2, value="SELECCIONAR CONTRATO:").font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    ws_mod.cell(row=4, column=2).fill = FILL_HEADER
+    ws_mod.cell(row=4, column=2).alignment = Alignment(horizontal="center", vertical="center")
+    ws_mod.cell(row=4, column=2).border = BORDER_CELL
 
     primer_id = contratos_pre[0]["id"] if contratos_pre else ""
-    c_sel = ws_cons.cell(row=4, column=3, value=primer_id)
+    c_sel = ws_mod.cell(row=4, column=3, value=primer_id)
     c_sel.font = Font(name="Calibri", size=12, bold=True, color="1E5C4F")
     c_sel.fill = FILL_HIGHLIGHT
     c_sel.alignment = Alignment(horizontal="center", vertical="center")
@@ -856,16 +862,16 @@ def generar_excel_auditoria(
         bottom=Side(style="medium", color="1E5C4F")
     )
 
-    # Validacion de datos con lista desplegable de todos los contratos de Resumen_Cartera
-    dv = DataValidation(type="list", formula1=f"='Resumen_Cartera'!$A$5:$A${fila_fin_datos}", allow_blank=False)
-    ws_cons.add_data_validation(dv)
-    dv.add(ws_cons["C4"])
+    # Validacion de datos con lista desplegable mediante Nombre Definido compatible
+    dv = DataValidation(type="list", formula1="=CONTRATOS_LISTA", allow_blank=False)
+    ws_mod.add_data_validation(dv)
+    dv.add(ws_mod["C4"])
 
-    ws_cons.cell(row=4, column=4, value="<-- Seleccione de la lista desplegable o escriba el ID del contrato para actualizar toda la tabla").font = Font(name="Calibri", size=9, italic=True, color="64748B")
-    ws_cons.merge_cells("D4:K4")
+    ws_mod.cell(row=4, column=4, value="<-- Seleccione de la lista desplegable o escriba el ID del contrato para actualizar toda la tabla").font = Font(name="Calibri", size=9, italic=True, color="64748B")
+    ws_mod.merge_cells("D4:K4")
 
     # Bloque de Parametros Contractuales vinculados con =VLOOKUP (Filas 5 a 8)
-    meta_campos = [
+    meta_mod_campos = [
         # (Fila, Col_Lbl, Label, Col_Val, Form_VLOOKUP, FMT)
         (5, 2, "Cliente:", 3, f"=IFERROR(VLOOKUP($C$4, 'Resumen_Cartera'!$A$5:$Z${fila_fin_datos}, 2, FALSE), \"\")", "@"),
         (5, 6, "Unidad / Vehículo:", 7, f"=IFERROR(VLOOKUP($C$4, 'Resumen_Cartera'!$A$5:$Z${fila_fin_datos}, 3, FALSE), \"\")", "@"),
@@ -873,172 +879,168 @@ def generar_excel_auditoria(
 
         (6, 2, "Fecha Alta:", 3, f"=IFERROR(VLOOKUP($C$4, 'Resumen_Cartera'!$A$5:$Z${fila_fin_datos}, 5, FALSE), \"\")", "@"),
         (6, 4, "Fecha Vencimiento:", 5, f"=IFERROR(VLOOKUP($C$4, 'Resumen_Cartera'!$A$5:$Z${fila_fin_datos}, 6, FALSE), \"\")", "@"),
-        (6, 7, "Plazo (Meses):", 8, f"=IFERROR(VLOOKUP($C$4, 'Resumen_Cartera'!$A$5:$Z${fila_fin_datos}, 7, FALSE), 0)", FMT_INT),
-        (6, 10, "Valor Sin IVA:", 11, f"=IFERROR(VLOOKUP($C$4, 'Resumen_Cartera'!$A$5:$Z${fila_fin_datos}, 8, FALSE), 0)", FMT_CURRENCY),
+        (6, 6, "Plazo (Meses):", 7, f"=IFERROR(VLOOKUP($C$4, 'Resumen_Cartera'!$A$5:$Z${fila_fin_datos}, 7, FALSE), 0)", FMT_INT),
+        (6, 8, "Valor Sin IVA:", 9, f"=IFERROR(VLOOKUP($C$4, 'Resumen_Cartera'!$A$5:$Z${fila_fin_datos}, 8, FALSE), 0)", FMT_CURRENCY),
 
-        (7, 2, "Anticipo Monto:", 3, f"=IFERROR(VLOOKUP($C$4, 'Resumen_Cartera'!$A$5:$Z${fila_fin_datos}, 10, FALSE), 0)", FMT_CURRENCY),
-        (7, 4, "Inversión Neta:", 5, f"=IFERROR(VLOOKUP($C$4, 'Resumen_Cartera'!$A$5:$Z${fila_fin_datos}, 11, FALSE), 0)", FMT_CURRENCY),
-        (7, 7, "Renta Sin IVA:", 8, f"=IFERROR(VLOOKUP($C$4, 'Resumen_Cartera'!$A$5:$Z${fila_fin_datos}, 14, FALSE), 0)", FMT_CURRENCY),
-        (7, 10, "Residual Pactado:", 11, f"=IFERROR(VLOOKUP($C$4, 'Resumen_Cartera'!$A$5:$Z${fila_fin_datos}, 16, FALSE), 0)", FMT_CURRENCY),
+        (7, 2, "Inversión Neta:", 3, f"=IFERROR(VLOOKUP($C$4, 'Resumen_Cartera'!$A$5:$Z${fila_fin_datos}, 11, FALSE), 0)", FMT_CURRENCY),
+        (7, 4, "Renta Mensual:", 5, f"=IFERROR(VLOOKUP($C$4, 'Resumen_Cartera'!$A$5:$Z${fila_fin_datos}, 14, FALSE), 0)", FMT_CURRENCY),
+        (7, 6, "Residual Pactado:", 7, f"=IFERROR(VLOOKUP($C$4, 'Resumen_Cartera'!$A$5:$Z${fila_fin_datos}, 16, FALSE), 0)", FMT_CURRENCY),
+        (7, 8, "VP Residual Inicial:", 9, f"=IFERROR(VLOOKUP($C$4, 'Resumen_Cartera'!$A$5:$Z${fila_fin_datos}, 21, FALSE), 0)", FMT_CURRENCY),
 
         (8, 2, "Tasa Mensual:", 3, f"=IFERROR(VLOOKUP($C$4, 'Resumen_Cartera'!$A$5:$Z${fila_fin_datos}, 17, FALSE), 0)", FMT_PCT_RATE),
         (8, 4, "Tasa Nominal Anual:", 5, f"=IFERROR(VLOOKUP($C$4, 'Resumen_Cartera'!$A$5:$Z${fila_fin_datos}, 19, FALSE), 0)", FMT_PCT_ANNUAL),
-        (8, 7, "TIR Anual Efectiva:", 8, f"=IFERROR(VLOOKUP($C$4, 'Resumen_Cartera'!$A$5:$Z${fila_fin_datos}, 20, FALSE), 0)", FMT_PCT_ANNUAL),
-        (8, 10, "VP Residual Inicial:", 11, f"=IFERROR(VLOOKUP($C$4, 'Resumen_Cartera'!$A$5:$Z${fila_fin_datos}, 21, FALSE), 0)", FMT_CURRENCY),
+        (8, 6, "TIR Anual Efectiva:", 7, f"=IFERROR(VLOOKUP($C$4, 'Resumen_Cartera'!$A$5:$Z${fila_fin_datos}, 20, FALSE), 0)", FMT_PCT_ANNUAL),
+        (8, 8, "Ingreso Financiero:", 9, f"=IFERROR(VLOOKUP($C$4, 'Resumen_Cartera'!$A$5:$Z${fila_fin_datos}, 24, FALSE), 0)", FMT_CURRENCY),
     ]
 
-    for r_f, c_lbl, lbl_txt, c_val, form_str, num_f in meta_campos:
-        ws_cons.cell(row=r_f, column=c_lbl, value=lbl_txt).font = FONT_BODY_BOLD
-        ws_cons.cell(row=r_f, column=c_lbl).alignment = Alignment(horizontal="right", vertical="center")
-        cell_v = ws_cons.cell(row=r_f, column=c_val, value=form_str)
+    for r_f, c_lbl, lbl_txt, c_val, form_str, num_f in meta_mod_campos:
+        ws_mod.cell(row=r_f, column=c_lbl, value=lbl_txt).font = FONT_BODY_BOLD
+        ws_mod.cell(row=r_f, column=c_lbl).alignment = Alignment(horizontal="right", vertical="center")
+        cell_v = ws_mod.cell(row=r_f, column=c_val, value=form_str)
         cell_v.font = FONT_BODY
         cell_v.number_format = num_f
         cell_v.alignment = Alignment(horizontal="left", vertical="center")
         cell_v.fill = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
         cell_v.border = BORDER_CELL
 
-    ws_cons.cell(row=9, column=1, value="TABLA DINÁMICA DE AMORTIZACIÓN Y SALDOS: La tabla se corta automáticamente al mes exacto de terminación del plazo contractual ($H$6 meses).").font = FONT_SUBTITLE
-    ws_cons.merge_cells("A9:O9")
+    ws_mod.cell(row=9, column=1, value="FÓRMULAS VIVAS DE AMORTIZACIÓN Y SALDOS: Interés = Saldo_Inicial * Tasa | Capital = Renta - Interés | Saldo Capital = Saldo_Inicial - Capital | Interés Residual = VP_Residual * Tasa | VP_Residual_Final = VP_Inicial + Interés_Residual | Saldo Intereses = SUM(Futuros) | Saldo Cartera = Saldo_Capital + Saldo_Intereses | Saldo Global = Saldo_Cartera + VP_Residual. La tabla se corta automáticamente al plazo contractual ($G$6 meses).").font = FONT_SUBTITLE
+    ws_mod.merge_cells("A9:N9")
 
-    cols_cons_dinamica = [
+    cols_modelo = [
         ("Mes", 8, Alignment(horizontal="center")),                          # A (1)
-        ("Fecha_Periodo", 14, Alignment(horizontal="center")),               # B (2) Formula EDATE
-        ("Saldo_Inicial_Capital", 18, Alignment(horizontal="right")),        # C (3) Formula Saldo
-        ("Tasa_Mensual", 18, Alignment(horizontal="right")),                 # D (4) Formula Tasa (8 dec)
-        ("Interes_Leasing", 16, Alignment(horizontal="right")),              # E (5) Formula ROUND(C*D, 2)
-        ("Renta_Sin_IVA", 16, Alignment(horizontal="right")),                # F (6) Formula Renta
-        ("Capital_Amortizado", 16, Alignment(horizontal="right")),           # G (7) Formula F-E
-        ("Saldo_Insoluto_Capital", 18, Alignment(horizontal="right")),       # H (8) Formula C-G
-        ("Saldo_Inicial_VP_Residual", 20, Alignment(horizontal="right")),    # I (9) Formula VP Inicial
-        ("Interes_Residual", 16, Alignment(horizontal="right")),             # J (10) Formula ROUND(I*D, 2)
-        ("Saldo_Final_VP_Residual", 20, Alignment(horizontal="right")),      # K (11) Formula I+J
-        ("Ingreso_Financiero_Total", 20, Alignment(horizontal="right")),     # L (12) Formula E+J
-        ("Saldo_Intereses_Por_Devengar", 22, Alignment(horizontal="right")), # M (13) Formula SUM(E_sig)
-        ("Saldo_Cartera_Total", 18, Alignment(horizontal="right")),          # N (14) Formula H+M
-        ("Saldo_Global_Exigible", 18, Alignment(horizontal="right")),        # O (15) Formula N+K
+        ("Saldo_Inicial_Capital", 18, Alignment(horizontal="right")),        # B (2)
+        ("Tasa_Mensual", 18, Alignment(horizontal="right")),                 # C (3) 8 dec
+        ("Interes_Leasing", 16, Alignment(horizontal="right")),              # D (4)
+        ("Renta_Sin_IVA", 16, Alignment(horizontal="right")),                # E (5)
+        ("Capital_Amortizado", 16, Alignment(horizontal="right")),           # F (6)
+        ("Saldo_Final_Capital", 18, Alignment(horizontal="right")),          # G (7)
+        ("VP_Residual_Inicial", 18, Alignment(horizontal="right")),          # H (8)
+        ("Interes_Residual", 16, Alignment(horizontal="right")),             # I (9)
+        ("VP_Residual_Final", 18, Alignment(horizontal="right")),            # J (10)
+        ("Ingreso_Financiero_Total", 20, Alignment(horizontal="right")),     # K (11)
+        ("Saldo_Intereses_Remanentes", 22, Alignment(horizontal="right")),   # L (12)
+        ("Saldo_Cartera_Total", 18, Alignment(horizontal="right")),          # M (13)
+        ("Saldo_Global_Exigible", 18, Alignment(horizontal="right")),        # N (14)
     ]
 
-    fila_hdr_cons = 10
-    ws_cons.row_dimensions[fila_hdr_cons].height = 24
-    for idx_col, (nom_col, anc, al) in enumerate(cols_cons_dinamica, start=1):
-        c = ws_cons.cell(row=fila_hdr_cons, column=idx_col, value=nom_col)
+    fila_hdr_mod = 10
+    ws_mod.row_dimensions[fila_hdr_mod].height = 24
+    for idx_col, (nom_col, anc, al) in enumerate(cols_modelo, start=1):
+        c = ws_mod.cell(row=fila_hdr_mod, column=idx_col, value=nom_col)
         c.fill = FILL_HEADER
         c.font = FONT_HEADER
         c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         c.border = BORDER_CELL
-        ws_cons.column_dimensions[get_column_letter(idx_col)].width = anc
+        ws_mod.column_dimensions[get_column_letter(idx_col)].width = anc
 
-    fila_cons_inicio = 11
-    max_plazo_meses = 72  # Permite contratos de hasta 72 meses
+    fila_mod_inicio = 11
+    max_plazo_meses = 72
 
     for m_i in range(1, max_plazo_meses + 1):
-        r_c = fila_cons_inicio + m_i - 1
+        r_mod = fila_mod_inicio + m_i - 1
 
-        # Col A: Mes con corte exacto al plazo ($H$6)
-        ws_cons.cell(row=r_c, column=1, value=f'=IF(ROW()-10<=$H$6, ROW()-10, "")').alignment = Alignment(horizontal="center")
+        # Col A: Mes con corte exacto al plazo ($G$6)
+        ws_mod.cell(row=r_mod, column=1, value=f'=IF(ROW()-10<=$G$6, ROW()-10, "")').alignment = Alignment(horizontal="center")
 
-        # Col B: Fecha con corte exacto
-        ws_cons.cell(row=r_c, column=2, value=f'=IF($A{r_c}<="", "", TEXT(EDATE($C$6, $A{r_c}-1), "YYYY-MM"))').alignment = Alignment(horizontal="center")
-
-        # Col C: Saldo Inicial Capital
+        # Col B: Saldo Inicial Capital
         if m_i == 1:
-            ws_cons.cell(row=r_c, column=3, value=f'=IF($A11<="", "", $E$7)')
+            ws_mod.cell(row=r_mod, column=2, value=f'=IF($A{r_mod}="", "", $C$7)')
         else:
-            ws_cons.cell(row=r_c, column=3, value=f'=IF($A{r_c}<="", "", H{r_c - 1})')
-        ws_cons.cell(row=r_c, column=3).number_format = FMT_CURRENCY
-        ws_cons.cell(row=r_c, column=3).alignment = Alignment(horizontal="right")
+            ws_mod.cell(row=r_mod, column=2, value=f'=IF($A{r_mod}="", "", G{r_mod - 1})')
+        ws_mod.cell(row=r_mod, column=2).number_format = FMT_CURRENCY
+        ws_mod.cell(row=r_mod, column=2).alignment = Alignment(horizontal="right")
 
-        # Col D: Tasa Mensual (completa con 8 decimales)
-        ws_cons.cell(row=r_c, column=4, value=f'=IF($A{r_c}<="", "", $C$8)')
-        ws_cons.cell(row=r_c, column=4).number_format = FMT_PCT_RATE
-        ws_cons.cell(row=r_c, column=4).alignment = Alignment(horizontal="right")
+        # Col C: Tasa Mensual (completa con 8 decimales)
+        ws_mod.cell(row=r_mod, column=3, value=f'=IF($A{r_mod}="", "", $C$8)')
+        ws_mod.cell(row=r_mod, column=3).number_format = FMT_PCT_RATE
+        ws_mod.cell(row=r_mod, column=3).alignment = Alignment(horizontal="right")
 
-        # Col E: Interes Leasing
-        ws_cons.cell(row=r_c, column=5, value=f'=IF($A{r_c}<="", "", ROUND(C{r_c}*D{r_c}, 2))')
-        ws_cons.cell(row=r_c, column=5).number_format = FMT_CURRENCY
-        ws_cons.cell(row=r_c, column=5).alignment = Alignment(horizontal="right")
+        # Col D: Interes Leasing = ROUND(Saldo_Inicial * Tasa, 2)
+        ws_mod.cell(row=r_mod, column=4, value=f'=IF($A{r_mod}="", "", ROUND(B{r_mod}*C{r_mod}, 2))')
+        ws_mod.cell(row=r_mod, column=4).number_format = FMT_CURRENCY
+        ws_mod.cell(row=r_mod, column=4).alignment = Alignment(horizontal="right")
 
-        # Col F: Renta Mensual Sin IVA
-        ws_cons.cell(row=r_c, column=6, value=f'=IF($A{r_c}<="", "", $H$7)')
-        ws_cons.cell(row=r_c, column=6).number_format = FMT_CURRENCY
-        ws_cons.cell(row=r_c, column=6).alignment = Alignment(horizontal="right")
+        # Col E: Renta Mensual Sin IVA
+        ws_mod.cell(row=r_mod, column=5, value=f'=IF($A{r_mod}="", "", $E$7)')
+        ws_mod.cell(row=r_mod, column=5).number_format = FMT_CURRENCY
+        ws_mod.cell(row=r_mod, column=5).alignment = Alignment(horizontal="right")
 
-        # Col G: Capital Amortizado = Renta - Interes Leasing
-        ws_cons.cell(row=r_c, column=7, value=f'=IF($A{r_c}<="", "", F{r_c}-E{r_c})')
-        ws_cons.cell(row=r_c, column=7).number_format = FMT_CURRENCY
-        ws_cons.cell(row=r_c, column=7).alignment = Alignment(horizontal="right")
+        # Col F: Capital Amortizado = Renta - Interes
+        ws_mod.cell(row=r_mod, column=6, value=f'=IF($A{r_mod}="", "", E{r_mod}-D{r_mod})')
+        ws_mod.cell(row=r_mod, column=6).number_format = FMT_CURRENCY
+        ws_mod.cell(row=r_mod, column=6).alignment = Alignment(horizontal="right")
 
-        # Col H: Saldo Insoluto Capital = Saldo Inicial - Capital Amortizado
-        ws_cons.cell(row=r_c, column=8, value=f'=IF($A{r_c}<="", "", C{r_c}-G{r_c})')
-        ws_cons.cell(row=r_c, column=8).number_format = FMT_CURRENCY
-        ws_cons.cell(row=r_c, column=8).alignment = Alignment(horizontal="right")
+        # Col G: Saldo Final Capital = Saldo Inicial - Capital Amortizado
+        ws_mod.cell(row=r_mod, column=7, value=f'=IF($A{r_mod}="", "", B{r_mod}-F{r_mod})')
+        ws_mod.cell(row=r_mod, column=7).number_format = FMT_CURRENCY
+        ws_mod.cell(row=r_mod, column=7).alignment = Alignment(horizontal="right")
 
-        # Col I: Saldo Inicial VP Residual
+        # Col H: VP Residual Inicial
         if m_i == 1:
-            ws_cons.cell(row=r_c, column=9, value=f'=IF($A11<="", "", $K$8)')
+            ws_mod.cell(row=r_mod, column=8, value=f'=IF($A{r_mod}="", "", $I$7)')
         else:
-            ws_cons.cell(row=r_c, column=9, value=f'=IF($A{r_c}<="", "", K{r_c - 1})')
-        ws_cons.cell(row=r_c, column=9).number_format = FMT_CURRENCY
-        ws_cons.cell(row=r_c, column=9).alignment = Alignment(horizontal="right")
+            ws_mod.cell(row=r_mod, column=8, value=f'=IF($A{r_mod}="", "", J{r_mod - 1})')
+        ws_mod.cell(row=r_mod, column=8).number_format = FMT_CURRENCY
+        ws_mod.cell(row=r_mod, column=8).alignment = Alignment(horizontal="right")
 
-        # Col J: Interes Residual = ROUND(VP_Inicial * Tasa, 2)
-        ws_cons.cell(row=r_c, column=10, value=f'=IF($A{r_c}<="", "", ROUND(I{r_c}*D{r_c}, 2))')
-        ws_cons.cell(row=r_c, column=10).number_format = FMT_CURRENCY
-        ws_cons.cell(row=r_c, column=10).alignment = Alignment(horizontal="right")
+        # Col I: Interes Residual = ROUND(VP_Inicial * Tasa, 2)
+        ws_mod.cell(row=r_mod, column=9, value=f'=IF($A{r_mod}="", "", ROUND(H{r_mod}*C{r_mod}, 2))')
+        ws_mod.cell(row=r_mod, column=9).number_format = FMT_CURRENCY
+        ws_mod.cell(row=r_mod, column=9).alignment = Alignment(horizontal="right")
 
-        # Col K: Saldo Final VP Residual = VP_Inicial + Interes Residual
-        ws_cons.cell(row=r_c, column=11, value=f'=IF($A{r_c}<="", "", I{r_c}+J{r_c})')
-        ws_cons.cell(row=r_c, column=11).number_format = FMT_CURRENCY
-        ws_cons.cell(row=r_c, column=11).alignment = Alignment(horizontal="right")
+        # Col J: VP Residual Final = VP_Inicial + Interes Residual
+        ws_mod.cell(row=r_mod, column=10, value=f'=IF($A{r_mod}="", "", H{r_mod}+I{r_mod})')
+        ws_mod.cell(row=r_mod, column=10).number_format = FMT_CURRENCY
+        ws_mod.cell(row=r_mod, column=10).alignment = Alignment(horizontal="right")
 
-        # Col L: Ingreso Financiero Total = Interes Leasing + Interes Residual
-        ws_cons.cell(row=r_c, column=12, value=f'=IF($A{r_c}<="", "", E{r_c}+J{r_c})')
-        ws_cons.cell(row=r_c, column=12).number_format = FMT_CURRENCY
-        ws_cons.cell(row=r_c, column=12).alignment = Alignment(horizontal="right")
+        # Col K: Ingreso Financiero Total = Interes Leasing + Interes Residual
+        ws_mod.cell(row=r_mod, column=11, value=f'=IF($A{r_mod}="", "", D{r_mod}+I{r_mod})')
+        ws_mod.cell(row=r_mod, column=11).number_format = FMT_CURRENCY
+        ws_mod.cell(row=r_mod, column=11).alignment = Alignment(horizontal="right")
 
-        # Col M: Saldo Intereses Remanentes por Devengar
+        # Col L: Saldo Intereses Remanentes por Devengar
         if m_i < max_plazo_meses:
-            ws_cons.cell(row=r_c, column=13, value=f'=IF($A{r_c}<="", "", SUM(E{r_c + 1}:$E${fila_cons_inicio + max_plazo_meses - 1}))')
+            ws_mod.cell(row=r_mod, column=12, value=f'=IF($A{r_mod}="", "", SUM(D{r_mod + 1}:$D${fila_mod_inicio + max_plazo_meses - 1}))')
         else:
-            ws_cons.cell(row=r_c, column=13, value=f'=IF($A{r_c}<="", "", 0)')
-        ws_cons.cell(row=r_c, column=13).number_format = FMT_CURRENCY
-        ws_cons.cell(row=r_c, column=13).alignment = Alignment(horizontal="right")
+            ws_mod.cell(row=r_mod, column=12, value=f'=IF($A{r_mod}="", "", 0)')
+        ws_mod.cell(row=r_mod, column=12).number_format = FMT_CURRENCY
+        ws_mod.cell(row=r_mod, column=12).alignment = Alignment(horizontal="right")
 
-        # Col N: Saldo Cartera Total = Saldo Insoluto Capital (H) + Saldo Intereses (M)
-        ws_cons.cell(row=r_c, column=14, value=f'=IF($A{r_c}<="", "", H{r_c}+M{r_c})')
-        ws_cons.cell(row=r_c, column=14).number_format = FMT_CURRENCY
-        ws_cons.cell(row=r_c, column=14).alignment = Alignment(horizontal="right")
+        # Col M: Saldo Cartera Total = Saldo Final Capital (G) + Saldo Intereses Remanentes (L)
+        ws_mod.cell(row=r_mod, column=13, value=f'=IF($A{r_mod}="", "", G{r_mod}+L{r_mod})')
+        ws_mod.cell(row=r_mod, column=13).number_format = FMT_CURRENCY
+        ws_mod.cell(row=r_mod, column=13).alignment = Alignment(horizontal="right")
 
-        # Col O: Saldo Global Exigible = Saldo Cartera Total (N) + Saldo Final VP Residual (K)
-        ws_cons.cell(row=r_c, column=15, value=f'=IF($A{r_c}<="", "", N{r_c}+K{r_c})')
-        ws_cons.cell(row=r_c, column=15).number_format = FMT_CURRENCY
-        ws_cons.cell(row=r_c, column=15).alignment = Alignment(horizontal="right")
+        # Col N: Saldo Global Exigible = Saldo Cartera Total (M) + VP Residual Final (J)
+        ws_mod.cell(row=r_mod, column=14, value=f'=IF($A{r_mod}="", "", M{r_mod}+J{r_mod})')
+        ws_mod.cell(row=r_mod, column=14).number_format = FMT_CURRENCY
+        ws_mod.cell(row=r_mod, column=14).alignment = Alignment(horizontal="right")
 
-        es_par_c = (m_i % 2 == 0)
-        for c_k in range(1, 16):
-            cell_k = ws_cons.cell(row=r_c, column=c_k)
+        es_par_mod = (m_i % 2 == 0)
+        for c_k in range(1, 15):
+            cell_k = ws_mod.cell(row=r_mod, column=c_k)
             cell_k.border = BORDER_CELL
             cell_k.font = FONT_BODY
-            if es_par_c:
+            if es_par_mod:
                 cell_k.fill = FILL_ZEBRA
 
-    fila_tot_cons = fila_cons_inicio + max_plazo_meses
-    ws_cons.cell(row=fila_tot_cons, column=1, value="TOTALES DEL CONTRATO").alignment = Alignment(horizontal="center")
-    ws_cons.merge_cells(f"A{fila_tot_cons}:D{fila_tot_cons}")
+    fila_tot_mod = fila_mod_inicio + max_plazo_meses
+    ws_mod.cell(row=fila_tot_mod, column=1, value="TOTALES DEL CONTRATO").alignment = Alignment(horizontal="center")
+    ws_mod.merge_cells(f"A{fila_tot_mod}:C{fila_tot_mod}")
 
-    for col_m in [5, 6, 7, 10, 12]:
+    for col_m in [4, 5, 6, 9, 11]:
         letra_m = get_column_letter(col_m)
-        c_m_t = ws_cons.cell(row=fila_tot_cons, column=col_m, value=f"=SUM({letra_m}{fila_cons_inicio}:{letra_m}{fila_tot_cons - 1})")
+        c_m_t = ws_mod.cell(row=fila_tot_mod, column=col_m, value=f"=SUM({letra_m}{fila_mod_inicio}:{letra_m}{fila_tot_mod - 1})")
         c_m_t.number_format = FMT_CURRENCY
         c_m_t.alignment = Alignment(horizontal="right")
 
-    for col_k in range(1, 16):
-        c_tot_k = ws_cons.cell(row=fila_tot_cons, column=col_k)
+    for col_k in range(1, 15):
+        c_tot_k = ws_mod.cell(row=fila_tot_mod, column=col_k)
         c_tot_k.fill = FILL_TOTAL
         c_tot_k.font = FONT_TOTAL
         c_tot_k.border = BORDER_TOTAL
 
-    ws_cons.freeze_panes = "C11"
+    ws_mod.freeze_panes = "C11"
 
     # =========================================================================
     # 4. DEFINICION DE MATRICES CRONOLOGICAS HORIZONTALES (DEVENGOS Y SALDOS)
@@ -1287,7 +1289,6 @@ def generar_excel_auditoria(
 
             for idx_m, (y, m) in enumerate(lista_meses):
                 c_pos = start_month_col_idx + idx_m
-                col_act_letra = get_column_letter(c_pos)
 
                 esta_activo_mes = True
                 if (y < fa_y) or (y == fa_y and m < fa_m):
@@ -1511,10 +1512,10 @@ def generar_excel_auditoria(
                     cell_dest.font = FONT_BODY
 
     # =========================================================================
-    # 5. HOJA: Matriz_Consolidada_Cartera (Desglose Multi-Concepto de Flujos por Mes)
+    # 5. HOJA: Matriz_Consolidada (Desglose Multi-Concepto de Cartera por Mes)
     # =========================================================================
     meses_consolidada = lista_meses if len(lista_meses) <= 24 else lista_meses[-24:]
-    ws_cons_cart = wb.create_sheet(title="Matriz_Consolidada_Cartera")
+    ws_cons = wb.create_sheet(title="Matriz_Consolidada")
 
     cols_fijas_cons = [
         ("ID_Contrato", 14, Alignment(horizontal="center")),
@@ -1534,25 +1535,25 @@ def generar_excel_auditoria(
     total_cols_cons = len(cols_fijas_cons) + len(meses_consolidada) * len(conceptos_mes)
 
     _preparar_encabezado_hoja(
-        ws_cons_cart,
-        "Matriz Cronológica Consolidada Multi-Concepto de Cartera (Flujos y Devengos)",
+        ws_cons,
+        "Matriz Cronológica Consolidada Multi-Concepto (Flujos y Devengos)",
         "Interés leasing, amortización de capital, saldo insoluto e interés de residual mes por mes con fórmulas vivas",
         total_cols_cons,
         titulo_empresa=titulo_empresa,
         logo_path=logo_path
     )
 
-    ws_cons_cart.row_dimensions[3].height = 20
-    ws_cons_cart.row_dimensions[4].height = 22
+    ws_cons.row_dimensions[3].height = 20
+    ws_cons.row_dimensions[4].height = 22
 
     for idx_f, (n_f, anc_f, al_f) in enumerate(cols_fijas_cons, start=1):
-        ws_cons_cart.merge_cells(start_row=3, start_column=idx_f, end_row=4, end_column=idx_f)
-        c_f = ws_cons_cart.cell(row=3, column=idx_f, value=n_f)
+        ws_cons.merge_cells(start_row=3, start_column=idx_f, end_row=4, end_column=idx_f)
+        c_f = ws_cons.cell(row=3, column=idx_f, value=n_f)
         c_f.fill = FILL_HEADER
         c_f.font = FONT_HEADER
         c_f.alignment = Alignment(horizontal="center", vertical="center")
         c_f.border = BORDER_CELL
-        ws_cons_cart.column_dimensions[get_column_letter(idx_f)].width = anc_f
+        ws_cons.column_dimensions[get_column_letter(idx_f)].width = anc_f
 
     curr_col_cons = len(cols_fijas_cons) + 1
     for y_c, m_c in meses_consolidada:
@@ -1560,28 +1561,28 @@ def generar_excel_auditoria(
         col_ini_bloque = curr_col_cons
         col_fin_bloque = curr_col_cons + len(conceptos_mes) - 1
 
-        ws_cons_cart.merge_cells(start_row=3, start_column=col_ini_bloque, end_row=3, end_column=col_fin_bloque)
-        c_bloque = ws_cons_cart.cell(row=3, column=col_ini_bloque, value=mes_etiqueta)
+        ws_cons.merge_cells(start_row=3, start_column=col_ini_bloque, end_row=3, end_column=col_fin_bloque)
+        c_bloque = ws_cons.cell(row=3, column=col_ini_bloque, value=mes_etiqueta)
         c_bloque.fill = FILL_HEADER
         c_bloque.font = FONT_HEADER
         c_bloque.alignment = Alignment(horizontal="center", vertical="center")
         c_bloque.border = BORDER_CELL
 
         for c_nombre, c_ancho in conceptos_mes:
-            c_sub = ws_cons_cart.cell(row=4, column=curr_col_cons, value=c_nombre)
+            c_sub = ws_cons.cell(row=4, column=curr_col_cons, value=c_nombre)
             c_sub.fill = FILL_SUBHEADER
             c_sub.font = FONT_SUBHEADER
             c_sub.alignment = Alignment(horizontal="center", vertical="center")
             c_sub.border = BORDER_CELL
-            ws_cons_cart.column_dimensions[get_column_letter(curr_col_cons)].width = c_ancho
+            ws_cons.column_dimensions[get_column_letter(curr_col_cons)].width = c_ancho
             curr_col_cons += 1
 
     r_act_c = 5
     for c_item in contratos_pre:
-        ws_cons_cart.cell(row=r_act_c, column=1, value=c_item["id"]).alignment = cols_fijas_cons[0][2]
-        ws_cons_cart.cell(row=r_act_c, column=2, value=c_item["cliente"]).alignment = cols_fijas_cons[1][2]
-        ws_cons_cart.cell(row=r_act_c, column=3, value=c_item["vehiculo"]).alignment = cols_fijas_cons[2][2]
-        c_pl_c = ws_cons_cart.cell(row=r_act_c, column=4, value=c_item["pl"])
+        ws_cons.cell(row=r_act_c, column=1, value=c_item["id"]).alignment = cols_fijas_cons[0][2]
+        ws_cons.cell(row=r_act_c, column=2, value=c_item["cliente"]).alignment = cols_fijas_cons[1][2]
+        ws_cons.cell(row=r_act_c, column=3, value=c_item["vehiculo"]).alignment = cols_fijas_cons[2][2]
+        c_pl_c = ws_cons.cell(row=r_act_c, column=4, value=c_item["pl"])
         c_pl_c.number_format = FMT_INT
         c_pl_c.alignment = cols_fijas_cons[3][2]
 
@@ -1593,25 +1594,25 @@ def generar_excel_auditoria(
 
             # 1. Int Leasing
             f_il = f"=Intereses_Leasing_Mensual!{col_origen_letra_8}{r_act_c}"
-            c1 = ws_cons_cart.cell(row=r_act_c, column=c_col_cursor, value=f_il)
+            c1 = ws_cons.cell(row=r_act_c, column=c_col_cursor, value=f_il)
             c1.number_format = FMT_CURRENCY
             c1.alignment = Alignment(horizontal="right")
 
             # 2. Capital
             f_cap = f"=Amortizacion_Capital_Mensual!{col_origen_letra_9}{r_act_c}"
-            c2 = ws_cons_cart.cell(row=r_act_c, column=c_col_cursor + 1, value=f_cap)
+            c2 = ws_cons.cell(row=r_act_c, column=c_col_cursor + 1, value=f_cap)
             c2.number_format = FMT_CURRENCY
             c2.alignment = Alignment(horizontal="right")
 
             # 3. Saldo Cap
             f_sc = f"=Saldos_Capital_Mensual!{col_origen_letra_8}{r_act_c}"
-            c3 = ws_cons_cart.cell(row=r_act_c, column=c_col_cursor + 2, value=f_sc)
+            c3 = ws_cons.cell(row=r_act_c, column=c_col_cursor + 2, value=f_sc)
             c3.number_format = FMT_CURRENCY
             c3.alignment = Alignment(horizontal="right")
 
             # 4. Int Residual
             f_ir = f"=Intereses_Residual_Mensual!{col_origen_letra_8}{r_act_c}"
-            c4 = ws_cons_cart.cell(row=r_act_c, column=c_col_cursor + 3, value=f_ir)
+            c4 = ws_cons.cell(row=r_act_c, column=c_col_cursor + 3, value=f_ir)
             c4.number_format = FMT_CURRENCY
             c4.alignment = Alignment(horizontal="right")
 
@@ -1619,7 +1620,7 @@ def generar_excel_auditoria(
             letra_il = get_column_letter(c_col_cursor)
             letra_ir = get_column_letter(c_col_cursor + 3)
             f_tot_ing = f"=ROUND({letra_il}{r_act_c} + {letra_ir}{r_act_c}, 2)"
-            c5 = ws_cons_cart.cell(row=r_act_c, column=c_col_cursor + 4, value=f_tot_ing)
+            c5 = ws_cons.cell(row=r_act_c, column=c_col_cursor + 4, value=f_tot_ing)
             c5.number_format = FMT_CURRENCY
             c5.alignment = Alignment(horizontal="right")
 
@@ -1627,7 +1628,7 @@ def generar_excel_auditoria(
 
         es_par_cons = (r_act_c - 5) % 2 == 1
         for col_idx in range(1, total_cols_cons + 1):
-            cell_item = ws_cons_cart.cell(row=r_act_c, column=col_idx)
+            cell_item = ws_cons.cell(row=r_act_c, column=col_idx)
             cell_item.border = BORDER_CELL
             cell_item.font = FONT_BODY
             if es_par_cons:
@@ -1636,23 +1637,23 @@ def generar_excel_auditoria(
         r_act_c += 1
 
     fin_datos_cons = r_act_c - 1
-    ws_cons_cart.cell(row=r_act_c, column=1, value="TOTAL CARTERA").alignment = Alignment(horizontal="center")
-    ws_cons_cart.cell(row=r_act_c, column=2, value=f"{len(contratos_pre)} Contratos").alignment = Alignment(horizontal="left")
+    ws_cons.cell(row=r_act_c, column=1, value="TOTAL CARTERA").alignment = Alignment(horizontal="center")
+    ws_cons.cell(row=r_act_c, column=2, value=f"{len(contratos_pre)} Contratos").alignment = Alignment(horizontal="left")
 
     for col_k in range(5, total_cols_cons + 1):
         letra_col_k = get_column_letter(col_k)
-        c_k_tot = ws_cons_cart.cell(row=r_act_c, column=col_k, value=f"=SUM({letra_col_k}5:{letra_col_k}{fin_datos_cons})")
+        c_k_tot = ws_cons.cell(row=r_act_c, column=col_k, value=f"=SUM({letra_col_k}5:{letra_col_k}{fin_datos_cons})")
         c_k_tot.number_format = FMT_CURRENCY
         c_k_tot.alignment = Alignment(horizontal="right")
 
     for col_k in range(1, total_cols_cons + 1):
-        c_tot_obj = ws_cons_cart.cell(row=r_act_c, column=col_k)
+        c_tot_obj = ws_cons.cell(row=r_act_c, column=col_k)
         c_tot_obj.fill = FILL_TOTAL
         c_tot_obj.font = FONT_TOTAL
         c_tot_obj.border = BORDER_TOTAL
 
-    ws_cons_cart.freeze_panes = "E5"
-    ws_cons_cart.auto_filter.ref = f"A4:{get_column_letter(total_cols_cons)}{fin_datos_cons}"
+    ws_cons.freeze_panes = "E5"
+    ws_cons.auto_filter.ref = f"A4:{get_column_letter(total_cols_cons)}{fin_datos_cons}"
 
     # =========================================================================
     # 6. HOJA: Matriz_Consolidada_Saldos (Desglose Multi-Concepto de Saldos por Mes)

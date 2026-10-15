@@ -136,47 +136,54 @@ def test_requerimiento_2_precision_decimales_y_tasas():
         assert fmt_p == "0.00%", f"Porcentaje {c_coord} debe tener 2 decimales, actual: {fmt_p}"
 
 
-def test_requerimiento_3_matriz_consolidada_dinamica():
-    """PUNTO 3: Selector de contrato interactivo y corte automatico al mes del plazo."""
+def test_requerimiento_3_modelo_amortizacion_tipo_dinamico():
+    """PUNTO 3: Selector de contrato interactivo y corte automatico al mes del plazo en Modelo_Amortizacion_Tipo, y Matriz_Consolidada restaurada."""
     buf = generar_excel_auditoria(anio_filtro=2026, filtro_estatus="ACTIVO")
     wb = openpyxl.load_workbook(buf, data_only=False)
 
-    assert "Matriz_Consolidada" in wb.sheetnames, "Falta la hoja Matriz_Consolidada"
-    ws = wb["Matriz_Consolidada"]
+    assert "Modelo_Amortizacion_Tipo" in wb.sheetnames, "Falta la hoja Modelo_Amortizacion_Tipo"
+    ws = wb["Modelo_Amortizacion_Tipo"]
 
     # Celda de control y selector C4
     val_c4 = str(ws["C4"].value or "")
     assert val_c4 != "", "Celda C4 debe contener el ID del contrato seleccionado por defecto"
 
-    # Validacion de datos (dropdown) en C4
+    # Validacion de datos (dropdown) en C4 mediante Nombre Definido CONTRATOS_LISTA
     dvs = ws.data_validations.dataValidation
     assert len(dvs) > 0, "Debe existir al menos una validación de datos en la hoja"
     dv_encontrada = False
     for dv_item in dvs:
-        if "Resumen_Cartera" in str(dv_item.formula1):
+        if "CONTRATOS_LISTA" in str(dv_item.formula1) or "Resumen_Cartera" in str(dv_item.formula1):
             dv_encontrada = True
             break
-    assert dv_encontrada, "No se encontró la lista desplegable apuntando a Resumen_Cartera"
+    assert dv_encontrada, "No se encontró la lista desplegable apuntando a CONTRATOS_LISTA"
 
-    # Formulas VLOOKUP en bloque de metadata
+    # Formulas VLOOKUP en bloque de metadata (Filas 5 a 8)
     assert "VLOOKUP" in str(ws["C5"].value), "Cliente en C5 debe usar VLOOKUP"
     assert "VLOOKUP" in str(ws["G5"].value), "Vehiculo en G5 debe usar VLOOKUP"
     assert "VLOOKUP" in str(ws["K5"].value), "Estatus en K5 debe usar VLOOKUP"
-    assert "VLOOKUP" in str(ws["H6"].value), "Plazo en H6 debe usar VLOOKUP"
-    assert "VLOOKUP" in str(ws["E7"].value), "Inversión Neta en E7 debe usar VLOOKUP"
-    assert "VLOOKUP" in str(ws["H7"].value), "Renta en H7 debe usar VLOOKUP"
-    assert "VLOOKUP" in str(ws["K7"].value), "Residual en K7 debe usar VLOOKUP"
+    assert "VLOOKUP" in str(ws["G6"].value), "Plazo en G6 debe usar VLOOKUP"
+    assert "VLOOKUP" in str(ws["C7"].value), "Inversión Neta en C7 debe usar VLOOKUP"
+    assert "VLOOKUP" in str(ws["E7"].value), "Renta en E7 debe usar VLOOKUP"
+    assert "VLOOKUP" in str(ws["G7"].value), "Residual en G7 debe usar VLOOKUP"
+    assert "VLOOKUP" in str(ws["I7"].value), "VP Residual Inicial en I7 debe usar VLOOKUP"
     assert "VLOOKUP" in str(ws["C8"].value), "Tasa Mensual en C8 debe usar VLOOKUP"
 
     # Formula de corte dinamico en columna Mes (Col A) y columnas de calculo
-    assert "IF" in str(ws["A11"].value) and "$H$6" in str(ws["A11"].value), "Mes 1 debe cortarse con $H$6"
-    assert "IF" in str(ws["A47"].value) and "$H$6" in str(ws["A47"].value), "Mes 37 debe cortarse con $H$6"
+    assert "IF" in str(ws["A11"].value) and "$G$6" in str(ws["A11"].value), "Mes 1 debe cortarse con $G$6"
+    assert "IF" in str(ws["A47"].value) and "$G$6" in str(ws["A47"].value), "Mes 37 debe cortarse con $G$6"
 
-    # Columnas de datos deben condicionarse a $A{r}<=""
+    # Columnas de datos deben condicionarse a $A{r}=""
     for r_test in [11, 20, 46, 70]:
         val_e = str(ws.cell(row=r_test, column=5).value or "")
         assert val_e.startswith("=IF("), f"Fila {r_test} debe tener formula condicionada de corte"
         assert f"$A{r_test}" in val_e, f"Fila {r_test} debe evaluar la celda $A{r_test} para corte"
+
+    # Verificar que Matriz_Consolidada y Matriz_Consolidada_Saldos existen como matrices de cartera
+    assert "Matriz_Consolidada" in wb.sheetnames, "Debe existir Matriz_Consolidada como matriz de cartera"
+    assert "Matriz_Consolidada_Saldos" in wb.sheetnames, "Debe existir Matriz_Consolidada_Saldos"
+    ws_mat = wb["Matriz_Consolidada"]
+    assert ws_mat.max_row >= 10, "Matriz_Consolidada debe contener datos de cartera consolidados"
 
 
 def test_requerimiento_4_logotipos_e_identidad_institucional():
@@ -216,7 +223,7 @@ def test_matrices_saldos_formulas_completas():
         "Saldos_Cartera_Total",
         "Saldo_Residual_Activo",
         "Saldos_Exigible_Global",
-        "Matriz_Consolidada_Cartera",
+        "Matriz_Consolidada",
         "Matriz_Consolidada_Saldos"
     ]
     for h in hojas_esperadas:
@@ -248,9 +255,9 @@ if __name__ == "__main__":
     test_requerimiento_2_precision_decimales_y_tasas()
     print("PASS: test_requerimiento_2_precision_decimales_y_tasas")
 
-    print("Ejecutando test_requerimiento_3_matriz_consolidada_dinamica...")
-    test_requerimiento_3_matriz_consolidada_dinamica()
-    print("PASS: test_requerimiento_3_matriz_consolidada_dinamica")
+    print("Ejecutando test_requerimiento_3_modelo_amortizacion_tipo_dinamico...")
+    test_requerimiento_3_modelo_amortizacion_tipo_dinamico()
+    print("PASS: test_requerimiento_3_modelo_amortizacion_tipo_dinamico")
 
     print("Ejecutando test_requerimiento_4_logotipos_e_identidad_institucional...")
     test_requerimiento_4_logotipos_e_identidad_institucional()
