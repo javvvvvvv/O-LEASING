@@ -33,6 +33,7 @@ import pandas as pd
 from app import tabla_mensual_conceptos, totales_intereses_desde_tabla_mensual
 from reports.auditoria_excel import (
     generar_excel_auditoria,
+    generar_excel_reporte_lineal,
     LOGO_OLEASING_PNG_DEFAULT,
     LOGO_ORANGE_PNG_DEFAULT,
     FMT_CURRENCY,
@@ -242,6 +243,68 @@ def test_matrices_saldos_formulas_completas():
     assert "+" in val_exig, "Saldos_Exigible_Global debe ser suma viva de cartera total + residual"
 
 
+def test_reporte_lineal_horizontal_y_modelo_amortizacion():
+    """Verifica el Reporte Lineal con contratos en vertical y amortizacion horizontal mes 1 a N, y Modelo_Amortizacion_Tipo."""
+    buf = generar_excel_reporte_lineal(filtro_estatus="ACTIVO")
+    wb = openpyxl.load_workbook(buf, data_only=False)
+
+    # Verificar presencia de hojas
+    assert "Reporte_Lineal" in wb.sheetnames, "Falta la hoja Reporte_Lineal"
+    assert "Modelo_Amortizacion_Tipo" in wb.sheetnames, "Falta la hoja Modelo_Amortizacion_Tipo"
+    assert "Caratula_Ejecutiva" in wb.sheetnames, "Falta la hoja Caratula_Ejecutiva"
+
+    ws_lin = wb["Reporte_Lineal"]
+
+    # Fila 5: datos del primer contrato
+    assert ws_lin["A5"].value is not None, "A5 debe contener el ID de contrato"
+    assert ws_lin["B5"].value is not None, "B5 debe contener el Cliente"
+    assert ws_lin["G5"].value is not None, "G5 debe contener el Plazo"
+
+    # Formulas fijas en metadatos
+    val_inv = str(ws_lin["K5"].value)
+    assert "ROUND" in val_inv and "H5" in val_inv, "K5 Inversión Neta debe ser fórmula =ROUND(H5-J5, 2)"
+
+    val_tot_il = str(ws_lin["V5"].value)
+    assert "SUMIF" in val_tot_il and "Interes_Leasing" in val_tot_il, "V5 Total Interés Leasing debe ser =SUMIF"
+
+    val_tot_ir = str(ws_lin["W5"].value)
+    assert "SUMIF" in val_tot_ir and "Interes_Residual" in val_tot_ir, "W5 Total Interés Residual debe ser =SUMIF"
+
+    val_ing_tot = str(ws_lin["X5"].value)
+    assert "ROUND" in val_ing_tot and "V5+W5" in val_ing_tot, "X5 Ingreso Financiero Total debe ser =ROUND(V5+W5, 2)"
+
+    # Formulas en Mes 1 (Cols AA a AI = 27 a 35)
+    val_m1_s_ini = str(ws_lin["AA5"].value)
+    assert "IF" in val_m1_s_ini and "$K5" in val_m1_s_ini, "AA5 Saldo Inicial Mes 1 debe apuntar a $K5"
+
+    val_m1_int_l = str(ws_lin["AB5"].value)
+    assert "ROUND" in val_m1_int_l and "$Q5" in val_m1_int_l, "AB5 Interés Leasing Mes 1 debe multiplicar por $Q5"
+
+    val_m1_cap = str(ws_lin["AD5"].value)
+    assert "AC5-AB5" in val_m1_cap, "AD5 Capital Mes 1 debe ser Renta - Interés (AC5-AB5)"
+
+    val_m1_s_cap = str(ws_lin["AE5"].value)
+    assert "AA5-AD5" in val_m1_s_cap, "AE5 Saldo Capital Mes 1 debe ser Saldo Inicial - Capital (AA5-AD5)"
+
+    # Formulas en Mes 2 (Cols AJ a AR = 36 a 44)
+    val_m2_s_ini = str(ws_lin["AJ5"].value)
+    assert "AE5" in val_m2_s_ini, "AJ5 Saldo Inicial Mes 2 debe referenciar a AE5 (Saldo Capital Mes 1)"
+
+    # Hoja Modelo_Amortizacion_Tipo vinculada a Reporte_Lineal
+    ws_mod = wb["Modelo_Amortizacion_Tipo"]
+    val_c4 = str(ws_mod["C4"].value or "")
+    assert val_c4 != "", "C4 debe tener un contrato seleccionado"
+
+    val_vlk_cli = str(ws_mod["C5"].value)
+    assert "Reporte_Lineal" in val_vlk_cli and "VLOOKUP" in val_vlk_cli, "C5 Cliente debe usar VLOOKUP a Reporte_Lineal"
+
+    val_vlk_plazo = str(ws_mod["G6"].value)
+    assert "Reporte_Lineal" in val_vlk_plazo and "VLOOKUP" in val_vlk_plazo, "G6 Plazo debe usar VLOOKUP a Reporte_Lineal"
+
+    val_mod_a11 = str(ws_mod["A11"].value)
+    assert "$G$6" in val_mod_a11 and "IF" in val_mod_a11, "A11 Mes 1 en Modelo debe cortar con $G$6"
+
+
 if __name__ == "__main__":
     print("Ejecutando test_amarre_agosto_2026...")
     test_amarre_agosto_2026()
@@ -266,6 +329,10 @@ if __name__ == "__main__":
     print("Ejecutando test_matrices_saldos_formulas_completas...")
     test_matrices_saldos_formulas_completas()
     print("PASS: test_matrices_saldos_formulas_completas")
+
+    print("Ejecutando test_reporte_lineal_horizontal_y_modelo_amortizacion...")
+    test_reporte_lineal_horizontal_y_modelo_amortizacion()
+    print("PASS: test_reporte_lineal_horizontal_y_modelo_amortizacion")
 
     print("\n========================================================================")
     print("TODAS LAS PRUEBAS DE LOS 4 REQUERIMIENTOS PASARON EXITOSAMENTE (100% OK)")

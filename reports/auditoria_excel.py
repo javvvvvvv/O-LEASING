@@ -1796,3 +1796,760 @@ def generar_excel_auditoria(
     wb.save(buf)
     buf.seek(0)
     return buf
+
+
+def generar_excel_reporte_lineal(
+    anio_filtro=None,
+    filtro_estatus="ACTIVO",
+    titulo_empresa=None,
+    logo_path=None,
+    db_path=None,
+    solo_con_movimiento=True,
+    *args,
+    **kwargs
+) -> io.BytesIO:
+    """Genera el Reporte Lineal Oficial de Cartera y Amortización Contractual (O-Leasing / Orange Crew).
+
+    Estructura especializada requerida:
+    1. Hoja 'Reporte_Lineal':
+       - Contratos hacia abajo (filas individuales).
+       - Columnas A a Z: Todos los parámetros contractuales y fórmulas financieras (Inversión, Tasas, Totales).
+       - Columnas AA en adelante: Desglose cronológico contractual de amortización horizontal de Mes 1 a Mes N
+         (Saldo Inicial, Interés Leasing, Renta, Capital, Saldo Capital, Interés Residual, Saldo Residual,
+          Ingreso Financiero, Saldo Cartera) con fórmulas de cálculo vivas y corte limpio automático al plazo.
+    2. Hoja 'Modelo_Amortizacion_Tipo':
+       - Selector dinámico de contrato con lista desplegable (=CONTRATOS_LISTA).
+       - VLOOKUPs vinculados a 'Reporte_Lineal'.
+       - Tabla de amortización mensual de 1 a 72 meses con corte automático exacto al plazo contractual.
+    3. Hoja 'Caratula_Ejecutiva':
+       - Membrete, logotipos oficiales O-Leasing y Orange Crew, KPIs consolidados y ficha técnica.
+    """
+    import sqlite3
+    from finanzas import calc_amort, calc_res_amort, vp_res
+
+    db_path = _obtener_db_path(db_path)
+    conn = sqlite3.connect(db_path)
+    df_c = pd.read_sql("SELECT * FROM contratos ORDER BY ID_Contrato", conn)
+    conn.close()
+
+    if df_c.empty:
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Sin_Datos"
+        ws["A1"] = "No se encontraron contratos registrados."
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return buf
+
+    # Filtrar por estatus
+    if filtro_estatus and str(filtro_estatus).strip().upper() not in ("TODOS", "ALL", "HISTORICO"):
+        est_req = str(filtro_estatus).strip().upper()
+        df_c = df_c[df_c["Estatus"].astype(str).str.strip().str.upper() == est_req]
+
+    contratos_pre = []
+    for _, r in df_c.iterrows():
+        id_c = str(r["ID_Contrato"]).strip()
+        cli = str(r.get("Cliente") or "").strip()
+        veh = str(r.get("Vehiculo") or "").strip()
+        est = str(r.get("Estatus") or "").strip()
+        fa = pd.to_datetime(r.get("Fecha_Alta"))
+        fv = pd.to_datetime(r.get("Fecha_Vencimiento"))
+        fb = pd.to_datetime(r.get("Fecha_Baja"))
+
+        if pd.isna(fa) or pd.isna(fv):
+            continue
+        try:
+            pl = int(r.get("Plazo") or 0)
+        except Exception:
+            continue
+        if pl <= 0:
+            continue
+
+        fa_y = int(fa.year)
+        fa_m = int(fa.month)
+        fv_y = int(fv.year)
+        fv_m = int(fv.month)
+
+        es_baja = est.upper() == "BAJA"
+        fb_y, fb_m = 9999, 99
+        if es_baja and pd.notna(fb):
+            fb_y = int(fb.year)
+            fb_m = int(fb.month)
+
+        if anio_filtro is not None and solo_con_movimiento:
+            a_f = int(anio_filtro)
+            if (fa_y > a_f) or (fv_y < a_f) or (es_baja and fb_y < a_f):
+                continue
+
+        v_sin_iva = round(float(r.get("Valor_Sin_IVA") or 0.0), 2)
+        anticipo = round(float(r.get("Anticipo_Monto") or 0.0), 2)
+        inv = round(v_sin_iva - anticipo, 2)
+        renta = round(float(r.get("Mensualidad_Sin_IVA") or 0.0), 2)
+        res_monto = round(float(r.get("Residual_Monto") or 0.0), 2)
+        com_monto = round(float(r.get("Comision_Monto") or 0.0), 2)
+        tasa_reg = round(float(r.get("Tasa_Calculada") or 0.0), 8)
+
+        ant_pct_raw = float(r.get("Anticipo_Pct") or 0.0)
+        if ant_pct_raw > 0:
+            ant_pct = round((ant_pct_raw / 100.0 if ant_pct_raw > 1.0 else ant_pct_raw), 4)
+        else:
+            ant_pct = round(((anticipo / v_sin_iva) if v_sin_iva > 0 else 0.0), 4)
+
+        com_pct_raw = float(r.get("Comision_Apertura_Pct") or 0.0)
+        if com_pct_raw > 0:
+            com_pct = round((com_pct_raw / 100.0 if com_pct_raw > 1.0 else com_pct_raw), 4)
+        else:
+            com_pct = round(((com_monto / v_sin_iva) if v_sin_iva > 0 else 0.0), 4)
+
+        res_pct_raw = float(r.get("Residual_Pct") or 0.0)
+        if res_pct_raw > 0:
+            res_pct = round((res_pct_raw / 100.0 if res_pct_raw > 1.0 else res_pct_raw), 4)
+        else:
+            res_pct = round(((res_monto / v_sin_iva) if v_sin_iva > 0 else 0.0), 4)
+
+        vpr = float(r.get("VP_Residual") or 0.0)
+        if not vpr or vpr <= 0:
+            vpr = float(vp_res(res_monto, tasa_reg, pl))
+        vpr = round(vpr, 2)
+
+        contratos_pre.append({
+            "id": id_c,
+            "cliente": cli,
+            "vehiculo": veh,
+            "estatus": est,
+            "fa_str": fa.strftime("%Y-%m-%d"),
+            "fv_str": fv.strftime("%Y-%m-%d"),
+            "pl": pl,
+            "valor": v_sin_iva,
+            "anticipo_pct": ant_pct,
+            "anticipo": anticipo,
+            "inversion": inv,
+            "comision_pct": com_pct,
+            "comision": com_monto,
+            "renta": renta,
+            "residual_pct": res_pct,
+            "residual": res_monto,
+            "tasa_reg": tasa_reg,
+            "vpr": vpr,
+        })
+
+    max_plazo_meses = max(c["pl"] for c in contratos_pre) if contratos_pre else 48
+    max_plazo_meses = max(max_plazo_meses, 48)
+
+    wb = openpyxl.Workbook()
+
+    # =========================================================================
+    # 1. HOJA: Reporte_Lineal (Contratos hacia abajo, Amortización a la derecha)
+    # =========================================================================
+    ws_lin = wb.active
+    ws_lin.title = "Reporte_Lineal"
+
+    conceptos_mes = [
+        ("Saldo_Inicial", 16),
+        ("Interes_Leasing", 16),
+        ("Renta", 15),
+        ("Capital", 15),
+        ("Saldo_Capital", 16),
+        ("Interes_Residual", 16),
+        ("Saldo_Residual", 16),
+        ("Ingreso_Financiero", 18),
+        ("Saldo_Cartera", 16)
+    ]
+    num_conceptos = len(conceptos_mes)
+
+    cols_fijas = [
+        ("ID_Contrato", 14, Alignment(horizontal="center")),              # A (1)
+        ("Cliente", 34, Alignment(horizontal="left")),                    # B (2)
+        ("Vehiculo", 26, Alignment(horizontal="left")),                   # C (3)
+        ("Estatus", 12, Alignment(horizontal="center")),                  # D (4)
+        ("Fecha_Alta", 13, Alignment(horizontal="center")),               # E (5)
+        ("Fecha_Vencimiento", 15, Alignment(horizontal="center")),        # F (6)
+        ("Plazo_Meses", 12, Alignment(horizontal="right")),               # G (7)
+        ("Valor_Sin_IVA", 16, Alignment(horizontal="right")),             # H (8)
+        ("Anticipo_Pct", 13, Alignment(horizontal="right")),              # I (9)
+        ("Anticipo_Monto", 16, Alignment(horizontal="right")),            # J (10) =ROUND(H*I, 2)
+        ("Inversion_Neta", 16, Alignment(horizontal="right")),            # K (11) =ROUND(H-J, 2)
+        ("Comision_Pct", 13, Alignment(horizontal="right")),              # L (12)
+        ("Comision_Apertura", 16, Alignment(horizontal="right")),         # M (13) =ROUND(H*L, 2)
+        ("Renta_Sin_IVA", 16, Alignment(horizontal="right")),             # N (14)
+        ("Residual_Pct", 13, Alignment(horizontal="right")),              # O (15)
+        ("Residual_Pactado", 16, Alignment(horizontal="right")),          # P (16) =ROUND(H*O, 2)
+        ("Tasa_Mensual_Reg", 18, Alignment(horizontal="right")),          # Q (17) 8 dec
+        ("Tasa_Mensual_RATE", 18, Alignment(horizontal="right")),         # R (18) =RATE
+        ("Tasa_Nominal_Anual", 18, Alignment(horizontal="right")),        # S (19) =Q*12
+        ("TIR_Anual_Efectiva", 18, Alignment(horizontal="right")),        # T (20) =((1+Q)^12)-1
+        ("VP_Residual", 16, Alignment(horizontal="right")),               # U (21) =PV
+        ("Total_Interes_Leasing", 18, Alignment(horizontal="right")),     # V (22) =SUMIF(Interes_Leasing)
+        ("Total_Interes_Residual", 18, Alignment(horizontal="right")),    # W (23) =SUMIF(Interes_Residual)
+        ("Ingreso_Financiero_Total", 20, Alignment(horizontal="right")),  # X (24) =V+W
+        ("Ganancia_Neta", 18, Alignment(horizontal="right")),             # Y (25) =(N*G+P+M)-K
+        ("Margen_Sobre_Inv", 16, Alignment(horizontal="right")),          # Z (26) =Y/K
+    ]
+    num_fijas = len(cols_fijas) # 26
+    total_cols = num_fijas + (max_plazo_meses * num_conceptos)
+    ultima_col_letra = get_column_letter(total_cols)
+
+    _preparar_encabezado_hoja(
+        ws_lin,
+        "Reporte Lineal de Cartera y Amortización Horizontal",
+        f"Contratos en vertical con amortización horizontal de Mes 1 a Mes {max_plazo_meses} con fórmulas vivas de cálculo",
+        total_cols,
+        titulo_empresa=titulo_empresa,
+        logo_path=logo_path
+    )
+
+    try:
+        if os.path.exists(LOGO_OLEASING_PNG_DEFAULT):
+            img_oleasing_lin = OpenpyxlImage(LOGO_OLEASING_PNG_DEFAULT)
+            img_oleasing_lin.width = 150
+            img_oleasing_lin.height = 33
+            ws_lin.add_image(img_oleasing_lin, "W2")
+    except Exception:
+        pass
+
+    ws_lin.row_dimensions[3].height = 20
+    ws_lin.row_dimensions[4].height = 24
+
+    # Super-encabezado Fijo (A3:Z3)
+    ws_lin.merge_cells("A3:Z3")
+    c_hdr_fijo = ws_lin.cell(row=3, column=1, value="DATOS CONTRACTUALES Y PARÁMETROS FINANCIEROS (NIF C-15 / IFRS 16)")
+    c_hdr_fijo.fill = FILL_HEADER
+    c_hdr_fijo.font = FONT_HEADER
+    c_hdr_fijo.alignment = Alignment(horizontal="center", vertical="center")
+    c_hdr_fijo.border = BORDER_CELL
+
+    for idx_f, (n_f, anc_f, al_f) in enumerate(cols_fijas, start=1):
+        c_sub_f = ws_lin.cell(row=4, column=idx_f, value=n_f)
+        c_sub_f.fill = FILL_SUBHEADER
+        c_sub_f.font = FONT_SUBHEADER
+        c_sub_f.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        c_sub_f.border = BORDER_CELL
+        ws_lin.column_dimensions[get_column_letter(idx_f)].width = anc_f
+
+    curr_col_idx = num_fijas + 1
+    fill_mes_a = PatternFill(start_color="1E5C4F", end_color="1E5C4F", fill_type="solid")
+    fill_mes_b = PatternFill(start_color="2C3E50", end_color="2C3E50", fill_type="solid")
+
+    for m_i in range(1, max_plazo_meses + 1):
+        col_ini_m = curr_col_idx
+        col_fin_m = curr_col_idx + num_conceptos - 1
+        ws_lin.merge_cells(start_row=3, start_column=col_ini_m, end_row=3, end_column=col_fin_m)
+        c_mes_hdr = ws_lin.cell(row=3, column=col_ini_m, value=f"MES {m_i}")
+        c_mes_hdr.fill = fill_mes_a if (m_i % 2 == 1) else fill_mes_b
+        c_mes_hdr.font = FONT_HEADER
+        c_mes_hdr.alignment = Alignment(horizontal="center", vertical="center")
+        c_mes_hdr.border = BORDER_CELL
+
+        for nom_c, anc_c in conceptos_mes:
+            c_conc = ws_lin.cell(row=4, column=curr_col_idx, value=nom_c)
+            c_conc.fill = FILL_SUBHEADER
+            c_conc.font = FONT_SUBHEADER
+            c_conc.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            c_conc.border = BORDER_CELL
+            ws_lin.column_dimensions[get_column_letter(curr_col_idx)].width = anc_c
+            curr_col_idx += 1
+
+    fila_inicio_datos = 5
+    fila_actual = fila_inicio_datos
+
+    for c_item in contratos_pre:
+        r_idx = fila_actual
+
+        ws_lin.cell(row=r_idx, column=1, value=c_item["id"]).alignment = cols_fijas[0][2]
+        ws_lin.cell(row=r_idx, column=2, value=c_item["cliente"]).alignment = cols_fijas[1][2]
+        ws_lin.cell(row=r_idx, column=3, value=c_item["vehiculo"]).alignment = cols_fijas[2][2]
+        ws_lin.cell(row=r_idx, column=4, value=c_item["estatus"]).alignment = cols_fijas[3][2]
+        ws_lin.cell(row=r_idx, column=5, value=c_item["fa_str"]).alignment = cols_fijas[4][2]
+        ws_lin.cell(row=r_idx, column=6, value=c_item["fv_str"]).alignment = cols_fijas[5][2]
+
+        c_plazo = ws_lin.cell(row=r_idx, column=7, value=c_item["pl"])
+        c_plazo.number_format = FMT_INT
+        c_plazo.alignment = cols_fijas[6][2]
+
+        c_val = ws_lin.cell(row=r_idx, column=8, value=c_item["valor"])
+        c_val.number_format = FMT_CURRENCY
+        c_val.alignment = cols_fijas[7][2]
+
+        c_ap = ws_lin.cell(row=r_idx, column=9, value=c_item["anticipo_pct"])
+        c_ap.number_format = FMT_PCT_PARAM
+        c_ap.alignment = cols_fijas[8][2]
+
+        c_am = ws_lin.cell(row=r_idx, column=10, value=f"=ROUND(H{r_idx}*I{r_idx}, 2)")
+        c_am.number_format = FMT_CURRENCY
+        c_am.alignment = cols_fijas[9][2]
+
+        c_inv = ws_lin.cell(row=r_idx, column=11, value=f"=ROUND(H{r_idx}-J{r_idx}, 2)")
+        c_inv.number_format = FMT_CURRENCY
+        c_inv.alignment = cols_fijas[10][2]
+
+        c_cp = ws_lin.cell(row=r_idx, column=12, value=c_item["comision_pct"])
+        c_cp.number_format = FMT_PCT_PARAM
+        c_cp.alignment = cols_fijas[11][2]
+
+        c_cm = ws_lin.cell(row=r_idx, column=13, value=f"=ROUND(H{r_idx}*L{r_idx}, 2)")
+        c_cm.number_format = FMT_CURRENCY
+        c_cm.alignment = cols_fijas[12][2]
+
+        c_renta = ws_lin.cell(row=r_idx, column=14, value=c_item["renta"])
+        c_renta.number_format = FMT_CURRENCY
+        c_renta.alignment = cols_fijas[13][2]
+
+        c_rp = ws_lin.cell(row=r_idx, column=15, value=c_item["residual_pct"])
+        c_rp.number_format = FMT_PCT_PARAM
+        c_rp.alignment = cols_fijas[14][2]
+
+        c_rm = ws_lin.cell(row=r_idx, column=16, value=f"=ROUND(H{r_idx}*O{r_idx}, 2)")
+        c_rm.number_format = FMT_CURRENCY
+        c_rm.alignment = cols_fijas[15][2]
+
+        c_treg = ws_lin.cell(row=r_idx, column=17, value=c_item["tasa_reg"])
+        c_treg.number_format = FMT_PCT_RATE
+        c_treg.alignment = cols_fijas[16][2]
+
+        c_trate = ws_lin.cell(row=r_idx, column=18, value=f"=RATE(G{r_idx}, -N{r_idx}, K{r_idx}, -P{r_idx})")
+        c_trate.number_format = FMT_PCT_RATE
+        c_trate.alignment = cols_fijas[17][2]
+
+        c_tna = ws_lin.cell(row=r_idx, column=19, value=f"=ROUND(Q{r_idx}*12, 8)")
+        c_tna.number_format = FMT_PCT_ANNUAL
+        c_tna.alignment = cols_fijas[18][2]
+
+        c_tir = ws_lin.cell(row=r_idx, column=20, value=f"=ROUND(((1+Q{r_idx})^12)-1, 8)")
+        c_tir.number_format = FMT_PCT_ANNUAL
+        c_tir.alignment = cols_fijas[19][2]
+
+        c_vpr = ws_lin.cell(row=r_idx, column=21, value=f"=ROUND(PV(Q{r_idx}, G{r_idx}, 0, -P{r_idx}), 2)")
+        c_vpr.number_format = FMT_CURRENCY
+        c_vpr.alignment = cols_fijas[20][2]
+
+        c_tot_il = ws_lin.cell(row=r_idx, column=22, value=f'=SUMIF($AA$4:${ultima_col_letra}$4, "Interes_Leasing", AA{r_idx}:{ultima_col_letra}{r_idx})')
+        c_tot_il.number_format = FMT_CURRENCY
+        c_tot_il.alignment = cols_fijas[21][2]
+
+        c_tot_ir = ws_lin.cell(row=r_idx, column=23, value=f'=SUMIF($AA$4:${ultima_col_letra}$4, "Interes_Residual", AA{r_idx}:{ultima_col_letra}{r_idx})')
+        c_tot_ir.number_format = FMT_CURRENCY
+        c_tot_ir.alignment = cols_fijas[22][2]
+
+        c_ing_tot = ws_lin.cell(row=r_idx, column=24, value=f"=ROUND(V{r_idx}+W{r_idx}, 2)")
+        c_ing_tot.number_format = FMT_CURRENCY
+        c_ing_tot.alignment = cols_fijas[23][2]
+
+        c_gn = ws_lin.cell(row=r_idx, column=25, value=f"=ROUND((N{r_idx}*G{r_idx}+P{r_idx}+M{r_idx})-K{r_idx}, 2)")
+        c_gn.number_format = FMT_CURRENCY
+        c_gn.alignment = cols_fijas[24][2]
+
+        c_mg = ws_lin.cell(row=r_idx, column=26, value=f"=ROUND(Y{r_idx}/K{r_idx}, 4)")
+        c_mg.number_format = FMT_PCT_PARAM
+        c_mg.alignment = cols_fijas[25][2]
+
+        curr_c_idx = num_fijas + 1
+        for m_i in range(1, max_plazo_meses + 1):
+            letra_c1 = get_column_letter(curr_c_idx)     # Saldo_Inicial
+            letra_c2 = get_column_letter(curr_c_idx + 1) # Interes_Leasing
+            letra_c3 = get_column_letter(curr_c_idx + 2) # Renta
+            letra_c4 = get_column_letter(curr_c_idx + 3) # Capital
+            letra_c5 = get_column_letter(curr_c_idx + 4) # Saldo_Capital
+            letra_c6 = get_column_letter(curr_c_idx + 5) # Interes_Residual
+            letra_c7 = get_column_letter(curr_c_idx + 6) # Saldo_Residual
+            letra_c8 = get_column_letter(curr_c_idx + 7) # Ingreso_Financiero
+            letra_c9 = get_column_letter(curr_c_idx + 8) # Saldo_Cartera
+
+            if m_i == 1:
+                letra_prev_saldo_cap = "$K"      # Inversión Neta inicial
+                letra_prev_saldo_res = "$U"      # VP Residual inicial
+            else:
+                letra_prev_saldo_cap = get_column_letter(curr_c_idx - num_conceptos + 4)
+                letra_prev_saldo_res = get_column_letter(curr_c_idx - num_conceptos + 6)
+
+            # 1. Saldo Inicial
+            if m_i == 1:
+                f_s_ini = f'=IF(1<=$G{r_idx}, $K{r_idx}, "")'
+            else:
+                f_s_ini = f'=IF({m_i}<=$G{r_idx}, {letra_prev_saldo_cap}{r_idx}, "")'
+            c_s_ini = ws_lin.cell(row=r_idx, column=curr_c_idx, value=f_s_ini)
+            c_s_ini.number_format = FMT_CURRENCY
+            c_s_ini.alignment = Alignment(horizontal="right")
+
+            # 2. Interes Leasing = ROUND(Saldo_Inicial * Tasa_Reg, 2)
+            f_int_l = f'=IF({m_i}<=$G{r_idx}, ROUND({letra_c1}{r_idx}*$Q{r_idx}, 2), "")'
+            c_int_l = ws_lin.cell(row=r_idx, column=curr_c_idx + 1, value=f_int_l)
+            c_int_l.number_format = FMT_CURRENCY
+            c_int_l.alignment = Alignment(horizontal="right")
+
+            # 3. Renta = $N{r_idx}
+            f_rnt = f'=IF({m_i}<=$G{r_idx}, $N{r_idx}, "")'
+            c_rnt = ws_lin.cell(row=r_idx, column=curr_c_idx + 2, value=f_rnt)
+            c_rnt.number_format = FMT_CURRENCY
+            c_rnt.alignment = Alignment(horizontal="right")
+
+            # 4. Capital = Renta - Interes_Leasing
+            f_cap = f'=IF({m_i}<=$G{r_idx}, {letra_c3}{r_idx}-{letra_c2}{r_idx}, "")'
+            c_cap = ws_lin.cell(row=r_idx, column=curr_c_idx + 3, value=f_cap)
+            c_cap.number_format = FMT_CURRENCY
+            c_cap.alignment = Alignment(horizontal="right")
+
+            # 5. Saldo Capital = Saldo_Inicial - Capital
+            f_s_cap = f'=IF({m_i}<=$G{r_idx}, {letra_c1}{r_idx}-{letra_c4}{r_idx}, "")'
+            c_s_cap = ws_lin.cell(row=r_idx, column=curr_c_idx + 4, value=f_s_cap)
+            c_s_cap.number_format = FMT_CURRENCY
+            c_s_cap.alignment = Alignment(horizontal="right")
+
+            # 6. Interes Residual = ROUND(Saldo_Residual_Ant * Tasa_Reg, 2)
+            if m_i == 1:
+                f_int_r = f'=IF(1<=$G{r_idx}, ROUND($U{r_idx}*$Q{r_idx}, 2), "")'
+            else:
+                f_int_r = f'=IF({m_i}<=$G{r_idx}, ROUND({letra_prev_saldo_res}{r_idx}*$Q{r_idx}, 2), "")'
+            c_int_r = ws_lin.cell(row=r_idx, column=curr_c_idx + 5, value=f_int_r)
+            c_int_r.number_format = FMT_CURRENCY
+            c_int_r.alignment = Alignment(horizontal="right")
+
+            # 7. Saldo Residual = Saldo_Residual_Ant + Interes_Residual
+            if m_i == 1:
+                f_s_res = f'=IF(1<=$G{r_idx}, $U{r_idx}+{letra_c6}{r_idx}, "")'
+            else:
+                f_s_res = f'=IF({m_i}<=$G{r_idx}, {letra_prev_saldo_res}{r_idx}+{letra_c6}{r_idx}, "")'
+            c_s_res = ws_lin.cell(row=r_idx, column=curr_c_idx + 6, value=f_s_res)
+            c_s_res.number_format = FMT_CURRENCY
+            c_s_res.alignment = Alignment(horizontal="right")
+
+            # 8. Ingreso Financiero = Interes_Leasing + Interes_Residual
+            f_ing_f = f'=IF({m_i}<=$G{r_idx}, {letra_c2}{r_idx}+{letra_c6}{r_idx}, "")'
+            c_ing_f = ws_lin.cell(row=r_idx, column=curr_c_idx + 7, value=f_ing_f)
+            c_ing_f.number_format = FMT_CURRENCY
+            c_ing_f.alignment = Alignment(horizontal="right")
+
+            # 9. Saldo Cartera = ($G{r_idx} - m_i) * $N{r_idx}
+            f_s_cart = f'=IF({m_i}<=$G{r_idx}, ($G{r_idx}-{m_i})*$N{r_idx}, "")'
+            c_s_cart = ws_lin.cell(row=r_idx, column=curr_c_idx + 8, value=f_s_cart)
+            c_s_cart.number_format = FMT_CURRENCY
+            c_s_cart.alignment = Alignment(horizontal="right")
+
+            curr_c_idx += num_conceptos
+
+        es_par = (r_idx - fila_inicio_datos) % 2 == 1
+        for col_k in range(1, total_cols + 1):
+            cell_k = ws_lin.cell(row=r_idx, column=col_k)
+            cell_k.border = BORDER_CELL
+            cell_k.font = FONT_BODY
+            if es_par:
+                cell_k.fill = FILL_ZEBRA
+
+        fila_actual += 1
+
+    fila_fin_datos = fila_actual - 1
+
+    # Fila de Totales
+    ws_lin.cell(row=fila_actual, column=1, value="TOTAL CARTERA").alignment = Alignment(horizontal="center")
+    ws_lin.cell(row=fila_actual, column=2, value=f"{len(contratos_pre)} Contratos").alignment = Alignment(horizontal="left")
+
+    for col_k in range(7, total_cols + 1):
+        letra_col = get_column_letter(col_k)
+        if col_k == 7: # Plazo
+            c_tot_k = ws_lin.cell(row=fila_actual, column=col_k, value=f"=AVERAGE({letra_col}{fila_inicio_datos}:{letra_col}{fila_fin_datos})")
+            c_tot_k.number_format = "0.0"
+        elif col_k in [9, 12, 15, 26]:
+            c_tot_k = ws_lin.cell(row=fila_actual, column=col_k, value=f"=AVERAGE({letra_col}{fila_inicio_datos}:{letra_col}{fila_fin_datos})")
+            c_tot_k.number_format = FMT_PCT_PARAM
+        elif col_k in [17, 18]:
+            c_tot_k = ws_lin.cell(row=fila_actual, column=col_k, value=f"=AVERAGE({letra_col}{fila_inicio_datos}:{letra_col}{fila_fin_datos})")
+            c_tot_k.number_format = FMT_PCT_RATE
+        elif col_k in [19, 20]:
+            c_tot_k = ws_lin.cell(row=fila_actual, column=col_k, value=f"=AVERAGE({letra_col}{fila_inicio_datos}:{letra_col}{fila_fin_datos})")
+            c_tot_k.number_format = FMT_PCT_ANNUAL
+        else:
+            c_tot_k = ws_lin.cell(row=fila_actual, column=col_k, value=f"=SUM({letra_col}{fila_inicio_datos}:{letra_col}{fila_fin_datos})")
+            c_tot_k.number_format = FMT_CURRENCY
+        c_tot_k.alignment = Alignment(horizontal="right")
+
+    for col_k in range(1, total_cols + 1):
+        c_tot_cell = ws_lin.cell(row=fila_actual, column=col_k)
+        c_tot_cell.fill = FILL_TOTAL
+        c_tot_cell.font = FONT_TOTAL
+        c_tot_cell.border = BORDER_TOTAL
+
+    ws_lin.freeze_panes = "AA5"
+    ws_lin.auto_filter.ref = f"A4:{ultima_col_letra}{fila_fin_datos}"
+
+    wb.defined_names.add(DefinedName("CONTRATOS_LISTA", attr_text=f"'Reporte_Lineal'!$A$5:$A${fila_fin_datos}"))
+
+    # =========================================================================
+    # 2. HOJA: Modelo_Amortizacion_Tipo (Selector interactivo y corte dinámico)
+    # =========================================================================
+    ws_mod = wb.create_sheet(title="Modelo_Amortizacion_Tipo")
+    _preparar_encabezado_hoja(
+        ws_mod,
+        "Modelo de Amortización Dinámica con Fórmulas Nativas",
+        "Seleccione cualquier contrato en la lista desplegable; la tabla actualiza todos los datos y se corta al mes exacto de terminación",
+        14,
+        titulo_empresa=titulo_empresa,
+        logo_path=logo_path
+    )
+
+    try:
+        if os.path.exists(LOGO_OLEASING_PNG_DEFAULT):
+            img_oleasing_mod = OpenpyxlImage(LOGO_OLEASING_PNG_DEFAULT)
+            img_oleasing_mod.width = 150
+            img_oleasing_mod.height = 33
+            ws_mod.add_image(img_oleasing_mod, "K2")
+    except Exception:
+        pass
+
+    ws_mod.row_dimensions[4].height = 24
+    ws_mod.cell(row=4, column=2, value="SELECCIONAR CONTRATO:").font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    ws_mod.cell(row=4, column=2).fill = FILL_HEADER
+    ws_mod.cell(row=4, column=2).alignment = Alignment(horizontal="center", vertical="center")
+    ws_mod.cell(row=4, column=2).border = BORDER_CELL
+
+    primer_id = contratos_pre[0]["id"] if contratos_pre else ""
+    c_sel = ws_mod.cell(row=4, column=3, value=primer_id)
+    c_sel.font = Font(name="Calibri", size=12, bold=True, color="1E5C4F")
+    c_sel.fill = FILL_HIGHLIGHT
+    c_sel.alignment = Alignment(horizontal="center", vertical="center")
+    c_sel.border = Border(
+        left=Side(style="medium", color="1E5C4F"),
+        right=Side(style="medium", color="1E5C4F"),
+        top=Side(style="medium", color="1E5C4F"),
+        bottom=Side(style="medium", color="1E5C4F")
+    )
+
+    dv = DataValidation(type="list", formula1="=CONTRATOS_LISTA", allow_blank=False)
+    ws_mod.add_data_validation(dv)
+    dv.add(ws_mod["C4"])
+
+    ws_mod.cell(row=4, column=4, value="<-- Seleccione de la lista desplegable o escriba el ID del contrato para actualizar toda la tabla").font = Font(name="Calibri", size=9, italic=True, color="64748B")
+    ws_mod.merge_cells("D4:K4")
+
+    meta_mod_campos = [
+        (5, 2, "Cliente:", 3, f"=IFERROR(VLOOKUP($C$4, 'Reporte_Lineal'!$A$5:$Z${fila_fin_datos}, 2, FALSE), \"\")", "@"),
+        (5, 6, "Unidad / Vehículo:", 7, f"=IFERROR(VLOOKUP($C$4, 'Reporte_Lineal'!$A$5:$Z${fila_fin_datos}, 3, FALSE), \"\")", "@"),
+        (5, 10, "Estatus:", 11, f"=IFERROR(VLOOKUP($C$4, 'Reporte_Lineal'!$A$5:$Z${fila_fin_datos}, 4, FALSE), \"\")", "@"),
+
+        (6, 2, "Fecha Alta:", 3, f"=IFERROR(VLOOKUP($C$4, 'Reporte_Lineal'!$A$5:$Z${fila_fin_datos}, 5, FALSE), \"\")", "@"),
+        (6, 4, "Fecha Vencimiento:", 5, f"=IFERROR(VLOOKUP($C$4, 'Reporte_Lineal'!$A$5:$Z${fila_fin_datos}, 6, FALSE), \"\")", "@"),
+        (6, 6, "Plazo (Meses):", 7, f"=IFERROR(VLOOKUP($C$4, 'Reporte_Lineal'!$A$5:$Z${fila_fin_datos}, 7, FALSE), 0)", FMT_INT),
+        (6, 8, "Valor Sin IVA:", 9, f"=IFERROR(VLOOKUP($C$4, 'Reporte_Lineal'!$A$5:$Z${fila_fin_datos}, 8, FALSE), 0)", FMT_CURRENCY),
+
+        (7, 2, "Inversión Neta:", 3, f"=IFERROR(VLOOKUP($C$4, 'Reporte_Lineal'!$A$5:$Z${fila_fin_datos}, 11, FALSE), 0)", FMT_CURRENCY),
+        (7, 4, "Renta Mensual:", 5, f"=IFERROR(VLOOKUP($C$4, 'Reporte_Lineal'!$A$5:$Z${fila_fin_datos}, 14, FALSE), 0)", FMT_CURRENCY),
+        (7, 6, "Residual Pactado:", 7, f"=IFERROR(VLOOKUP($C$4, 'Reporte_Lineal'!$A$5:$Z${fila_fin_datos}, 16, FALSE), 0)", FMT_CURRENCY),
+        (7, 8, "VP Residual Inicial:", 9, f"=IFERROR(VLOOKUP($C$4, 'Reporte_Lineal'!$A$5:$Z${fila_fin_datos}, 21, FALSE), 0)", FMT_CURRENCY),
+
+        (8, 2, "Tasa Mensual:", 3, f"=IFERROR(VLOOKUP($C$4, 'Reporte_Lineal'!$A$5:$Z${fila_fin_datos}, 17, FALSE), 0)", FMT_PCT_RATE),
+        (8, 4, "Tasa Nominal Anual:", 5, f"=IFERROR(VLOOKUP($C$4, 'Reporte_Lineal'!$A$5:$Z${fila_fin_datos}, 19, FALSE), 0)", FMT_PCT_ANNUAL),
+        (8, 6, "TIR Anual Efectiva:", 7, f"=IFERROR(VLOOKUP($C$4, 'Reporte_Lineal'!$A$5:$Z${fila_fin_datos}, 20, FALSE), 0)", FMT_PCT_ANNUAL),
+        (8, 8, "Ingreso Financiero:", 9, f"=IFERROR(VLOOKUP($C$4, 'Reporte_Lineal'!$A$5:$Z${fila_fin_datos}, 24, FALSE), 0)", FMT_CURRENCY),
+    ]
+
+    for r_f, c_lbl, lbl_txt, c_val, form_str, num_f in meta_mod_campos:
+        ws_mod.cell(row=r_f, column=c_lbl, value=lbl_txt).font = FONT_BODY_BOLD
+        ws_mod.cell(row=r_f, column=c_lbl).alignment = Alignment(horizontal="right", vertical="center")
+        cell_v = ws_mod.cell(row=r_f, column=c_val, value=form_str)
+        cell_v.font = FONT_BODY
+        cell_v.number_format = num_f
+        cell_v.alignment = Alignment(horizontal="left", vertical="center")
+        cell_v.fill = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
+        cell_v.border = BORDER_CELL
+
+    ws_mod.cell(row=9, column=1, value="FÓRMULAS VIVAS DE AMORTIZACIÓN Y SALDOS: Interés = Saldo_Inicial * Tasa | Capital = Renta - Interés | Saldo Capital = Saldo_Inicial - Capital | Interés Residual = VP_Residual * Tasa | VP_Residual_Final = VP_Inicial + Interés_Residual | Saldo Intereses = SUM(Futuros) | Saldo Cartera = Saldo_Capital + Saldo_Intereses | Saldo Global = Saldo_Cartera + VP_Residual. La tabla se corta automáticamente al plazo contractual ($G$6 meses).").font = FONT_SUBTITLE
+    ws_mod.merge_cells("A9:N9")
+
+    cols_modelo = [
+        ("Mes", 8, Alignment(horizontal="center")),                          # A (1)
+        ("Saldo_Inicial_Capital", 18, Alignment(horizontal="right")),        # B (2)
+        ("Tasa_Mensual", 18, Alignment(horizontal="right")),                 # C (3) 8 dec
+        ("Interes_Leasing", 16, Alignment(horizontal="right")),              # D (4)
+        ("Renta_Sin_IVA", 16, Alignment(horizontal="right")),                # E (5)
+        ("Capital_Amortizado", 16, Alignment(horizontal="right")),           # F (6)
+        ("Saldo_Final_Capital", 18, Alignment(horizontal="right")),          # G (7)
+        ("VP_Residual_Inicial", 18, Alignment(horizontal="right")),          # H (8)
+        ("Interes_Residual", 16, Alignment(horizontal="right")),             # I (9)
+        ("VP_Residual_Final", 18, Alignment(horizontal="right")),            # J (10)
+        ("Ingreso_Financiero_Total", 20, Alignment(horizontal="right")),     # K (11)
+        ("Saldo_Intereses_Remanentes", 22, Alignment(horizontal="right")),   # L (12)
+        ("Saldo_Cartera_Total", 18, Alignment(horizontal="right")),          # M (13)
+        ("Saldo_Global_Exigible", 18, Alignment(horizontal="right")),        # N (14)
+    ]
+
+    fila_hdr_mod = 10
+    ws_mod.row_dimensions[fila_hdr_mod].height = 24
+    for idx_col, (nom_col, anc, al) in enumerate(cols_modelo, start=1):
+        c = ws_mod.cell(row=fila_hdr_mod, column=idx_col, value=nom_col)
+        c.fill = FILL_HEADER
+        c.font = FONT_HEADER
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        c.border = BORDER_CELL
+        ws_mod.column_dimensions[get_column_letter(idx_col)].width = anc
+
+    fila_mod_inicio = 11
+    max_plazo_vertical = 72
+
+    for m_i in range(1, max_plazo_vertical + 1):
+        r_mod = fila_mod_inicio + m_i - 1
+
+        ws_mod.cell(row=r_mod, column=1, value=f'=IF(ROW()-10<=$G$6, ROW()-10, "")').alignment = Alignment(horizontal="center")
+
+        if m_i == 1:
+            ws_mod.cell(row=r_mod, column=2, value=f'=IF($A{r_mod}="", "", $C$7)')
+        else:
+            ws_mod.cell(row=r_mod, column=2, value=f'=IF($A{r_mod}="", "", G{r_mod - 1})')
+        ws_mod.cell(row=r_mod, column=2).number_format = FMT_CURRENCY
+        ws_mod.cell(row=r_mod, column=2).alignment = Alignment(horizontal="right")
+
+        ws_mod.cell(row=r_mod, column=3, value=f'=IF($A{r_mod}="", "", $C$8)')
+        ws_mod.cell(row=r_mod, column=3).number_format = FMT_PCT_RATE
+        ws_mod.cell(row=r_mod, column=3).alignment = Alignment(horizontal="right")
+
+        ws_mod.cell(row=r_mod, column=4, value=f'=IF($A{r_mod}="", "", ROUND(B{r_mod}*C{r_mod}, 2))')
+        ws_mod.cell(row=r_mod, column=4).number_format = FMT_CURRENCY
+        ws_mod.cell(row=r_mod, column=4).alignment = Alignment(horizontal="right")
+
+        ws_mod.cell(row=r_mod, column=5, value=f'=IF($A{r_mod}="", "", $E$7)')
+        ws_mod.cell(row=r_mod, column=5).number_format = FMT_CURRENCY
+        ws_mod.cell(row=r_mod, column=5).alignment = Alignment(horizontal="right")
+
+        ws_mod.cell(row=r_mod, column=6, value=f'=IF($A{r_mod}="", "", E{r_mod}-D{r_mod})')
+        ws_mod.cell(row=r_mod, column=6).number_format = FMT_CURRENCY
+        ws_mod.cell(row=r_mod, column=6).alignment = Alignment(horizontal="right")
+
+        ws_mod.cell(row=r_mod, column=7, value=f'=IF($A{r_mod}="", "", B{r_mod}-F{r_mod})')
+        ws_mod.cell(row=r_mod, column=7).number_format = FMT_CURRENCY
+        ws_mod.cell(row=r_mod, column=7).alignment = Alignment(horizontal="right")
+
+        if m_i == 1:
+            ws_mod.cell(row=r_mod, column=8, value=f'=IF($A{r_mod}="", "", $I$7)')
+        else:
+            ws_mod.cell(row=r_mod, column=8, value=f'=IF($A{r_mod}="", "", J{r_mod - 1})')
+        ws_mod.cell(row=r_mod, column=8).number_format = FMT_CURRENCY
+        ws_mod.cell(row=r_mod, column=8).alignment = Alignment(horizontal="right")
+
+        ws_mod.cell(row=r_mod, column=9, value=f'=IF($A{r_mod}="", "", ROUND(H{r_mod}*C{r_mod}, 2))')
+        ws_mod.cell(row=r_mod, column=9).number_format = FMT_CURRENCY
+        ws_mod.cell(row=r_mod, column=9).alignment = Alignment(horizontal="right")
+
+        ws_mod.cell(row=r_mod, column=10, value=f'=IF($A{r_mod}="", "", H{r_mod}+I{r_mod})')
+        ws_mod.cell(row=r_mod, column=10).number_format = FMT_CURRENCY
+        ws_mod.cell(row=r_mod, column=10).alignment = Alignment(horizontal="right")
+
+        ws_mod.cell(row=r_mod, column=11, value=f'=IF($A{r_mod}="", "", D{r_mod}+I{r_mod})')
+        ws_mod.cell(row=r_mod, column=11).number_format = FMT_CURRENCY
+        ws_mod.cell(row=r_mod, column=11).alignment = Alignment(horizontal="right")
+
+        if m_i < max_plazo_vertical:
+            ws_mod.cell(row=r_mod, column=12, value=f'=IF($A{r_mod}="", "", SUM(D{r_mod + 1}:$D${fila_mod_inicio + max_plazo_vertical - 1}))')
+        else:
+            ws_mod.cell(row=r_mod, column=12, value=f'=IF($A{r_mod}="", "", 0)')
+        ws_mod.cell(row=r_mod, column=12).number_format = FMT_CURRENCY
+        ws_mod.cell(row=r_mod, column=12).alignment = Alignment(horizontal="right")
+
+        ws_mod.cell(row=r_mod, column=13, value=f'=IF($A{r_mod}="", "", G{r_mod}+L{r_mod})')
+        ws_mod.cell(row=r_mod, column=13).number_format = FMT_CURRENCY
+        ws_mod.cell(row=r_mod, column=13).alignment = Alignment(horizontal="right")
+
+        ws_mod.cell(row=r_mod, column=14, value=f'=IF($A{r_mod}="", "", M{r_mod}+J{r_mod})')
+        ws_mod.cell(row=r_mod, column=14).number_format = FMT_CURRENCY
+        ws_mod.cell(row=r_mod, column=14).alignment = Alignment(horizontal="right")
+
+        es_par_mod = (m_i % 2 == 0)
+        for c_k in range(1, 15):
+            cell_k = ws_mod.cell(row=r_mod, column=c_k)
+            cell_k.border = BORDER_CELL
+            cell_k.font = FONT_BODY
+            if es_par_mod:
+                cell_k.fill = FILL_ZEBRA
+
+    fila_tot_mod = fila_mod_inicio + max_plazo_vertical
+    ws_mod.cell(row=fila_tot_mod, column=1, value="TOTALES DEL CONTRATO").alignment = Alignment(horizontal="center")
+    ws_mod.merge_cells(f"A{fila_tot_mod}:C{fila_tot_mod}")
+
+    for col_m in [4, 5, 6, 9, 11]:
+        letra_m = get_column_letter(col_m)
+        c_m_t = ws_mod.cell(row=fila_tot_mod, column=col_m, value=f"=SUM({letra_m}{fila_mod_inicio}:{letra_m}{fila_tot_mod - 1})")
+        c_m_t.number_format = FMT_CURRENCY
+        c_m_t.alignment = Alignment(horizontal="right")
+
+    for col_k in range(1, 15):
+        c_tot_k = ws_mod.cell(row=fila_tot_mod, column=col_k)
+        c_tot_k.fill = FILL_TOTAL
+        c_tot_k.font = FONT_TOTAL
+        c_tot_k.border = BORDER_TOTAL
+
+    ws_mod.freeze_panes = "A11"
+
+    # =========================================================================
+    # 3. HOJA: Caratula_Ejecutiva (Ficha institucional ejecutiva)
+    # =========================================================================
+    ws_car = wb.create_sheet(title="Caratula_Ejecutiva")
+    try:
+        ws_car.views.sheetView[0].showGridLines = True
+    except Exception:
+        pass
+
+    ws_car.row_dimensions[1].height = 10
+    ws_car.row_dimensions[2].height = 44
+    ws_car.row_dimensions[3].height = 10
+    ws_car.row_dimensions[4].height = 24
+    ws_car.row_dimensions[5].height = 22
+    ws_car.row_dimensions[6].height = 18
+
+    try:
+        if os.path.exists(LOGO_OLEASING_PNG_DEFAULT):
+            img_c_o = OpenpyxlImage(LOGO_OLEASING_PNG_DEFAULT)
+            img_c_o.width = 175
+            img_c_o.height = 39
+            ws_car.add_image(img_c_o, "B2")
+        if os.path.exists(LOGO_ORANGE_PNG_DEFAULT):
+            img_c_org = OpenpyxlImage(LOGO_ORANGE_PNG_DEFAULT)
+            img_c_org.width = 135
+            img_c_org.height = 39
+            ws_car.add_image(img_c_org, "E2")
+    except Exception:
+        pass
+
+    ws_car.cell(row=4, column=2, value="O-LEASING · UNA APP DE ORANGE CREW").font = Font(name="Calibri", size=14, bold=True, color="1E5C4F")
+    ws_car.cell(row=5, column=2, value="REPORTE LINEAL DE CARTERA Y AMORTIZACIÓN HORIZONTAL").font = Font(name="Calibri", size=16, bold=True, color="1E293B")
+    alcance_txt = f"Ejercicio Fiscal {anio_filtro}" if anio_filtro else "Histórico Consolidado Multianual"
+    ws_car.cell(row=6, column=2, value=f"Estructura Lineal por Contrato (Mes 1 a Mes {max_plazo_meses}) · Fórmulas Vivas de Excel · {alcance_txt}").font = FONT_SUBTITLE
+
+    kpis_lineal = [
+        (9, 2, "CONTRATOS AUDITADOS", f"{len(contratos_pre)}", FMT_INT),
+        (9, 4, "INVERSIÓN NETA TOTAL", f"='Reporte_Lineal'!K{fila_actual}", FMT_CURRENCY),
+        (9, 6, "RENTA MENSUAL TOTAL", f"='Reporte_Lineal'!N{fila_actual}", FMT_CURRENCY),
+        (9, 8, "RESIDUAL TOTAL PACTADO", f"='Reporte_Lineal'!P{fila_actual}", FMT_CURRENCY),
+        (11, 2, "TASA MENSUAL PROMEDIO", f"='Reporte_Lineal'!Q{fila_actual}", FMT_PCT_RATE),
+        (11, 4, "TOTAL INTERÉS LEASING", f"='Reporte_Lineal'!V{fila_actual}", FMT_CURRENCY),
+        (11, 6, "TOTAL INTERÉS RESIDUAL", f"='Reporte_Lineal'!W{fila_actual}", FMT_CURRENCY),
+        (11, 8, "INGRESO FINANCIERO TOTAL", f"='Reporte_Lineal'!X{fila_actual}", FMT_CURRENCY),
+    ]
+    for r_k, c_k, tit_k, val_k, fmt_k in kpis_lineal:
+        ws_car.cell(row=r_k, column=c_k, value=tit_k).font = Font(name="Calibri", size=9, bold=True, color="64748B")
+        c_k_v = ws_car.cell(row=r_k + 1, column=c_k, value=val_k)
+        c_k_v.font = Font(name="Calibri", size=13, bold=True, color="1E5C4F")
+        c_k_v.number_format = fmt_k
+        c_k_v.alignment = Alignment(horizontal="left", vertical="center")
+
+    ws_car.cell(row=14, column=2, value="ÍNDICE DE HOJAS DEL LIBRO:").font = Font(name="Calibri", size=11, bold=True, color="1E5C4F")
+    filas_ind = [
+        ("1", "Reporte_Lineal", "Contratos hacia abajo y amortización horizontal mes 1 a N con fórmulas completas"),
+        ("2", "Modelo_Amortizacion_Tipo", "Modelo interactivo con lista desplegable y corte automático al mes del plazo"),
+        ("3", "Caratula_Ejecutiva", "Ficha técnica, logotipos institucionales y KPIs consolidados de la cartera")
+    ]
+    r_idx_c = 15
+    for num_i, nom_h, desc_h in filas_ind:
+        ws_car.cell(row=r_idx_c, column=2, value=num_i).alignment = Alignment(horizontal="center")
+        ws_car.cell(row=r_idx_c, column=3, value=nom_h).font = FONT_BODY_BOLD
+        ws_car.cell(row=r_idx_c, column=4, value=desc_h).font = FONT_BODY
+        r_idx_c += 1
+
+    ws_car.column_dimensions["A"].width = 4
+    ws_car.column_dimensions["B"].width = 24
+    ws_car.column_dimensions["C"].width = 28
+    ws_car.column_dimensions["D"].width = 46
+
+    # Establecer la primera hoja (Reporte_Lineal) como activa al abrir
+    wb.active = 0
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf

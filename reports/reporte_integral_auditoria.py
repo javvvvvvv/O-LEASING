@@ -677,3 +677,31 @@ def render_reporte_integral_auditoria(get_db_path_fn=None, tabla_mensual_fn=None
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="btn_dl_rep_int_excel"
                 )
+
+        st.markdown("---")
+        st.subheader("Reporte Lineal de Cartera (Horizontal Mes 1 a N)")
+        st.caption("Estructura horizontal con contratos en vertical y su amortización hacia la derecha (Mes 1, 2, 3...) con fórmulas vivas e interactividad con la hoja Modelo_Amortizacion_Tipo.")
+        btn_lin_c1, btn_lin_c2 = st.columns(2)
+        with btn_lin_c1:
+            if st.button("Generar Reporte Lineal de Cartera (Excel)", key="btn_gen_rep_lin_excel", type="secondary"):
+                with st.spinner("Construyendo Reporte Lineal de Amortización..."):
+                    import importlib
+                    import reports.auditoria_excel
+                    importlib.reload(reports.auditoria_excel)
+                    from reports.auditoria_excel import generar_excel_reporte_lineal
+                    st.session_state['buf_rep_lin'] = generar_excel_reporte_lineal(
+                        anio_filtro=anio_excel_rep,
+                        filtro_estatus=filtro_estatus_seleccionado,
+                        solo_con_movimiento=True
+                    ).getvalue()
+                    st.session_state['fname_rep_lin'] = f"Reporte_Lineal_Amortizacion_Cartera{'_' + str(anio_excel_rep) if anio_excel_rep else ''}.xlsx"
+
+        if st.session_state.get('buf_rep_lin'):
+            with btn_lin_c2:
+                st.download_button(
+                    label=f"Descargar {st.session_state.get('fname_rep_lin')}",
+                    data=st.session_state['buf_rep_lin'],
+                    file_name=st.session_state['fname_rep_lin'],
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="btn_dl_rep_lin_excel"
+                )

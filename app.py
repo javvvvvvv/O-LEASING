@@ -10323,7 +10323,7 @@ try:
 
         with st.expander("Libro de Auditoría con Fórmulas de Excel (Cartera Consolidada y Desglose Mensual)", expanded=False):
             st.info("Genera el libro oficial de auditoría con fórmulas de Excel vivas en cada celda (=SUM, =RATE, =Saldo*Tasa, etc.) para la cartera activa y meses.")
-            c_aud_m1, c_aud_m2 = st.columns(2)
+            c_aud_m1, c_aud_m2, c_aud_m3 = st.columns(3)
             with c_aud_m1:
                 if st.button("Generar Excel de Auditoría Anual", key="btn_aud_anio_m"):
                     with st.spinner("Construyendo libro de auditoría con fórmulas..."):
@@ -10340,8 +10340,16 @@ try:
                         importlib.reload(reports.auditoria_excel)
                         from reports.auditoria_excel import generar_excel_auditoria
                         st.session_state['buf_aud_multi'] = generar_excel_auditoria(anio_filtro=None, filtro_estatus="ACTIVO").getvalue()
+            with c_aud_m3:
+                if st.button("Generar Reporte Lineal (Mes 1 a N)", key="btn_aud_lin_m"):
+                    with st.spinner("Construyendo Reporte Lineal horizontal..."):
+                        import importlib
+                        import reports.auditoria_excel
+                        importlib.reload(reports.auditoria_excel)
+                        from reports.auditoria_excel import generar_excel_reporte_lineal
+                        st.session_state['buf_aud_lin'] = generar_excel_reporte_lineal(filtro_estatus="ACTIVO").getvalue()
 
-            c_dl_m1, c_dl_m2 = st.columns(2)
+            c_dl_m1, c_dl_m2, c_dl_m3 = st.columns(3)
             with c_dl_m1:
                 if st.session_state.get('buf_aud_m'):
                     st.download_button(
@@ -10359,6 +10367,15 @@ try:
                         file_name="auditoria_cartera_formulas_multianual.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         key="dl_aud_multi_btn"
+                    )
+            with c_dl_m3:
+                if st.session_state.get('buf_aud_lin'):
+                    st.download_button(
+                        "Descargar Reporte Lineal (Excel)",
+                        data=st.session_state['buf_aud_lin'],
+                        file_name="Reporte_Lineal_Amortizacion_Cartera.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="dl_aud_lin_btn"
                     )
 
         anio_m=st.number_input("Año del reporte maestro",min_value=2020,max_value=2050,value=datetime.now().year,step=1,key="ym")
