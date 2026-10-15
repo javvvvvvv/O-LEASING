@@ -97,6 +97,126 @@ def _preparar_encabezado_hoja(ws, titulo_hoja, subtitulo, total_cols, titulo_emp
         ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=min(total_cols, 15))
     ws.row_dimensions[1].height = 24
     ws.row_dimensions[2].height = 16
+    try:
+        ws.views.sheetView[0].showGridLines = True
+    except Exception:
+        pass
+
+
+def _construir_caratula_ejecutiva(ws, titulo_empresa, fila_tot_resumen, anio_filtro, total_contratos):
+    empresa = titulo_empresa or _obtener_nombre_empresa()
+    try:
+        ws.views.sheetView[0].showGridLines = True
+    except Exception:
+        pass
+
+    ws.row_dimensions[1].height = 12
+    ws.row_dimensions[2].height = 28
+    ws.row_dimensions[3].height = 22
+    ws.row_dimensions[4].height = 18
+    ws.row_dimensions[5].height = 14
+
+    ws.cell(row=2, column=2, value=f"{empresa} · SISTEMA FINANCIERO Y CONTABLE").font = Font(name="Calibri", size=14, bold=True, color="1E5C4F")
+    ws.cell(row=3, column=2, value="REPORTE INTEGRAL DE AUDITORÍA Y SALDOS DE CARTERA").font = Font(name="Calibri", size=16, bold=True, color="1E293B")
+
+    alcance_txt = f"Ejercicio Fiscal {anio_filtro}" if anio_filtro else "Histórico Multianual Consolidado (2022 - 2030)"
+    ws.cell(row=4, column=2, value=f"Normatividad NIF C-15 / IFRS 16 · Fórmulas Financieras Vivas de Excel · {alcance_txt}").font = FONT_SUBTITLE
+
+    # Bloque de KPIs Ejecutivos (Filas 6 a 9)
+    kpis_config = [
+        (7, 2, "CONTRATOS AUDITADOS", f"='Resumen_Cartera'!G{fila_tot_resumen}", FMT_INT),
+        (7, 4, "INVERSIÓN NETA TOTAL", f"='Resumen_Cartera'!K{fila_tot_resumen}", FMT_CURRENCY),
+        (7, 6, "RENTA MENSUAL TOTAL", f"='Resumen_Cartera'!N{fila_tot_resumen}", FMT_CURRENCY),
+        (7, 8, "RESIDUAL TOTAL PACTADO", f"='Resumen_Cartera'!P{fila_tot_resumen}", FMT_CURRENCY),
+        (9, 2, "TASA MENSUAL PROMEDIO", f"='Resumen_Cartera'!R{fila_tot_resumen}", FMT_PCT_RATE),
+        (9, 4, "TOTAL INTERÉS LEASING", f"='Resumen_Cartera'!V{fila_tot_resumen}", FMT_CURRENCY),
+        (9, 6, "TOTAL INTERÉS RESIDUAL", f"='Resumen_Cartera'!W{fila_tot_resumen}", FMT_CURRENCY),
+        (9, 8, "INGRESO FINANCIERO TOTAL", f"='Resumen_Cartera'!X{fila_tot_resumen}", FMT_CURRENCY),
+    ]
+
+    for r_kpi, c_kpi, label, form_val, fmt in kpis_config:
+        c_lbl = ws.cell(row=r_kpi - 1, column=c_kpi, value=label)
+        c_lbl.font = Font(name="Calibri", size=8, bold=True, color="64748B")
+        c_lbl.alignment = Alignment(horizontal="left", vertical="center")
+
+        c_v = ws.cell(row=r_kpi, column=c_kpi, value=form_val)
+        c_v.font = Font(name="Calibri", size=13, bold=True, color="1E5C4F")
+        c_v.number_format = fmt
+        c_v.alignment = Alignment(horizontal="left", vertical="center")
+        c_v.fill = PatternFill(start_color="F1F5F9", end_color="F1F5F9", fill_type="solid")
+        c_v.border = Border(
+            left=Side(style="thin", color="CBD5E1"),
+            right=Side(style="thin", color="CBD5E1"),
+            top=Side(style="thin", color="CBD5E1"),
+            bottom=Side(style="medium", color="1E5C4F")
+        )
+
+    # Indice de Hojas de Auditoria
+    ws.cell(row=11, column=2, value="ÍNDICE DE HOJAS Y METODOLOGÍA DEL LIBRO OFICIAL").font = Font(name="Calibri", size=11, bold=True, color="1E5C4F")
+
+    headers_ind = [
+        ("No.", 6, Alignment(horizontal="center")),
+        ("Hoja de Cálculo (Clic para ir)", 28, Alignment(horizontal="left")),
+        ("Propósito y Contenido Contable", 42, Alignment(horizontal="left")),
+        ("Fórmulas Matemáticas Clave", 42, Alignment(horizontal="left")),
+    ]
+
+    r_hdr_ind = 12
+    ws.row_dimensions[r_hdr_ind].height = 24
+    for idx_hi, (nom_h, anc_h, al_h) in enumerate(headers_ind, start=2):
+        c_h = ws.cell(row=r_hdr_ind, column=idx_hi, value=nom_h)
+        c_h.fill = FILL_HEADER
+        c_h.font = FONT_HEADER
+        c_h.alignment = Alignment(horizontal="center", vertical="center")
+        c_h.border = BORDER_CELL
+        ws.column_dimensions[get_column_letter(idx_hi)].width = anc_h
+
+    indice_filas = [
+        ("1", "Resumen_Cartera", "Padrón completo de contratos en vertical con unidad vehicular, porcentajes y rentabilidad.", "=RATE, =PV, =SUM, =AVERAGE"),
+        ("2", "Calculo_Tasa_Implicita", "Metodología NIF C-15 / IFRS 16 de cálculo de tasa mensual y comprobación a diferencia cero.", "=RATE, =PV, =PV-Inversion, TIR"),
+        ("3", "Modelo_Amortizacion_Tipo", "Demostración dinámica periodo a periodo de cómo se genera cada interés, capital y saldos.", "=Saldo*Tasa, =Renta-Interes, =VP*Tasa"),
+        ("4", "Intereses_Leasing_Mensual", "Matriz horizontal de intereses de leasing devengados mes a mes por contrato.", "Sumatorias de cartera =SUM(...)"),
+        ("5", "Intereses_Residual_Mensual", "Matriz horizontal de intereses sobre el valor presente del residual (NIF C-15).", "Sumatorias de cartera =SUM(...)"),
+        ("6", "Ingreso_Financiero_Total", "Matriz de ingreso financiero consolidado (Leasing + Residual) mes a mes.", "=Intereses_Leasing_Mensual! + Residual!"),
+        ("7", "Amortizacion_Capital_Mensual", "Matriz horizontal de amortización de principal mes a mes.", "=IF(Leasing>0, Renta - Leasing, '')"),
+        ("8", "Saldos_Capital_Mensual", "Saldo insoluto de principal mes a mes al cierre de cada periodo contable.", "Curva de abatimiento de capital"),
+        ("9", "Saldos_Intereses_Mensual", "Saldo de intereses remanentes por devengar/cobrar desde cada corte mensual.", "=SUMA(Intereses_Meses_Posteriores)"),
+        ("10", "Saldos_Cartera_Total", "Saldo total exigible de mensualidades restantes (Capital + Intereses).", "=Saldos_Capital! + Saldos_Intereses!"),
+        ("11", "Saldo_Residual_Activo", "Evolución mensual del saldo activo del valor residual pactado.", "Saldo de activo residual NIF C-15"),
+        ("12", "Saldos_Exigible_Global", "Deuda integral total de cartera más valor residual activo.", "=Saldos_Cartera_Total! + Saldo_Residual!"),
+        ("13", "Matriz_Consolidada", "Bloques cronológicos multi-concepto con leasing, residual, ingreso y capital lado a lado.", "Fórmulas inter-hoja vivas"),
+        ("14", "Matriz_Consolidada_Saldos", "Bloques cronológicos multi-concepto con los 5 rubros de saldos lado a lado.", "Fórmulas inter-hoja vivas"),
+    ]
+
+    for idx_row_ind, (num_i, hoja_i, desc_i, form_i) in enumerate(indice_filas, start=13):
+        ws.row_dimensions[idx_row_ind].height = 20
+        c_num = ws.cell(row=idx_row_ind, column=2, value=int(num_i))
+        c_num.alignment = Alignment(horizontal="center", vertical="center")
+
+        c_link = ws.cell(row=idx_row_ind, column=3, value=f"=HYPERLINK(\"#'{hoja_i}'!A1\", \"{hoja_i}\")")
+        c_link.font = Font(name="Calibri", size=9, bold=True, color="1E5C4F", underline="single")
+        c_link.alignment = Alignment(horizontal="left", vertical="center")
+
+        c_desc = ws.cell(row=idx_row_ind, column=4, value=desc_i)
+        c_desc.font = FONT_BODY
+        c_desc.alignment = Alignment(horizontal="left", vertical="center")
+
+        c_form = ws.cell(row=idx_row_ind, column=5, value=form_i)
+        c_form.font = Font(name="Consolas", size=8, color="047857")
+        c_form.alignment = Alignment(horizontal="left", vertical="center")
+
+        es_par_ind = (idx_row_ind % 2 == 0)
+        for col_c in range(2, 6):
+            cell_box = ws.cell(row=idx_row_ind, column=col_c)
+            cell_box.border = BORDER_CELL
+            if es_par_ind:
+                cell_box.fill = FILL_ZEBRA
+
+    ws.column_dimensions["A"].width = 4
+    ws.column_dimensions["B"].width = 6
+    ws.column_dimensions["C"].width = 28
+    ws.column_dimensions["D"].width = 44
+    ws.column_dimensions["E"].width = 44
 
 
 def _obtener_db_path(db_path=None):
@@ -311,7 +431,8 @@ def generar_excel_auditoria(
                 cur_y += 1
 
     wb = openpyxl.Workbook()
-    ws_default = wb.active
+    ws_caratula = wb.active
+    ws_caratula.title = "Caratula_Ejecutiva"
 
     # =========================================================================
     # 1. HOJA: Resumen_Cartera (Contratos en vertical + Formulas Financieras)
@@ -511,6 +632,9 @@ def generar_excel_auditoria(
 
     ws_resumen.freeze_panes = "D5"
     ws_resumen.auto_filter.ref = f"A{fila_header_res}:{get_column_letter(len(cols_resumen))}{fila_fin_datos}"
+
+    # Construir contenido ejecutivo e indice con hipervinculos en la caratula
+    _construir_caratula_ejecutiva(ws_caratula, titulo_empresa, fila_actual, anio_filtro, len(contratos_pre))
 
     # =========================================================================
     # 2. HOJA: Calculo_Tasa_Implicita (Explicacion Matematica y Comprobacion PV)
@@ -1387,6 +1511,8 @@ def generar_excel_auditoria(
     ws_mod.cell(row=6, column=7, value="VP Residual:").font = FONT_BODY_BOLD
     ws_mod.cell(row=6, column=8, value="='Resumen_Cartera'!U5").number_format = FMT_CURRENCY
 
+    ws_mod.cell(row=7, column=1, value="FÓRMULAS DE AUDITORÍA: Interés Leasing = Saldo_Inicial * Tasa | Capital = Renta - Interés | Saldo Capital = Saldo_Inicial - Capital | Interés Residual = VP_Residual * Tasa | VP_Residual_Final = VP_Inicial + Interés_Residual | Saldo Intereses = SUM(Intereses_Futuros) | Saldo Cartera = Saldo_Capital + Saldo_Intereses | Saldo Global = Saldo_Cartera + VP_Residual").font = FONT_SUBTITLE
+
     cols_modelo = [
         ("Mes", 8, Alignment(horizontal="center")),
         ("Saldo_Inicial", 16, Alignment(horizontal="right")),
@@ -1399,6 +1525,9 @@ def generar_excel_auditoria(
         ("Interes_Residual", 16, Alignment(horizontal="right")),
         ("VP_Residual_Final", 18, Alignment(horizontal="right")),
         ("Ingreso_Financiero_Total", 20, Alignment(horizontal="right")),
+        ("Saldo_Intereses_Remanentes", 22, Alignment(horizontal="right")),
+        ("Saldo_Cartera_Total", 18, Alignment(horizontal="right")),
+        ("Saldo_Global_Exigible", 18, Alignment(horizontal="right")),
     ]
 
     fila_hdr_mod = 8
@@ -1455,8 +1584,27 @@ def generar_excel_auditoria(
         ws_mod.cell(row=r_mod, column=11, value=f"=D{r_mod}+I{r_mod}").number_format = FMT_CURRENCY
         ws_mod.cell(row=r_mod, column=11).alignment = Alignment(horizontal="right")
 
+        # Columna 12: Saldo Intereses Remanentes
+        if m_i < 60:
+            f_sint_mod = f"=SUM(D{r_mod + 1}:D{fila_mod_inicio + 59})"
+        else:
+            f_sint_mod = "0"
+        c_sint_mod = ws_mod.cell(row=r_mod, column=12, value=f_sint_mod)
+        c_sint_mod.number_format = FMT_CURRENCY
+        c_sint_mod.alignment = Alignment(horizontal="right")
+
+        # Columna 13: Saldo Cartera Total = Saldo Final Capital (G) + Saldo Intereses Remanentes (L)
+        c_scart_mod = ws_mod.cell(row=r_mod, column=13, value=f"=G{r_mod}+L{r_mod}")
+        c_scart_mod.number_format = FMT_CURRENCY
+        c_scart_mod.alignment = Alignment(horizontal="right")
+
+        # Columna 14: Saldo Global Exigible = Saldo Cartera Total (M) + VP Residual Final (J)
+        c_sglob_mod = ws_mod.cell(row=r_mod, column=14, value=f"=M{r_mod}+J{r_mod}")
+        c_sglob_mod.number_format = FMT_CURRENCY
+        c_sglob_mod.alignment = Alignment(horizontal="right")
+
         es_par_mod = m_i % 2 == 0
-        for c_k in range(1, 12):
+        for c_k in range(1, 15):
             cell_k = ws_mod.cell(row=r_mod, column=c_k)
             cell_k.border = BORDER_CELL
             cell_k.font = FONT_BODY
@@ -1471,14 +1619,13 @@ def generar_excel_auditoria(
         c_m_t.number_format = FMT_CURRENCY
         c_m_t.alignment = Alignment(horizontal="right")
 
-    for col_k in range(1, 12):
+    for col_k in range(1, 15):
         c_tot_k = ws_mod.cell(row=fila_tot_mod, column=col_k)
         c_tot_k.fill = FILL_TOTAL
         c_tot_k.font = FONT_TOTAL
         c_tot_k.border = BORDER_TOTAL
 
-    if ws_default.title in wb.sheetnames:
-        wb.remove(ws_default)
+    ws_mod.freeze_panes = "C9"
 
     buf = io.BytesIO()
     wb.save(buf)
