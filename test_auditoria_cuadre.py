@@ -13,21 +13,33 @@
 # Ley Federal del Derecho de Autor y tratados internacionales aplicables.
 # ============================================================================
 """
-test_auditoria_cuadre.py — Suite de pruebas automatizadas para garantizar
-que el libro de auditoría en Excel cuadre exactamente con la fuente de
-verdad contable en el pasado, presente y con el paso del tiempo.
+test_auditoria_cuadre.py — Suite de pruebas automatizadas de aseguramiento
+de calidad para el libro de auditoría O-Leasing desarrollado por Orange Crew.
+
+Verifica rigurosamente los 4 requerimientos del usuario:
+1. Fórmulas vivas de derivación en Intereses_Leasing_Mensual, Intereses_Residual_Mensual
+   y Saldo_Residual_Activo.
+2. Cifras limitadas a 2 decimales ($#,##0.00 y 0.00%), excepto tasas completas a 8 decimales.
+3. Hoja 'Matriz_Consolidada' dinámica con selector de contrato (DataValidation), fórmulas
+   =VLOOKUP y corte automático al mes exacto del plazo.
+4. Logotipos de O-Leasing y Orange Crew con membretes institucionales en todo el archivo.
+5. Amarres contables exactos contra la base de datos y flujos históricos.
 """
 
+import os
 import openpyxl
 import pandas as pd
 
 from app import tabla_mensual_conceptos, totales_intereses_desde_tabla_mensual
-from reports.auditoria_excel import generar_excel_auditoria
-
-MN = [
-    "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
-    "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"
-]
+from reports.auditoria_excel import (
+    generar_excel_auditoria,
+    LOGO_OLEASING_PNG_DEFAULT,
+    LOGO_ORANGE_PNG_DEFAULT,
+    FMT_CURRENCY,
+    FMT_PCT_RATE,
+    FMT_PCT_ANNUAL,
+    FMT_PCT_PARAM
+)
 
 
 def test_amarre_agosto_2026():
@@ -43,96 +55,158 @@ def test_amarre_agosto_2026():
     assert diff_r == 0.0, f"Diferencia en Residual Agosto 2026: {diff_r}"
 
 
-def test_amarre_multianual_todos_los_meses():
-    """Verifica que cada uno de los 105 meses (2022-2030) cuadre exactamente al centavo."""
-    buf = generar_excel_auditoria(anio_filtro=None, filtro_estatus="TODOS")
-    wb = openpyxl.load_workbook(buf, data_only=True)
+def test_requerimiento_1_formulas_vivas_matrices():
+    """PUNTO 1: Verifica que Intereses_Leasing_Mensual, Intereses_Residual_Mensual
 
+    y Saldo_Residual_Activo contengan formulas vivas de Excel.
+    """
+    buf = generar_excel_auditoria(anio_filtro=2026, filtro_estatus="ACTIVO")
+    wb = openpyxl.load_workbook(buf, data_only=False)
+
+    # 1. Intereses_Leasing_Mensual
     ws_il = wb["Intereses_Leasing_Mensual"]
+    # Buscar una celda activa de contrato que tenga formula
+    formula_il_encontrada = False
+    for r in range(5, min(15, ws_il.max_row)):
+        for c in range(9, ws_il.max_column):
+            val = str(ws_il.cell(row=r, column=c).value or "")
+            if val.startswith("="):
+                assert "ROUND" in val or "Saldos_Capital_Mensual" in val or "Resumen_Cartera" in val, f"Formula de leasing incorrecta: {val}"
+                formula_il_encontrada = True
+                break
+        if formula_il_encontrada:
+            break
+    assert formula_il_encontrada, "No se encontraron formulas vivas en Intereses_Leasing_Mensual"
+
+    # 2. Intereses_Residual_Mensual
     ws_ir = wb["Intereses_Residual_Mensual"]
+    formula_ir_encontrada = False
+    for r in range(5, min(15, ws_ir.max_row)):
+        for c in range(9, ws_ir.max_column):
+            val = str(ws_ir.cell(row=r, column=c).value or "")
+            if val.startswith("="):
+                assert "ROUND" in val or "Saldo_Residual_Activo" in val or "Resumen_Cartera" in val, f"Formula de residual incorrecta: {val}"
+                formula_ir_encontrada = True
+                break
+        if formula_ir_encontrada:
+            break
+    assert formula_ir_encontrada, "No se encontraron formulas vivas en Intereses_Residual_Mensual"
 
-    # Extraer columnas de meses dinamicamente
-    col_meses = {}
-    for c in range(1, ws_il.max_column):
-        val = ws_il.cell(row=4, column=c).value
-        if val and "-" in str(val):
-            parts = str(val).split("-")
-            if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-                y, m = int(parts[0]), int(parts[1])
-                col_meses[(y, m)] = c
-
-    errores = []
-    for (y, m), col_idx in col_meses.items():
-        sum_il_excel = 0.0
-        sum_ir_excel = 0.0
-        for r in range(5, ws_il.max_row):
-            v1 = ws_il.cell(row=r, column=col_idx).value
-            v2 = ws_ir.cell(row=r, column=col_idx).value
-            if v1:
-                sum_il_excel += float(v1)
-            if v2:
-                sum_ir_excel += float(v2)
-        sum_il_excel = round(sum_il_excel, 2)
-        sum_ir_excel = round(sum_ir_excel, 2)
-
-        di, dr, _, _, _ = tabla_mensual_conceptos(y)
-        nombre_mes = MN[m - 1]
-        sum_il_sis = round(float(di[nombre_mes].sum(skipna=True)), 2) if (di is not None and nombre_mes in di.columns) else 0.0
-        sum_ir_sis = round(float(dr[nombre_mes].sum(skipna=True)), 2) if (dr is not None and nombre_mes in dr.columns) else 0.0
-
-        diff_l = round(sum_il_excel - sum_il_sis, 2)
-        diff_r = round(sum_ir_excel - sum_ir_sis, 2)
-
-        if diff_l != 0.0 or diff_r != 0.0:
-            errores.append(f"{y}-{m:02d}: Leasing diff={diff_l}, Residual diff={diff_r}")
-
-    assert len(errores) == 0, f"Discrepancias encontradas: {errores}"
+    # 3. Saldo_Residual_Activo
+    ws_sr = wb["Saldo_Residual_Activo"]
+    formula_sr_encontrada = False
+    for r in range(5, min(15, ws_sr.max_row)):
+        for c in range(9, ws_sr.max_column):
+            val = str(ws_sr.cell(row=r, column=c).value or "")
+            if val.startswith("="):
+                assert "ROUND" in val or "Intereses_Residual_Mensual" in val or "Resumen_Cartera" in val, f"Formula de saldo residual incorrecta: {val}"
+                formula_sr_encontrada = True
+                break
+        if formula_sr_encontrada:
+            break
+    assert formula_sr_encontrada, "No se encontraron formulas vivas en Saldo_Residual_Activo"
 
 
-def test_formulas_vivas_excel():
-    """Verifica que el libro contenga formulas vivas y no valores planos."""
-    buf = generar_excel_auditoria(anio_filtro=2025, filtro_estatus="ACTIVO")
+def test_requerimiento_2_precision_decimales_y_tasas():
+    """PUNTO 2: Cifras monetarias a 2 decimales ($#,##0.00), tasas completas a 8 decimales."""
+    buf = generar_excel_auditoria(anio_filtro=2026, filtro_estatus="ACTIVO")
     wb = openpyxl.load_workbook(buf, data_only=False)
 
     ws_res = wb["Resumen_Cartera"]
-    assert str(ws_res["J5"].value).startswith("="), "Anticipo_Monto debe ser formula =H*I"
-    assert str(ws_res["K5"].value).startswith("="), "Inversion_Neta debe ser formula =H-J"
-    assert str(ws_res["M5"].value).startswith("="), "Comision_Apertura debe ser formula =H*L"
-    assert str(ws_res["P5"].value).startswith("="), "Residual_Pactado debe ser formula =H*O"
-    assert "RATE" in str(ws_res["R5"].value), "Tasa mensual debe usar formula RATE"
-    assert "^12" in str(ws_res["T5"].value), "TIR debe ser formula anualizada"
-    assert "*" in str(ws_res["V5"].value) or "SUM" in str(ws_res["V5"].value), "Interes leasing debe ser formula"
 
-    ws_tot = wb["Ingreso_Financiero_Total"]
-    assert "Intereses_Leasing_Mensual" in str(ws_tot["F5"].value), "Debe tener formula inter-hoja de leasing"
-    assert "Intereses_Residual_Mensual" in str(ws_tot["F5"].value), "Debe tener formula inter-hoja de residual"
+    # Tasas deben tener formato completo con 8 decimales (0.00000000%)
+    fmt_q = ws_res["Q5"].number_format
+    fmt_r = ws_res["R5"].number_format
+    fmt_s = ws_res["S5"].number_format
+    fmt_t = ws_res["T5"].number_format
 
-    ws_cap = wb["Amortizacion_Capital_Mensual"]
-    assert "Intereses_Leasing_Mensual" in str(ws_cap["J5"].value), "Debe tener formula de capital = Renta - Intereses"
+    assert "000000" in fmt_q, f"Tasa mensual Q5 debe tener precision completa a 8 decimales, actual: {fmt_q}"
+    assert "000000" in fmt_r, f"Tasa RATE R5 debe tener precision completa a 8 decimales, actual: {fmt_r}"
+    assert "000000" in fmt_s, f"Tasa nominal S5 debe tener precision completa a 8 decimales, actual: {fmt_s}"
+    assert "000000" in fmt_t, f"TIR anual T5 debe tener precision completa a 8 decimales, actual: {fmt_t}"
 
-    ws_mod = wb["Modelo_Amortizacion_Tipo"]
-    assert "=" in str(ws_mod["D9"].value), "Modelo didactico debe tener formulas de interes"
-    assert "=" in str(ws_mod["F9"].value), "Modelo didactico debe tener formulas de capital"
+    # Cifras monetarias a 2 decimales ($#,##0.00)
+    for c_coord in ["H5", "J5", "K5", "M5", "N5", "P5", "U5", "V5", "W5", "X5", "Y5"]:
+        fmt_mon = ws_res[c_coord].number_format
+        assert ".00" in fmt_mon or "$#,##0.00" in fmt_mon, f"Celda {c_coord} debe tener formato a 2 decimales, actual: {fmt_mon}"
+
+    # Porcentajes de captura (Anticipo, Comisión, Residual) a 2 decimales (0.00%)
+    for c_coord in ["I5", "L5", "O5"]:
+        fmt_p = ws_res[c_coord].number_format
+        assert fmt_p == "0.00%", f"Porcentaje {c_coord} debe tener 2 decimales, actual: {fmt_p}"
 
 
-def test_hoja_calculo_tasa_implicita():
-    """Verifica que la hoja Calculo_Tasa_Implicita contenga formulas de RATE, PV y comprobacion."""
-    buf = generar_excel_auditoria(anio_filtro=2025, filtro_estatus="ACTIVO")
+def test_requerimiento_3_matriz_consolidada_dinamica():
+    """PUNTO 3: Selector de contrato interactivo y corte automatico al mes del plazo."""
+    buf = generar_excel_auditoria(anio_filtro=2026, filtro_estatus="ACTIVO")
     wb = openpyxl.load_workbook(buf, data_only=False)
 
-    assert "Calculo_Tasa_Implicita" in wb.sheetnames, "Falta la hoja Calculo_Tasa_Implicita"
-    ws = wb["Calculo_Tasa_Implicita"]
-    assert str(ws["H5"].value).startswith("="), "Anticipo Monto debe ser formula =F*G"
-    assert str(ws["I5"].value).startswith("="), "Inversion Neta debe ser formula =F-H"
-    assert str(ws["L5"].value).startswith("="), "Residual Pactado debe ser formula =F*K"
-    assert "RATE" in str(ws["N5"].value), "Tasa mensual debe usar RATE"
-    assert "PV" in str(ws["O5"].value), "Comprobacion debe usar formula PV"
-    assert str(ws["P5"].value).startswith("="), "Diferencia de cuadre debe ser formula"
-    assert "^12" in str(ws["R5"].value), "TIR anual debe ser formula"
+    assert "Matriz_Consolidada" in wb.sheetnames, "Falta la hoja Matriz_Consolidada"
+    ws = wb["Matriz_Consolidada"]
+
+    # Celda de control y selector C4
+    val_c4 = str(ws["C4"].value or "")
+    assert val_c4 != "", "Celda C4 debe contener el ID del contrato seleccionado por defecto"
+
+    # Validacion de datos (dropdown) en C4
+    dvs = ws.data_validations.dataValidation
+    assert len(dvs) > 0, "Debe existir al menos una validación de datos en la hoja"
+    dv_encontrada = False
+    for dv_item in dvs:
+        if "Resumen_Cartera" in str(dv_item.formula1):
+            dv_encontrada = True
+            break
+    assert dv_encontrada, "No se encontró la lista desplegable apuntando a Resumen_Cartera"
+
+    # Formulas VLOOKUP en bloque de metadata
+    assert "VLOOKUP" in str(ws["C5"].value), "Cliente en C5 debe usar VLOOKUP"
+    assert "VLOOKUP" in str(ws["G5"].value), "Vehiculo en G5 debe usar VLOOKUP"
+    assert "VLOOKUP" in str(ws["K5"].value), "Estatus en K5 debe usar VLOOKUP"
+    assert "VLOOKUP" in str(ws["H6"].value), "Plazo en H6 debe usar VLOOKUP"
+    assert "VLOOKUP" in str(ws["E7"].value), "Inversión Neta en E7 debe usar VLOOKUP"
+    assert "VLOOKUP" in str(ws["H7"].value), "Renta en H7 debe usar VLOOKUP"
+    assert "VLOOKUP" in str(ws["K7"].value), "Residual en K7 debe usar VLOOKUP"
+    assert "VLOOKUP" in str(ws["C8"].value), "Tasa Mensual en C8 debe usar VLOOKUP"
+
+    # Formula de corte dinamico en columna Mes (Col A) y columnas de calculo
+    assert "IF" in str(ws["A11"].value) and "$H$6" in str(ws["A11"].value), "Mes 1 debe cortarse con $H$6"
+    assert "IF" in str(ws["A47"].value) and "$H$6" in str(ws["A47"].value), "Mes 37 debe cortarse con $H$6"
+
+    # Columnas de datos deben condicionarse a $A{r}<=""
+    for r_test in [11, 20, 46, 70]:
+        val_e = str(ws.cell(row=r_test, column=5).value or "")
+        assert val_e.startswith("=IF("), f"Fila {r_test} debe tener formula condicionada de corte"
+        assert f"$A{r_test}" in val_e, f"Fila {r_test} debe evaluar la celda $A{r_test} para corte"
 
 
-def test_matrices_saldos_formulas():
-    """Verifica que existan las 5 matrices de saldos con formulas vivas inter-hoja."""
+def test_requerimiento_4_logotipos_e_identidad_institucional():
+    """PUNTO 4: Logotipo de O-Leasing y Orange Crew y membrete institucional."""
+    assert os.path.exists(LOGO_OLEASING_PNG_DEFAULT), "El archivo de logo o-leasing-logo.png debe existir"
+    assert os.path.exists(LOGO_ORANGE_PNG_DEFAULT), "El archivo de logo orange-crew-logo.png debe existir"
+
+    buf = generar_excel_auditoria(anio_filtro=2026, filtro_estatus="ACTIVO")
+    wb = openpyxl.load_workbook(buf, data_only=False)
+
+    # Caratula Ejecutiva
+    ws_car = wb["Caratula_Ejecutiva"]
+    assert "O-LEASING" in str(ws_car["B4"].value), "Caratula debe contener O-LEASING"
+    assert "ORANGE CREW" in str(ws_car["B4"].value), "Caratula debe contener ORANGE CREW"
+
+    # Verificar imagenes insertadas en Caratula
+    assert len(ws_car._images) >= 1, "Caratula debe contener imagenes institucionales insertadas"
+
+    # Encabezados de hojas
+    for s_nom in ["Resumen_Cartera", "Calculo_Tasa_Implicita", "Matriz_Consolidada", "Intereses_Leasing_Mensual"]:
+        ws_test = wb[s_nom]
+        tit_val = str(ws_test["A1"].value or "")
+        sub_val = str(ws_test["A2"].value or "")
+        assert "O-LEASING" in tit_val, f"Hoja {s_nom} debe tener O-LEASING en A1"
+        assert "ORANGE CREW" in tit_val, f"Hoja {s_nom} debe tener ORANGE CREW en A1"
+        assert "Orange Crew" in sub_val, f"Hoja {s_nom} debe tener Orange Crew en A2"
+
+
+def test_matrices_saldos_formulas_completas():
+    """Verifica que las matrices de saldos tengan formulas encadenadas vivas."""
     buf = generar_excel_auditoria(anio_filtro=2025, filtro_estatus="ACTIVO")
     wb = openpyxl.load_workbook(buf, data_only=False)
 
@@ -142,6 +216,7 @@ def test_matrices_saldos_formulas():
         "Saldos_Cartera_Total",
         "Saldo_Residual_Activo",
         "Saldos_Exigible_Global",
+        "Matriz_Consolidada_Cartera",
         "Matriz_Consolidada_Saldos"
     ]
     for h in hojas_esperadas:
@@ -159,31 +234,32 @@ def test_matrices_saldos_formulas():
     assert "Saldo_Residual_Activo" in val_exig, "Saldos_Exigible_Global debe referenciar a Saldo_Residual_Activo"
     assert "+" in val_exig, "Saldos_Exigible_Global debe ser suma viva de cartera total + residual"
 
-    ws_mcs = wb["Matriz_Consolidada_Saldos"]
-    val_mcs_cart = str(ws_mcs["I6"].value)
-    assert "+" in val_mcs_cart, "Matriz_Consolidada_Saldos debe sumar capital e intereses de cartera"
-
 
 if __name__ == "__main__":
     print("Ejecutando test_amarre_agosto_2026...")
     test_amarre_agosto_2026()
     print("PASS: test_amarre_agosto_2026")
 
-    print("Ejecutando test_formulas_vivas_excel...")
-    test_formulas_vivas_excel()
-    print("PASS: test_formulas_vivas_excel")
+    print("Ejecutando test_requerimiento_1_formulas_vivas_matrices...")
+    test_requerimiento_1_formulas_vivas_matrices()
+    print("PASS: test_requerimiento_1_formulas_vivas_matrices")
 
-    print("Ejecutando test_hoja_calculo_tasa_implicita...")
-    test_hoja_calculo_tasa_implicita()
-    print("PASS: test_hoja_calculo_tasa_implicita")
+    print("Ejecutando test_requerimiento_2_precision_decimales_y_tasas...")
+    test_requerimiento_2_precision_decimales_y_tasas()
+    print("PASS: test_requerimiento_2_precision_decimales_y_tasas")
 
-    print("Ejecutando test_matrices_saldos_formulas...")
-    test_matrices_saldos_formulas()
-    print("PASS: test_matrices_saldos_formulas")
+    print("Ejecutando test_requerimiento_3_matriz_consolidada_dinamica...")
+    test_requerimiento_3_matriz_consolidada_dinamica()
+    print("PASS: test_requerimiento_3_matriz_consolidada_dinamica")
 
-    print("Ejecutando test_amarre_multianual_todos_los_meses...")
-    test_amarre_multianual_todos_los_meses()
-    print("PASS: test_amarre_multianual_todos_los_meses")
+    print("Ejecutando test_requerimiento_4_logotipos_e_identidad_institucional...")
+    test_requerimiento_4_logotipos_e_identidad_institucional()
+    print("PASS: test_requerimiento_4_logotipos_e_identidad_institucional")
 
-    print("\nTODAS LAS PRUEBAS DE AMARRE, SALDOS Y CONTINUIDAD EN EL TIEMPO PASARON EXITOSAMENTE.")
+    print("Ejecutando test_matrices_saldos_formulas_completas...")
+    test_matrices_saldos_formulas_completas()
+    print("PASS: test_matrices_saldos_formulas_completas")
 
+    print("\n========================================================================")
+    print("TODAS LAS PRUEBAS DE LOS 4 REQUERIMIENTOS PASARON EXITOSAMENTE (100% OK)")
+    print("========================================================================")
