@@ -587,8 +587,8 @@ def generar_excel_auditoria(
         c_vpr.number_format = FMT_CURRENCY
         c_vpr.alignment = cols_resumen[20][2]
 
-        # Total Interes Leasing = ROUND((N * G) - K + P, 2)
-        c_til = ws_resumen.cell(row=r_idx, column=22, value=f"=ROUND((N{r_idx}*G{r_idx})-K{r_idx}+P{r_idx}, 2)")
+        # Total Interes Leasing (sobre Rentas) = ROUND((N * G) - (K - U), 2)
+        c_til = ws_resumen.cell(row=r_idx, column=22, value=f"=ROUND((N{r_idx}*G{r_idx})-(K{r_idx}-U{r_idx}), 2)")
         c_til.number_format = FMT_CURRENCY
         c_til.alignment = cols_resumen[21][2]
 
@@ -597,7 +597,7 @@ def generar_excel_auditoria(
         c_tir_res.number_format = FMT_CURRENCY
         c_tir_res.alignment = cols_resumen[22][2]
 
-        # Ingreso Financiero Total = ROUND(V + W, 2)
+        # Ingreso Financiero Total = ROUND(V + W, 2) = (N*G+P)-K
         c_ing = ws_resumen.cell(row=r_idx, column=24, value=f"=ROUND(V{r_idx}+W{r_idx}, 2)")
         c_ing.number_format = FMT_CURRENCY
         c_ing.alignment = cols_resumen[23][2]
@@ -903,7 +903,7 @@ def generar_excel_auditoria(
         cell_v.fill = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
         cell_v.border = BORDER_CELL
 
-    ws_mod.cell(row=9, column=1, value="FÓRMULAS VIVAS DE AMORTIZACIÓN Y SALDOS: Interés = Saldo_Inicial * Tasa | Capital = Renta - Interés | Saldo Capital = Saldo_Inicial - Capital | Interés Residual = VP_Residual * Tasa | VP_Residual_Final = VP_Inicial + Interés_Residual | Saldo Intereses = SUM(Futuros) | Saldo Cartera = Saldo_Capital + Saldo_Intereses | Saldo Global = Saldo_Cartera + VP_Residual. La tabla se corta automáticamente al plazo contractual ($G$6 meses).").font = FONT_SUBTITLE
+    ws_mod.cell(row=9, column=1, value="FÓRMULAS VIVAS DE AMORTIZACIÓN Y SALDOS: Interés Leasing = (Saldo_Inicial - VP_Residual_Inicial) * Tasa | Interés Residual = VP_Residual_Inicial * Tasa | Ingreso Financiero Total = Interés Leasing + Interés Residual | Capital = Renta - Ingreso Financiero Total | Saldo Capital = Saldo_Inicial - Capital | Saldo Intereses = SUM(Futuros) | Saldo Cartera Rentas = (Plazo - Mes) * Renta | Saldo Global Exigible = Saldo Cartera Rentas + Residual Pactado. La tabla se corta automáticamente al plazo contractual ($G$6 meses).").font = FONT_SUBTITLE
     ws_mod.merge_cells("A9:N9")
 
     cols_modelo = [
@@ -919,7 +919,7 @@ def generar_excel_auditoria(
         ("VP_Residual_Final", 18, Alignment(horizontal="right")),            # J (10)
         ("Ingreso_Financiero_Total", 20, Alignment(horizontal="right")),     # K (11)
         ("Saldo_Intereses_Remanentes", 22, Alignment(horizontal="right")),   # L (12)
-        ("Saldo_Cartera_Total", 18, Alignment(horizontal="right")),          # M (13)
+        ("Saldo_Cartera_Rentas", 18, Alignment(horizontal="right")),         # M (13)
         ("Saldo_Global_Exigible", 18, Alignment(horizontal="right")),        # N (14)
     ]
 
@@ -955,8 +955,8 @@ def generar_excel_auditoria(
         ws_mod.cell(row=r_mod, column=3).number_format = FMT_PCT_RATE
         ws_mod.cell(row=r_mod, column=3).alignment = Alignment(horizontal="right")
 
-        # Col D: Interes Leasing = ROUND(Saldo_Inicial * Tasa, 2)
-        ws_mod.cell(row=r_mod, column=4, value=f'=IF($A{r_mod}="", "", ROUND(B{r_mod}*C{r_mod}, 2))')
+        # Col D: Interes Leasing (sobre Rentas) = ROUND((Saldo_Inicial - VP_Residual_Inicial) * Tasa, 2)
+        ws_mod.cell(row=r_mod, column=4, value=f'=IF($A{r_mod}="", "", ROUND((B{r_mod}-H{r_mod})*C{r_mod}, 2))')
         ws_mod.cell(row=r_mod, column=4).number_format = FMT_CURRENCY
         ws_mod.cell(row=r_mod, column=4).alignment = Alignment(horizontal="right")
 
@@ -965,8 +965,8 @@ def generar_excel_auditoria(
         ws_mod.cell(row=r_mod, column=5).number_format = FMT_CURRENCY
         ws_mod.cell(row=r_mod, column=5).alignment = Alignment(horizontal="right")
 
-        # Col F: Capital Amortizado = Renta - Interes
-        ws_mod.cell(row=r_mod, column=6, value=f'=IF($A{r_mod}="", "", E{r_mod}-D{r_mod})')
+        # Col F: Capital Amortizado = Renta - Ingreso Financiero Total (K)
+        ws_mod.cell(row=r_mod, column=6, value=f'=IF($A{r_mod}="", "", E{r_mod}-K{r_mod})')
         ws_mod.cell(row=r_mod, column=6).number_format = FMT_CURRENCY
         ws_mod.cell(row=r_mod, column=6).alignment = Alignment(horizontal="right")
 
@@ -998,21 +998,21 @@ def generar_excel_auditoria(
         ws_mod.cell(row=r_mod, column=11).number_format = FMT_CURRENCY
         ws_mod.cell(row=r_mod, column=11).alignment = Alignment(horizontal="right")
 
-        # Col L: Saldo Intereses Remanentes por Devengar
+        # Col L: Saldo Intereses Remanentes por Devengar = SUM(Futuros Ingresos Financieros)
         if m_i < max_plazo_meses:
-            ws_mod.cell(row=r_mod, column=12, value=f'=IF($A{r_mod}="", "", SUM(D{r_mod + 1}:$D${fila_mod_inicio + max_plazo_meses - 1}))')
+            ws_mod.cell(row=r_mod, column=12, value=f'=IF($A{r_mod}="", "", SUM(K{r_mod + 1}:$K${fila_mod_inicio + max_plazo_meses - 1}))')
         else:
             ws_mod.cell(row=r_mod, column=12, value=f'=IF($A{r_mod}="", "", 0)')
         ws_mod.cell(row=r_mod, column=12).number_format = FMT_CURRENCY
         ws_mod.cell(row=r_mod, column=12).alignment = Alignment(horizontal="right")
 
-        # Col M: Saldo Cartera Total = Saldo Final Capital (G) + Saldo Intereses Remanentes (L)
-        ws_mod.cell(row=r_mod, column=13, value=f'=IF($A{r_mod}="", "", G{r_mod}+L{r_mod})')
+        # Col M: Saldo Cartera Rentas = (Plazo - Mes) * Renta
+        ws_mod.cell(row=r_mod, column=13, value=f'=IF($A{r_mod}="", "", ROUND(($G$6-$A{r_mod})*$E$7, 2))')
         ws_mod.cell(row=r_mod, column=13).number_format = FMT_CURRENCY
         ws_mod.cell(row=r_mod, column=13).alignment = Alignment(horizontal="right")
 
-        # Col N: Saldo Global Exigible = Saldo Cartera Total (M) + VP Residual Final (J)
-        ws_mod.cell(row=r_mod, column=14, value=f'=IF($A{r_mod}="", "", M{r_mod}+J{r_mod})')
+        # Col N: Saldo Global Exigible = Saldo Cartera Rentas (M) + Residual Pactado ($G$7)
+        ws_mod.cell(row=r_mod, column=14, value=f'=IF($A{r_mod}="", "", ROUND(M{r_mod}+$G$7, 2))')
         ws_mod.cell(row=r_mod, column=14).number_format = FMT_CURRENCY
         ws_mod.cell(row=r_mod, column=14).alignment = Alignment(horizontal="right")
 
@@ -1181,8 +1181,8 @@ def generar_excel_auditoria(
         },
         {
             "sheet_name": "Saldos_Exigible_Global",
-            "titulo": "Saldo Total Exigible Global de Cartera (Capital + Intereses + Residual)",
-            "subtitulo": "Fórmula inter-hoja viva sumando saldo total de cartera más saldo de valor residual activo",
+            "titulo": "Saldo Total Exigible Global de Cartera (Rentas + Residual)",
+            "subtitulo": "Fórmula inter-hoja viva sumando cartera de rentas más saldo residual activo (sin duplicación de residual)",
             "campo": "saldo_exigible_global_formula",
             "fixed_cols": [
                 ("ID_Contrato", 14, Alignment(horizontal="center")),
@@ -1386,10 +1386,11 @@ def generar_excel_auditoria(
                     cell_val_obj.number_format = FMT_CURRENCY
                     cell_val_obj.alignment = Alignment(horizontal="right")
 
-                # --- 7. Saldo Total Cartera = Saldo Capital + Saldo Intereses ---
+                # --- 7. Saldo Cartera Rentas = Saldo Capital - Saldo Residual + Saldo Intereses ---
                 elif campo_m == "saldo_total_cartera_formula":
                     col_letra_origen = get_column_letter(8 + 1 + idx_m)
-                    f_val = f"=ROUND(Saldos_Capital_Mensual!{col_letra_origen}{r_actual} + Saldos_Intereses_Mensual!{col_letra_origen}{r_actual}, 2)"
+                    col_res_letra = get_column_letter(8 + 1 + idx_m)
+                    f_val = f"=ROUND(Saldos_Capital_Mensual!{col_letra_origen}{r_actual} - Saldo_Residual_Activo!{col_res_letra}{r_actual} + Saldos_Intereses_Mensual!{col_letra_origen}{r_actual}, 2)"
                     cell_val_obj = ws_m.cell(row=r_actual, column=c_pos, value=f_val)
                     cell_val_obj.number_format = FMT_CURRENCY
                     cell_val_obj.alignment = Alignment(horizontal="right")
@@ -1739,10 +1740,11 @@ def generar_excel_auditoria(
             cs2.number_format = FMT_CURRENCY
             cs2.alignment = Alignment(horizontal="right")
 
-            # 3. Saldo Cartera Total = Saldo Cap + Saldo Int
+            # 3. Saldo Cartera Rentas = Saldo Cap - Saldo Residual + Saldo Int
             letra_scap = get_column_letter(c_col_cursor_s)
             letra_sint = get_column_letter(c_col_cursor_s + 1)
-            f_scart = f"=ROUND({letra_scap}{r_act_cs} + {letra_sint}{r_act_cs}, 2)"
+            letra_sres = get_column_letter(c_col_cursor_s + 3)
+            f_scart = f"=ROUND({letra_scap}{r_act_cs} - {letra_sres}{r_act_cs} + {letra_sint}{r_act_cs}, 2)"
             cs3 = ws_cons_s.cell(row=r_act_cs, column=c_col_cursor_s + 2, value=f_scart)
             cs3.number_format = FMT_CURRENCY
             cs3.alignment = Alignment(horizontal="right")
@@ -1753,9 +1755,8 @@ def generar_excel_auditoria(
             cs4.number_format = FMT_CURRENCY
             cs4.alignment = Alignment(horizontal="right")
 
-            # 5. Saldo Global Integral = Saldo Cartera + Saldo Residual
+            # 5. Saldo Global Integral = Saldo Cartera Rentas + Saldo Residual
             letra_scart = get_column_letter(c_col_cursor_s + 2)
-            letra_sres = get_column_letter(c_col_cursor_s + 3)
             f_sglob = f"=ROUND({letra_scart}{r_act_cs} + {letra_sres}{r_act_cs}, 2)"
             cs5 = ws_cons_s.cell(row=r_act_cs, column=c_col_cursor_s + 4, value=f_sglob)
             cs5.number_format = FMT_CURRENCY
@@ -2171,8 +2172,11 @@ def generar_excel_reporte_lineal(
             c_s_ini.number_format = FMT_CURRENCY
             c_s_ini.alignment = Alignment(horizontal="right")
 
-            # 2. Interes Leasing = ROUND(Saldo_Inicial * Tasa_Reg, 2)
-            f_int_l = f'=IF({m_i}<=$G{r_idx}, ROUND({letra_c1}{r_idx}*$Q{r_idx}, 2), "")'
+            # 2. Interes Leasing (sobre Rentas) = ROUND((Saldo_Inicial - Saldo_Residual_Ant) * Tasa_Reg, 2)
+            if m_i == 1:
+                f_int_l = f'=IF(1<=$G{r_idx}, ROUND(($K{r_idx}-$U{r_idx})*$Q{r_idx}, 2), "")'
+            else:
+                f_int_l = f'=IF({m_i}<=$G{r_idx}, ROUND(({letra_c1}{r_idx}-{letra_prev_saldo_res}{r_idx})*$Q{r_idx}, 2), "")'
             c_int_l = ws_lin.cell(row=r_idx, column=curr_c_idx + 1, value=f_int_l)
             c_int_l.number_format = FMT_CURRENCY
             c_int_l.alignment = Alignment(horizontal="right")
@@ -2183,8 +2187,8 @@ def generar_excel_reporte_lineal(
             c_rnt.number_format = FMT_CURRENCY
             c_rnt.alignment = Alignment(horizontal="right")
 
-            # 4. Capital = Renta - Interes_Leasing
-            f_cap = f'=IF({m_i}<=$G{r_idx}, {letra_c3}{r_idx}-{letra_c2}{r_idx}, "")'
+            # 4. Capital = Renta - Ingreso_Financiero (c8)
+            f_cap = f'=IF({m_i}<=$G{r_idx}, {letra_c3}{r_idx}-{letra_c8}{r_idx}, "")'
             c_cap = ws_lin.cell(row=r_idx, column=curr_c_idx + 3, value=f_cap)
             c_cap.number_format = FMT_CURRENCY
             c_cap.alignment = Alignment(horizontal="right")
@@ -2351,7 +2355,7 @@ def generar_excel_reporte_lineal(
         cell_v.fill = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
         cell_v.border = BORDER_CELL
 
-    ws_mod.cell(row=9, column=1, value="FÓRMULAS VIVAS DE AMORTIZACIÓN Y SALDOS: Interés = Saldo_Inicial * Tasa | Capital = Renta - Interés | Saldo Capital = Saldo_Inicial - Capital | Interés Residual = VP_Residual * Tasa | VP_Residual_Final = VP_Inicial + Interés_Residual | Saldo Intereses = SUM(Futuros) | Saldo Cartera = Saldo_Capital + Saldo_Intereses | Saldo Global = Saldo_Cartera + VP_Residual. La tabla se corta automáticamente al plazo contractual ($G$6 meses).").font = FONT_SUBTITLE
+    ws_mod.cell(row=9, column=1, value="FÓRMULAS VIVAS DE AMORTIZACIÓN Y SALDOS: Interés Leasing = (Saldo_Inicial - VP_Residual_Inicial) * Tasa | Interés Residual = VP_Residual_Inicial * Tasa | Ingreso Financiero Total = Interés Leasing + Interés Residual | Capital = Renta - Ingreso Financiero Total | Saldo Capital = Saldo_Inicial - Capital | Saldo Intereses = SUM(Futuros) | Saldo Cartera Rentas = (Plazo - Mes) * Renta | Saldo Global Exigible = Saldo Cartera Rentas + Residual Pactado. La tabla se corta automáticamente al plazo contractual ($G$6 meses).").font = FONT_SUBTITLE
     ws_mod.merge_cells("A9:N9")
 
     cols_modelo = [
@@ -2367,7 +2371,7 @@ def generar_excel_reporte_lineal(
         ("VP_Residual_Final", 18, Alignment(horizontal="right")),            # J (10)
         ("Ingreso_Financiero_Total", 20, Alignment(horizontal="right")),     # K (11)
         ("Saldo_Intereses_Remanentes", 22, Alignment(horizontal="right")),   # L (12)
-        ("Saldo_Cartera_Total", 18, Alignment(horizontal="right")),          # M (13)
+        ("Saldo_Cartera_Rentas", 18, Alignment(horizontal="right")),         # M (13)
         ("Saldo_Global_Exigible", 18, Alignment(horizontal="right")),        # N (14)
     ]
 
@@ -2400,7 +2404,7 @@ def generar_excel_reporte_lineal(
         ws_mod.cell(row=r_mod, column=3).number_format = FMT_PCT_RATE
         ws_mod.cell(row=r_mod, column=3).alignment = Alignment(horizontal="right")
 
-        ws_mod.cell(row=r_mod, column=4, value=f'=IF($A{r_mod}="", "", ROUND(B{r_mod}*C{r_mod}, 2))')
+        ws_mod.cell(row=r_mod, column=4, value=f'=IF($A{r_mod}="", "", ROUND((B{r_mod}-H{r_mod})*C{r_mod}, 2))')
         ws_mod.cell(row=r_mod, column=4).number_format = FMT_CURRENCY
         ws_mod.cell(row=r_mod, column=4).alignment = Alignment(horizontal="right")
 
@@ -2408,7 +2412,7 @@ def generar_excel_reporte_lineal(
         ws_mod.cell(row=r_mod, column=5).number_format = FMT_CURRENCY
         ws_mod.cell(row=r_mod, column=5).alignment = Alignment(horizontal="right")
 
-        ws_mod.cell(row=r_mod, column=6, value=f'=IF($A{r_mod}="", "", E{r_mod}-D{r_mod})')
+        ws_mod.cell(row=r_mod, column=6, value=f'=IF($A{r_mod}="", "", E{r_mod}-K{r_mod})')
         ws_mod.cell(row=r_mod, column=6).number_format = FMT_CURRENCY
         ws_mod.cell(row=r_mod, column=6).alignment = Alignment(horizontal="right")
 
@@ -2436,17 +2440,17 @@ def generar_excel_reporte_lineal(
         ws_mod.cell(row=r_mod, column=11).alignment = Alignment(horizontal="right")
 
         if m_i < max_plazo_vertical:
-            ws_mod.cell(row=r_mod, column=12, value=f'=IF($A{r_mod}="", "", SUM(D{r_mod + 1}:$D${fila_mod_inicio + max_plazo_vertical - 1}))')
+            ws_mod.cell(row=r_mod, column=12, value=f'=IF($A{r_mod}="", "", SUM(K{r_mod + 1}:$K${fila_mod_inicio + max_plazo_vertical - 1}))')
         else:
             ws_mod.cell(row=r_mod, column=12, value=f'=IF($A{r_mod}="", "", 0)')
         ws_mod.cell(row=r_mod, column=12).number_format = FMT_CURRENCY
         ws_mod.cell(row=r_mod, column=12).alignment = Alignment(horizontal="right")
 
-        ws_mod.cell(row=r_mod, column=13, value=f'=IF($A{r_mod}="", "", G{r_mod}+L{r_mod})')
+        ws_mod.cell(row=r_mod, column=13, value=f'=IF($A{r_mod}="", "", ROUND(($G$6-$A{r_mod})*$E$7, 2))')
         ws_mod.cell(row=r_mod, column=13).number_format = FMT_CURRENCY
         ws_mod.cell(row=r_mod, column=13).alignment = Alignment(horizontal="right")
 
-        ws_mod.cell(row=r_mod, column=14, value=f'=IF($A{r_mod}="", "", M{r_mod}+J{r_mod})')
+        ws_mod.cell(row=r_mod, column=14, value=f'=IF($A{r_mod}="", "", ROUND(M{r_mod}+$G$7, 2))')
         ws_mod.cell(row=r_mod, column=14).number_format = FMT_CURRENCY
         ws_mod.cell(row=r_mod, column=14).alignment = Alignment(horizontal="right")
 

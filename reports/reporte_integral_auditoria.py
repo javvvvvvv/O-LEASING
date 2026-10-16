@@ -413,8 +413,9 @@ def render_reporte_integral_auditoria(get_db_path_fn=None, tabla_mensual_fn=None
                     il_vals = [float(x) for x in dfa["Interes"].tolist()]
                     # Saldo de intereses remanentes por devengar al cierre del mes
                     sal_int = round(sum(il_vals[mes_plazo + 1:]), 2)
-                    sal_cartera = round(sal_cap + sal_int, 2)
                     sal_res = float(dfr["Saldo_Fin"].iloc[mes_plazo]) if mes_plazo < len(dfr) else 0.0
+                    sal_cap_rentas = max(0.0, round(sal_cap - sal_res, 2))
+                    sal_cartera = round(sal_cap_rentas + sal_int, 2)
                     sal_global = round(sal_cartera + sal_res, 2)
 
                     saldos_mes_list.append({
@@ -425,7 +426,7 @@ def render_reporte_integral_auditoria(get_db_path_fn=None, tabla_mensual_fn=None
                         "Mes en Curso": f"Mes {mes_plazo + 1} de {pl}",
                         "Saldo Capital": sal_cap,
                         "Saldo Intereses": sal_int,
-                        "Saldo Cartera (Cap + Int)": sal_cartera,
+                        "Saldo Cartera (Rentas)": sal_cartera,
                         "Saldo Residual": sal_res,
                         "Saldo Global Exigible": sal_global
                     })
@@ -435,14 +436,14 @@ def render_reporte_integral_auditoria(get_db_path_fn=None, tabla_mensual_fn=None
 
             tot_s_cap = df_s_mes["Saldo Capital"].sum()
             tot_s_int = df_s_mes["Saldo Intereses"].sum()
-            tot_s_cart = df_s_mes["Saldo Cartera (Cap + Int)"].sum()
+            tot_s_cart = df_s_mes["Saldo Cartera (Rentas)"].sum()
             tot_s_res = df_s_mes["Saldo Residual"].sum()
             tot_s_glob = df_s_mes["Saldo Global Exigible"].sum()
 
             skpi_col1, skpi_col2, skpi_col3, skpi_col4, skpi_col5 = st.columns(5)
             skpi_col1.metric("Saldo Capital Insoluto", f"${tot_s_cap:,.2f}")
             skpi_col2.metric("Saldo Intereses Remanentes", f"${tot_s_int:,.2f}")
-            skpi_col3.metric("Saldo Cartera (Cap + Int)", f"${tot_s_cart:,.2f}")
+            skpi_col3.metric("Saldo Cartera (Rentas)", f"${tot_s_cart:,.2f}")
             skpi_col4.metric("Saldo Residual Activo", f"${tot_s_res:,.2f}")
             skpi_col5.metric("Saldo Global Exigible", f"${tot_s_glob:,.2f}")
 
@@ -540,16 +541,16 @@ def render_reporte_integral_auditoria(get_db_path_fn=None, tabla_mensual_fn=None
             vpr_ini = vpr
 
             for m_i in range(pl):
-                int_l = float(dfa["Interes"].iloc[m_i])
+                int_r = float(dfr["Interes"].iloc[m_i])
+                vpr_fin = float(dfr["Saldo_Fin"].iloc[m_i])
+                int_l = round(float(dfa["Interes"].iloc[m_i]) - int_r, 2)
+                ing_tot = round(int_l + int_r, 2)
                 cap_l = float(dfa["Capital"].iloc[m_i])
                 s_fin = float(dfa["Saldo"].iloc[m_i])
 
-                int_r = float(dfr["Interes"].iloc[m_i])
-                vpr_fin = float(dfr["Saldo_Fin"].iloc[m_i])
-                ing_tot = int_l + int_r
-
                 sal_int_rem = round(sum(il_all_c[m_i + 1:]), 2)
-                sal_cart_tot = round(s_fin + sal_int_rem, 2)
+                sal_cap_rentas = max(0.0, round(s_fin - vpr_fin, 2))
+                sal_cart_tot = round(sal_cap_rentas + sal_int_rem, 2)
                 sal_glob_tot = round(sal_cart_tot + vpr_fin, 2)
 
                 filas_corrida.append({
@@ -561,7 +562,7 @@ def render_reporte_integral_auditoria(get_db_path_fn=None, tabla_mensual_fn=None
                     "Capital Amortizado": cap_l,
                     "Saldo Final Capital": s_fin,
                     "Saldo Intereses": sal_int_rem,
-                    "Saldo Cartera (Cap + Int)": sal_cart_tot,
+                    "Saldo Cartera (Rentas)": sal_cart_tot,
                     "VP Residual Final": vpr_fin,
                     "Saldo Global Exigible": sal_glob_tot,
                     "Interés Residual": int_r,

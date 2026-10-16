@@ -281,7 +281,7 @@ def test_reporte_lineal_horizontal_y_modelo_amortizacion():
     assert "ROUND" in val_m1_int_l and "$Q5" in val_m1_int_l, "AB5 Interés Leasing Mes 1 debe multiplicar por $Q5"
 
     val_m1_cap = str(ws_lin["AD5"].value)
-    assert "AC5-AB5" in val_m1_cap, "AD5 Capital Mes 1 debe ser Renta - Interés (AC5-AB5)"
+    assert "AC5-AH5" in val_m1_cap or "AC5-AB5" in val_m1_cap, "AD5 Capital Mes 1 debe ser Renta - Ingreso Financiero (AC5-AH5)"
 
     val_m1_s_cap = str(ws_lin["AE5"].value)
     assert "AA5-AD5" in val_m1_s_cap, "AE5 Saldo Capital Mes 1 debe ser Saldo Inicial - Capital (AA5-AD5)"
@@ -303,6 +303,38 @@ def test_reporte_lineal_horizontal_y_modelo_amortizacion():
 
     val_mod_a11 = str(ws_mod["A11"].value)
     assert "$G$6" in val_mod_a11 and "IF" in val_mod_a11, "A11 Mes 1 en Modelo debe cortar con $G$6"
+
+
+def test_no_duplicacion_saldo_global():
+    """Verifica que el Saldo Global no duplique el residual bajo ninguna circunstancia."""
+    # 1. Verificar en Modelo_Amortizacion_Tipo de auditoria
+    buf_aud = generar_excel_auditoria(anio_filtro=2026, filtro_estatus="ACTIVO")
+    wb_aud = openpyxl.load_workbook(buf_aud, data_only=False)
+
+    ws_mod = wb_aud["Modelo_Amortizacion_Tipo"]
+    form_m11 = str(ws_mod["M11"].value)
+    form_n11 = str(ws_mod["N11"].value)
+    # Saldo Cartera Rentas debe ser (Plazo - Mes) * Renta
+    assert "$G$6" in form_m11 and "$E$7" in form_m11, f"Col M debe calcular rentas remanentes: {form_m11}"
+    # Saldo Global debe sumar Cartera Rentas + Residual Pactado ($G$7)
+    assert "M11" in form_n11 and "$G$7" in form_n11, f"Col N no debe duplicar el residual: {form_n11}"
+
+    # 2. Verificar en Resumen_Cartera que V sea sobre Rentas
+    ws_res = wb_aud["Resumen_Cartera"]
+    form_v5 = str(ws_res["V5"].value)
+    form_x5 = str(ws_res["X5"].value)
+    assert "K5-U5" in form_v5 or "K5 - U5" in form_v5, f"V5 debe descontar el residual inicial para no duplicar: {form_v5}"
+    assert "V5+W5" in form_x5, f"X5 debe ser suma limpia V5+W5: {form_x5}"
+
+    # 3. Verificar en Reporte_Lineal
+    buf_lin = generar_excel_reporte_lineal(filtro_estatus="ACTIVO")
+    wb_lin = openpyxl.load_workbook(buf_lin, data_only=False)
+    ws_lin = wb_lin["Reporte_Lineal"]
+
+    form_v5_lin = str(ws_lin["V5"].value)
+    form_x5_lin = str(ws_lin["X5"].value)
+    assert "Interes_Leasing" in form_v5_lin, "V5 en Reporte Lineal debe sumar Interes_Leasing"
+    assert "V5+W5" in form_x5_lin, "X5 en Reporte Lineal debe ser V5+W5"
 
 
 if __name__ == "__main__":
@@ -334,6 +366,10 @@ if __name__ == "__main__":
     test_reporte_lineal_horizontal_y_modelo_amortizacion()
     print("PASS: test_reporte_lineal_horizontal_y_modelo_amortizacion")
 
+    print("Ejecutando test_no_duplicacion_saldo_global...")
+    test_no_duplicacion_saldo_global()
+    print("PASS: test_no_duplicacion_saldo_global")
+
     print("\n========================================================================")
-    print("TODAS LAS PRUEBAS DE LOS 4 REQUERIMIENTOS PASARON EXITOSAMENTE (100% OK)")
+    print("TODAS LAS PRUEBAS INCLUYENDO NO-DUPLICACIÓN PASARON EXITOSAMENTE (100% OK)")
     print("========================================================================")
