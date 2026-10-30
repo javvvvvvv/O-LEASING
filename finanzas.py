@@ -69,6 +69,42 @@ def calc_amort(inv, renta, residual, plazo, tasa):
     return df, icp, ilp, renta * min(12, plazo), renta * max(0, plazo - 12)
 
 
+def calc_rent_amort(inv_rentas, renta, plazo, tasa):
+    """Tabla de amortizacion pura de rentas de un contrato de arrendamiento.
+
+    Financia exclusivamente el capital cubierto por las mensualidades ordinarias
+    (Inversion Neta - VP del Residual). Cada mes la renta pactada cubre el interes
+    sobre el saldo de rentas y amortiza capital de rentas. Al mes final del plazo,
+    el saldo final llega exactamente a $0.00 sin requerir restar el residual al final.
+
+    Devuelve (tabla_df, interes_cp, interes_lp, rentas_cp, rentas_lp).
+    """
+    saldo = round(float(inv_rentas), 2)
+    rows = []
+    for m in range(1, plazo + 1):
+        s_ini = saldo
+        if m == plazo:
+            k = s_ini
+            i = round(renta - k, 2)
+            saldo = 0.0
+        else:
+            i = round(saldo * tasa, 2)
+            k = round(renta - i, 2)
+            saldo = round(saldo - k, 2)
+        rows.append({
+            'Mes': m,
+            'Saldo_Ini': s_ini,
+            'Renta': renta,
+            'Interes': i,
+            'Capital': k,
+            'Saldo': max(saldo, 0.0)
+        })
+    df = pd.DataFrame(rows)
+    icp = df.head(12)['Interes'].sum()
+    ilp = df.iloc[12:]['Interes'].sum()
+    return df, icp, ilp, renta * min(12, plazo), renta * max(0, plazo - 12)
+
+
 def calc_res_amort(vp, tasa, plazo):
     """Acumulación del valor presente del residual hacia su valor futuro
     pactado, mes a mes, a la misma tasa implícita del contrato (útil para

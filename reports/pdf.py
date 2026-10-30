@@ -193,22 +193,44 @@ def pdf_estado_cuenta(row, dfa, dfr=None, avance=None, mes_corte=None, fecha_hoy
         ('INNERGRID',(0,0),(-1,-1),0.4,rl_colors.HexColor("#DCE0E5")),
         ('TOPPADDING',(0,0),(-1,-1),4), ('BOTTOMPADDING',(0,0),(-1,-1),4),
     ]))
-    elems += [t_datos, Spacer(1, 14)]
+    elems += [t_datos, Spacer(1, 10)]
+
+    t_guia = Table([
+        [Paragraph(
+            "<b>Estructura Financiera del Estado de Cuenta:</b><br/>"
+            "• <b>Amortización de Rentas:</b> Refleja el capital cubierto por las mensualidades ordinarias. "
+            "Cada pago cubre su interés mensual y amortiza capital. Al concluir el plazo pactado, "
+            "el saldo final de rentas llega a <b>$0.00</b> (deuda de rentas 100% saldada).<br/>"
+            "• <b>Valor Residual (Opción de Compra):</b> Se presenta por separado al final como el monto pactado "
+            "para adquirir la propiedad del activo al término del arrendamiento.",
+            enota
+        )]
+    ], colWidths=[515])
+    t_guia.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,-1), rl_colors.HexColor("#F8FAFC")),
+        ('BOX', (0,0), (-1,-1), 0.6, rl_colors.HexColor("#CBD5E1")),
+        ('LEFTPADDING', (0,0), (-1,-1), 8),
+        ('RIGHTPADDING', (0,0), (-1,-1), 8),
+        ('TOPPADDING', (0,0), (-1,-1), 6),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+    ]))
+    elems += [t_guia, Spacer(1, 12)]
 
     if dfa is not None and not dfa.empty:
-        elems.append(Paragraph("<b>Amortización</b>", esub))
+        elems.append(Paragraph("<b>1. Amortización de Rentas (Llega a $0.00 al Plazo)</b>", esub))
         img_buf = _grafica_amort_para_pdf(dfa, mes_corte=mes_corte)
         elems.append(RLImage(img_buf, width=515, height=186))
         elems.append(Spacer(1, 8))
 
-        filas_tabla = [["Fecha","Mes","Saldo Inicial","Interés","Capital","Saldo Final"]]
+        filas_tabla = [["Fecha","Mes","Saldo Inicial","Renta","Interés","Capital","Saldo Final"]]
         for _, r in dfa.iterrows():
             filas_tabla.append([
                 str(r['Fecha']), str(int(r['Mes'])),
                 f"${r['Saldo_Ini']:,.2f}" if 'Saldo_Ini' in r else '',
+                f"${r['Renta']:,.2f}" if 'Renta' in r else '',
                 f"${r['Interes']:,.2f}", f"${r['Capital']:,.2f}", f"${r['Saldo_Fin']:,.2f}",
             ])
-        t_amort = Table(filas_tabla, colWidths=[62,32,88,80,80,88], repeatRows=1)
+        t_amort = Table(filas_tabla, colWidths=[55, 26, 88, 86, 80, 80, 88], repeatRows=1)
         t_amort.setStyle(TableStyle([
             ('BACKGROUND',(0,0),(-1,0),rl_colors.HexColor("#1E5C4F")),('TEXTCOLOR',(0,0),(-1,0),rl_colors.whitesmoke),
             ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'), ('FONTSIZE',(0,0),(-1,-1),7),
@@ -220,7 +242,7 @@ def pdf_estado_cuenta(row, dfa, dfr=None, avance=None, mes_corte=None, fecha_hoy
 
     if dfr is not None and not dfr.empty:
         elems.append(Spacer(1, 14))
-        elems.append(Paragraph("<b>Acumulación del Residual</b>", esub))
+        elems.append(Paragraph("<b>2. Acumulación del Valor Residual (Opción Final Pactada)</b>", esub))
         filas_res = [["Fecha","Mes","VP Residual","Saldo Inicial","Interés","Saldo Final","Residual Pactado"]]
         for _, r in dfr.iterrows():
             filas_res.append([

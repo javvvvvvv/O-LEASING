@@ -973,6 +973,7 @@ def norm_pct(v): return v*100 if v<=1 else v
 from finanzas import (
     calc_amort as _calc_amort_pura,
     calc_res_amort as _calc_res_amort_pura,
+    calc_rent_amort as _calc_rent_amort_pura,
     vp_res, calc_tasa, rentabilidad, tir,
 )
 
@@ -983,6 +984,10 @@ def calc_amort(inv,renta,residual,plazo,tasa):
 @st.cache_data(max_entries=4000, ttl=7200)
 def calc_res_amort(vp,tasa,plazo):
     return _calc_res_amort_pura(vp,tasa,plazo)
+
+@st.cache_data(max_entries=4000, ttl=7200)
+def calc_rent_amort(inv_rentas,renta,plazo,tasa):
+    return _calc_rent_amort_pura(inv_rentas,renta,plazo,tasa)
 
 # ---------------------------------------------------------------------
 # Reglas de póliza personalizadas — para empresas cuya forma de
@@ -8054,16 +8059,7 @@ try:
                     with st.expander("Próximos 3 pagos programados (para planear cobranza)"):
                         st.dataframe(pd.DataFrame(_prox_pagos), width='stretch', height=140, key=f"df_prox3_{sel_ec}")
 
-            st.markdown("---")
-
-            tab_amort, tab_res, tab_evts, tab_anot, tab_cont = st.tabs([
-                "Amortización Leasing",
-                "Acumulación Residual",
-                "Eventos Especiales",
-                "Anotaciones",
-                "Contabilidad"
-            ])
-
+            # Parametros financieros base del contrato
             inv = float(row['Valor_Sin_IVA']) - float(row['Anticipo_Monto'])
             pl  = int(row['Plazo'])
             t   = round(float(row['Tasa_Calculada']), 8)
@@ -8071,9 +8067,26 @@ try:
             res = round(float(row['Residual_Monto']), 4)
             fa  = pd.to_datetime(row['Fecha_Alta'])
 
-            # Si el contrato se dio de baja ANTES de terminar su plazo original,
-            # las tablas de abajo deben cortarse en el mes real de la baja — de lo
-            # contrario mostrarían meses de renta que nunca se llegaron a cobrar.
+            # Separacion del capital: Capital financiado por rentas vs. Valor presente del residual
+            vpr = vp_res(res, t, pl) if res > 0 and pl > 0 and t > 0 else 0.0
+            inv_rentas = max(round(inv - vpr, 4), 0.0)
+
+            # Tablas de calculo
+            dfa = pd.DataFrame()
+            if inv_rentas > 0 and pl > 0:
+                dfa, icp_r, ilp_r, _, _ = calc_rent_amort(inv_rentas, r_m, pl, t)
+                dfa = dfa.copy()
+                dfa['Fecha'] = dfa['Mes'].apply(lambda m: (fa + relativedelta(months=m)).strftime('%Y-%m'))
+                dfa.rename(columns={'Saldo':'Saldo_Fin'}, inplace=True)
+
+            dfr = pd.DataFrame()
+            if res > 0 and pl > 0:
+                dfr = calc_res_amort(round(vpr, 4), t, pl).copy()
+                dfr['Fecha'] = dfr['Mes'].apply(lambda m: (fa + relativedelta(months=m)).strftime('%Y-%m'))
+                dfr['Residual_Pactado'] = res
+                dfr['VP_Residual']      = round(vpr, 4)
+
+            # Evaluacion de corte por baja anticipada
             fecha_baja_ec = None
             _fb_raw = row.get('Fecha_Baja')
             if str(row.get('Estatus','')).upper()=='BAJA' and pd.notnull(_fb_raw) and str(_fb_raw).strip() not in ('','None','NaT','0'):
@@ -8083,20 +8096,68 @@ try:
             if fecha_baja_ec is not None:
                 mes_corte_ec = max((fecha_baja_ec.year-fa.year)*12 + (fecha_baja_ec.month-fa.month), 0)
                 if mes_corte_ec >= pl:
-                    mes_corte_ec = None  # terminó justo en su plazo natural: no hay nada que truncar
+                    mes_corte_ec = None
+
+            # Metricas de Cartera de Rentas vs Cobranza
+            cartera_total_rentas = pl * r_m
+            meses_transc_c = min(meses_transcurridos, pl)
+            rentas_cobradas = meses_transc_c * r_m
+            rentas_remanentes = max((pl - meses_transc_c) * r_m, 0.0)
+
+            sal_vigente_rentas = 0.0
+            cap_amort_rentas = 0.0
+            if not dfa.empty:
+                _m_act_r = dfa[dfa['Mes'] <= meses_transc_c]
+                cap_amort_rentas = _m_act_r['Capital'].sum() if not _m_act_r.empty else 0.0
+                sal_vigente_rentas = _m_act_r['Saldo_Fin'].iloc[-1] if not _m_act_r.empty else inv_rentas
+
+            # -----------------------------------------------------------------
+            # Explicacion humana y concisa de la estructura financiera
+            # -----------------------------------------------------------------
+            st.markdown(f"""
+            <div style="background:var(--bg-1, #FFFFFF);border:1px solid var(--border, #E2E8F0);border-left:5px solid #1E5C4F;border-radius:8px;padding:16px 20px;margin:14px 0 16px 0;box-shadow:0 1px 3px rgba(0,0,0,0.03);">
+              <div style="font-weight:700;color:#1E5C4F;font-size:1.02rem;margin-bottom:6px;">
+                Interpretación Financiera y Contable del Estado de Cuenta
+              </div>
+              <div style="color:var(--text-secondary, #475569);font-size:0.87rem;line-height:1.55;">
+                Para que las cifras tengan sentido contable inmediato y no requieras hacer deducciones mentales, este contrato se presenta dividido en dos componentes independientes:
+                <ul style="margin:8px 0 4px 18px;padding:0;">
+                  <li style="margin-bottom:6px;">
+                    <b>1. Amortización de Rentas (Mensualidades ordinarias):</b>
+                    Muestra el capital financiado por tus mensualidades (<b>${inv_rentas:,.2f}</b>). Cada mes tu renta (<b>${r_m:,.2f}</b>) cubre su interés y amortiza capital. Al concluir el plazo (mes {pl}), <b>tu saldo final de rentas llega exactamente a $0.00</b> (deuda de rentas 100% liquidada).
+                  </li>
+                  <li>
+                    <b>2. Valor Residual (Opción de compra al final):</b>
+                    Vive en su propio apartado ("en otro lado"). Muestra el crecimiento de su valor presente inicial (<b>${vpr:,.2f}</b>) hasta alcanzar exactamente el valor pactado (<b>${res:,.2f}</b>), el cual solo se vuelve exigible si decides adquirir el bien al término del plazo.
+                  </li>
+                </ul>
+              </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Tarjetas de Resumen de Cartera y Conciliacion
+            c_res1, c_res2, c_res3, c_res4 = st.columns(4)
+            c_res1.metric("Cartera Rentas (Total)", f"${cartera_total_rentas:,.2f}", help=f"{pl} mensualidades de ${r_m:,.2f}")
+            c_res2.metric("Rentas Cobradas / Pendientes", f"${rentas_cobradas:,.2f}", delta=f"${rentas_remanentes:,.2f} pendientes", delta_color="off")
+            c_res3.metric("Saldo Rentas (Capital)", f"${sal_vigente_rentas:,.2f}", help="Llega exactamente a $0.00 al mes del plazo")
+            c_res4.metric("Residual Pactado (Aparte)", f"${res:,.2f}", help=f"Opcion de compra final pactada (VP inicial: ${vpr:,.2f})")
+
+            st.markdown("---")
+
+            tab_amort, tab_res, tab_evts, tab_anot, tab_cont = st.tabs([
+                "Amortización de Rentas (Llega a $0.00)",
+                "Acumulación del Residual (Aparte)",
+                "Eventos Especiales",
+                "Anotaciones",
+                "Contabilidad y Pólizas"
+            ])
 
             with tab_amort:
                 with st.container(key=f"tabbox_amort_{sel_ec}"):
-                    if inv > 0:
-                        dfa, _, _, _, _ = calc_amort(round(inv,4), r_m, res, pl, t)
-                        dfa = dfa.copy()
-                        dfa['Fecha']     = dfa['Mes'].apply(lambda m: (fa + relativedelta(months=m)).strftime('%Y-%m'))
-                        saldos_ini = [round(inv,4)] + list(dfa['Saldo'].iloc[:-1].round(4))
-                        dfa.insert(dfa.columns.get_loc('Interes'), 'Saldo_Ini', saldos_ini)
-                        dfa.rename(columns={'Saldo':'Saldo_Fin'}, inplace=True)
-
+                    if inv_rentas > 0 and not dfa.empty:
+                        dfa_view = dfa.copy()
                         if mes_corte_ec is not None:
-                            dfa = dfa[dfa['Mes'] <= mes_corte_ec].copy()
+                            dfa_view = dfa_view[dfa_view['Mes'] <= mes_corte_ec].copy()
                             st.warning(
                                 f"Este contrato se dio de **baja anticipada** el **{fecha_baja_ec.strftime('%Y-%m-%d')}** "
                                 f"(mes {mes_corte_ec} de {pl} originalmente pactados). La tabla y la gráfica solo muestran "
@@ -8104,36 +8165,35 @@ try:
                             )
 
                         mes_hoy = date.today().strftime('%Y-%m')
-                        mes_act = dfa[dfa['Fecha'] <= mes_hoy]
-                        mes_prox = dfa[dfa['Fecha'] > mes_hoy]
-                        capital_amort = mes_act['Capital'].sum() if not mes_act.empty else 0
-                        capital_pend  = mes_prox['Capital'].sum() if not mes_prox.empty else 0
-                        saldo_actual  = mes_act['Saldo_Fin'].iloc[-1] if not mes_act.empty else inv
+                        mes_act = dfa_view[dfa_view['Fecha'] <= mes_hoy]
+                        mes_prox = dfa_view[dfa_view['Fecha'] > mes_hoy]
+                        capital_amort = mes_act['Capital'].sum() if not mes_act.empty else 0.0
+                        capital_pend  = max(round(inv_rentas - capital_amort, 2), 0.0)
+                        saldo_actual  = mes_act['Saldo_Fin'].iloc[-1] if not mes_act.empty else inv_rentas
 
                         pa1,pa2,pa3 = st.columns(3)
-                        pa1.metric("Capital amortizado", f"${capital_amort:,.2f}")
-                        pa2.metric("Saldo vigente",       f"${saldo_actual:,.4f}")
-                        pa3.metric("Capital pendiente",   f"${capital_pend:,.2f}")
+                        pa1.metric("Capital de rentas amortizado", f"${capital_amort:,.2f}")
+                        pa2.metric("Saldo vigente de rentas", f"${saldo_actual:,.2f}", help="Disminuye con cada mensualidad y llega exactamente a $0.00 al mes del plazo.")
+                        pa3.metric("Capital de rentas pendiente", f"${capital_pend:,.2f}")
 
                         fig_a = go.Figure()
-                        fig_a.add_trace(go.Bar(x=dfa['Fecha'], y=dfa['Capital'], name='Capital', marker_color=C_PASTEL['primary']))
-                        fig_a.add_trace(go.Bar(x=dfa['Fecha'], y=dfa['Interes'], name='Interés', marker_color=C_PASTEL['accent']))
-                        fig_a.add_trace(go.Scatter(x=dfa['Fecha'], y=dfa['Saldo_Fin'], name='Saldo', mode='lines+markers',
+                        fig_a.add_trace(go.Bar(x=dfa_view['Fecha'], y=dfa_view['Capital'], name='Capital Rentas', marker_color=C_PASTEL['primary']))
+                        fig_a.add_trace(go.Bar(x=dfa_view['Fecha'], y=dfa_view['Interes'], name='Interés Rentas', marker_color=C_PASTEL['accent']))
+                        fig_a.add_trace(go.Scatter(x=dfa_view['Fecha'], y=dfa_view['Saldo_Fin'], name='Saldo Rentas (Termina en $0.00)', mode='lines+markers',
                             line=dict(color=C_PASTEL['success'], width=2.5), yaxis='y2'))
                         
-                        if mes_hoy in list(dfa['Fecha'].values):
-                            idx_hoy = list(dfa['Fecha'].values).index(mes_hoy)
+                        if mes_hoy in list(dfa_view['Fecha'].values):
+                            idx_hoy = list(dfa_view['Fecha'].values).index(mes_hoy)
                             fig_a.add_shape(type='line', x0=idx_hoy-0.5, x1=idx_hoy-0.5, y0=0, y1=1, xref='x', yref='paper',
                                 line=dict(color=C['gold'], width=2, dash='dash'))
                             fig_a.add_annotation(x=idx_hoy, y=1.04, xref='x', yref='paper', text='Hoy', showarrow=False, font=dict(color=C['gold'], size=11))
                         
-                        if mes_corte_ec is not None and not dfa.empty:
-                            idx_baja = len(dfa) - 1
+                        if mes_corte_ec is not None and not dfa_view.empty:
+                            idx_baja = len(dfa_view) - 1
                             fig_a.add_shape(type='line', x0=idx_baja+0.5, x1=idx_baja+0.5, y0=0, y1=1, xref='x', yref='paper',
                                 line=dict(color=C['accent'], width=2, dash='dash'))
                             fig_a.add_annotation(x=idx_baja, y=1.04, xref='x', yref='paper', text='Baja', showarrow=False, font=dict(color=C['accent'], size=11))
                         
-                        # Fix X-axis to display months cleanly without omitting ticks if possible, and adjust bar width
                         fig_a.update_layout(
                             barmode='stack', 
                             yaxis2=dict(overlaying='y', side='right', showgrid=False),
@@ -8141,40 +8201,35 @@ try:
                             xaxis=dict(
                                 type='category', 
                                 tickangle=-45,
-                                dtick=1 if len(dfa) <= 36 else 2 # Adapt to plazo
+                                dtick=1 if len(dfa_view) <= 36 else 2
                             ),
                             margin=dict(l=10, r=10, t=30, b=10)
                         )
-                        fig_a = sfig(fig_a, h=350) # Make slightly taller to fit labels
+                        fig_a = sfig(fig_a, h=350)
                         st.plotly_chart(fig_a, width='stretch', key=f"pc_007_{sel_ec}", use_container_width=True)
 
-                        cols_a = ['Fecha','Mes','Saldo_Ini','Interes','Capital','Saldo_Fin']
-                        fmt_a  = {c:'${:,.4f}' for c in ['Saldo_Ini','Interes','Capital','Saldo_Fin']}
-                        _styler_a = dfa[cols_a].style.format(fmt_a)
+                        cols_a = ['Fecha','Mes','Saldo_Ini','Renta','Interes','Capital','Saldo_Fin']
+                        fmt_a  = {c:'${:,.2f}' for c in ['Saldo_Ini','Renta','Interes','Capital','Saldo_Fin']}
+                        _styler_a = dfa_view[cols_a].style.format(fmt_a)
                         if mes_corte_ec is not None:
                             _styler_a = _styler_a.set_properties(
-                                subset=pd.IndexSlice[[dfa.index[-1]], :],
+                                subset=pd.IndexSlice[[dfa_view.index[-1]], :],
                                 **{'background-color': '#FAE3E1', 'color': '#8A2019', 'font-weight': '700'}
                             )
                         st.dataframe(_styler_a, width='stretch', height=300, key=f"df_008_{sel_ec}")
 
-                        buf_ea = excel_con_formato({'Amort_Leasing': dfa[cols_a]},
-                            currency_cols=['Saldo_Ini','Interes','Capital','Saldo_Fin'])
-                        st.download_button("Descargar Excel", buf_ea, f"amort_{sel_ec}.xlsx", key=f"dl_amort_{sel_ec}")
+                        buf_ea = excel_con_formato({'Amort_Rentas': dfa_view[cols_a]},
+                            currency_cols=['Saldo_Ini','Renta','Interes','Capital','Saldo_Fin'])
+                        st.download_button("Descargar Tabla de Rentas (Excel)", buf_ea, f"amort_rentas_{sel_ec}.xlsx", key=f"dl_amort_{sel_ec}")
                     else:
-                        st.info("Inversión neta cero — sin tabla de amortización.")
+                        st.info("Inversión de rentas cero — sin tabla de amortización.")
 
             with tab_res:
                 with st.container(key=f"tabbox_res_{sel_ec}"):
-                    if inv > 0 and res > 0:
-                        vpr = vp_res(res, t, pl)
-                        dfr = calc_res_amort(round(vpr,4), t, pl).copy()
-                        dfr['Fecha'] = dfr['Mes'].apply(lambda m: (fa + relativedelta(months=m)).strftime('%Y-%m'))
-                        dfr['Residual_Pactado'] = res
-                        dfr['VP_Residual']      = round(vpr, 4)
-
+                    if res > 0 and not dfr.empty:
+                        dfr_view = dfr.copy()
                         if mes_corte_ec is not None:
-                            dfr = dfr[dfr['Mes'] <= mes_corte_ec].copy()
+                            dfr_view = dfr_view[dfr_view['Mes'] <= mes_corte_ec].copy()
                             st.warning(
                                 f"Este contrato se dio de **baja anticipada** el **{fecha_baja_ec.strftime('%Y-%m-%d')}** "
                                 f"(mes {mes_corte_ec} de {pl} originalmente pactados). La tabla y la gráfica solo muestran "
@@ -8182,22 +8237,22 @@ try:
                             )
 
                         pr1,pr2,pr3 = st.columns(3)
-                        pr1.metric("VP del Residual",    f"${vpr:,.4f}")
-                        pr2.metric("Residual pactado",   f"${res:,.2f}")
-                        pr3.metric("Intereses residual", f"${dfr['Interes'].sum():,.4f}")
+                        pr1.metric("VP Inicial del Residual", f"${vpr:,.2f}", help="Valor del residual descontado a valor presente al inicio")
+                        pr2.metric("Residual pactado", f"${res:,.2f}", help="Monto de la opción de compra al término del contrato")
+                        pr3.metric("Intereses acumulados del residual", f"${dfr_view['Interes'].sum():,.2f}")
 
                         fig_r = go.Figure()
                         fig_r.add_trace(go.Scatter(
-                            x=dfr['Fecha'], y=dfr['Saldo_Fin'],
-                            name='Saldo acumulado', fill='tozeroy', mode='lines',
+                            x=dfr_view['Fecha'], y=dfr_view['Saldo_Fin'],
+                            name='Saldo acumulado residual', fill='tozeroy', mode='lines',
                             line=dict(color=C_PASTEL['gold'], width=2.5)
                         ))
                         fig_r.add_hline(y=res, line_dash='dash', line_color=C['accent'],
                             annotation_text=f"Residual pactado ${res:,.2f}")
                         fig_r.add_hline(y=vpr, line_dash='dot', line_color=C['info'],
-                            annotation_text=f"VP ${vpr:,.4f}")
-                        if mes_corte_ec is not None and not dfr.empty:
-                            idx_baja_r = len(dfr) - 1
+                            annotation_text=f"VP ${vpr:,.2f}")
+                        if mes_corte_ec is not None and not dfr_view.empty:
+                            idx_baja_r = len(dfr_view) - 1
                             fig_r.add_shape(type='line', x0=idx_baja_r, x1=idx_baja_r,
                                 y0=0, y1=1, xref='x', yref='paper',
                                 line=dict(color=C['accent'], width=2, dash='dash'))
@@ -8207,16 +8262,16 @@ try:
                         st.plotly_chart(fig_r, width='stretch', key=f"pc_008_{sel_ec}")
 
                         cols_r = ['Fecha','Mes','VP_Residual','Saldo_Ini','Interes','Saldo_Fin','Residual_Pactado']
-                        fmt_r  = {c:'${:,.4f}' for c in ['VP_Residual','Saldo_Ini','Interes','Saldo_Fin','Residual_Pactado']}
-                        _styler_r = dfr[cols_r].style.format(fmt_r)
+                        fmt_r  = {c:'${:,.2f}' for c in ['VP_Residual','Saldo_Ini','Interes','Saldo_Fin','Residual_Pactado']}
+                        _styler_r = dfr_view[cols_r].style.format(fmt_r)
                         if mes_corte_ec is not None:
                             _styler_r = _styler_r.set_properties(
-                                subset=pd.IndexSlice[[dfr.index[-1]], :],
+                                subset=pd.IndexSlice[[dfr_view.index[-1]], :],
                                 **{'background-color': '#FAE3E1', 'color': '#8A2019', 'font-weight': '700'}
                             )
                         st.dataframe(_styler_r, width='stretch', height=300, key=f"df_009_{sel_ec}")
                     else:
-                        st.info("Sin residual o inversión neta cero.")
+                        st.info("Sin residual pactado registrado para este contrato.")
 
             with tab_evts:
                 with st.container(key=f"tabbox_evts_{sel_ec}"):
@@ -8353,27 +8408,26 @@ try:
                              'Mensualidad_Sin_IVA','Residual_Monto','Tasa_Calculada',
                              'Nivel_Morosidad','Fecha_Excl_Poliza','Motivo_Excl_Poliza']
                 ])
-                if inv > 0:
-                    dfa_exp, _, _, _, _ = calc_amort(round(inv,4), r_m, res, pl, t)
-                    dfa_exp['Fecha'] = dfa_exp['Mes'].apply(lambda m: (fa+relativedelta(months=m)).strftime('%Y-%m'))
-                    _hojas_ec['Amort Leasing'] = dfa_exp
-                if inv > 0 and res > 0:
-                    vpr_e = vp_res(res, t, pl)
-                    dfr_e = calc_res_amort(round(vpr_e,4), t, pl)
-                    dfr_e['Fecha'] = dfr_e['Mes'].apply(lambda m: (fa+relativedelta(months=m)).strftime('%Y-%m'))
-                    _hojas_ec['Acum Residual'] = dfr_e
+                if not dfa.empty:
+                    _hojas_ec['Amort Rentas'] = dfa[['Fecha','Mes','Saldo_Ini','Renta','Interes','Capital','Saldo_Fin']]
+                if not dfr.empty:
+                    _hojas_ec['Acum Residual'] = dfr[['Fecha','Mes','VP_Residual','Saldo_Ini','Interes','Saldo_Fin','Residual_Pactado']]
                 df_an_exp = obtener_anotaciones(id_c=sel_ec)
                 if not df_an_exp.empty:
                     _hojas_ec['Anotaciones'] = df_an_exp
                 df_ev_exp = obtener_eventos_especiales(id_c=sel_ec)
                 if not df_ev_exp.empty:
                     _hojas_ec['Eventos Especiales'] = df_ev_exp
-                _hojas_ec['Resumen Financiero'] = pd.DataFrame([
-                    {'Concepto':'Próximo pago','Monto':txt_prox},
-                    {'Concepto':'Pagos realizados','Monto':meses_transcurridos},
-                    {'Concepto':'Pagos restantes','Monto':pagos_restantes},
-                    {'Concepto':'Saldo insoluto (capital)','Monto':saldo_insoluto if saldo_insoluto is not None else ''},
-                    {'Concepto':'Utilidad (interés) devengada a la fecha','Monto':utilidad_devengada if utilidad_devengada is not None else ''},
+                _hojas_ec['Resumen y Conciliacion'] = pd.DataFrame([
+                    {'Concepto':'Cartera Total de Rentas','Monto':cartera_total_rentas},
+                    {'Concepto':'Rentas Cobradas a la Fecha','Monto':rentas_cobradas},
+                    {'Concepto':'Rentas Pendientes por Cobrar','Monto':rentas_remanentes},
+                    {'Concepto':'Capital Inicial de Rentas','Monto':inv_rentas},
+                    {'Concepto':'Capital de Rentas Amortizado','Monto':cap_amort_rentas},
+                    {'Concepto':'Saldo Vigente de Rentas (llega a $0.00)','Monto':sal_vigente_rentas},
+                    {'Concepto':'Residual Pactado (Aparte)','Monto':res},
+                    {'Concepto':'VP Inicial del Residual','Monto':vpr},
+                    {'Concepto':'Deuda Global Exigible Hoy (Rentas + Residual)','Monto':sal_vigente_rentas + res},
                 ])
                 if filas_cat:
                     _hojas_ec['Cuentas Contpaqi'] = pd.DataFrame(filas_cat)
@@ -8381,8 +8435,9 @@ try:
                 buf_ec = excel_con_formato(
                     _hojas_ec,
                     currency_cols={
-                        'Amort Leasing': ['Saldo_Ini','Interes','Capital','Saldo'],
+                        'Amort Rentas': ['Saldo_Ini','Renta','Interes','Capital','Saldo_Fin'],
                         'Acum Residual': ['VP_Residual','Saldo_Ini','Interes','Saldo_Fin','Residual_Pactado'],
+                        'Resumen y Conciliacion': ['Monto'],
                         'Eventos Especiales': ['Valor_Recuperable','Monto_Reclamado','Monto_Confirmado'],
                     },
                 )
@@ -8422,21 +8477,8 @@ try:
                         st.session_state['_nombre_empresa'] = nom_final
                         set_cfg('nombre_empresa', nom_final)
                         with st.spinner("Creando PDF... (puede tomar un par de segundos)"):
-                            dfa_pdf, _, _, _, _ = calc_amort(round(inv,4), r_m, res, pl, t)
-                            dfa_pdf = dfa_pdf.copy()
-                            dfa_pdf['Fecha'] = dfa_pdf['Mes'].apply(lambda m: (fa + relativedelta(months=m)).strftime('%Y-%m'))
-                            saldos_ini_pdf = [round(inv,4)] + list(dfa_pdf['Saldo'].iloc[:-1].round(4))
-                            dfa_pdf.insert(dfa_pdf.columns.get_loc('Interes'), 'Saldo_Ini', saldos_ini_pdf)
-                            dfa_pdf.rename(columns={'Saldo':'Saldo_Fin'}, inplace=True)
-                            # Se genera el PDF completo siempre a peticion del usuario
-                            dfr_pdf = None
-                            if res > 0:
-                                vpr_pdf = vp_res(res, t, pl)
-                                dfr_pdf = calc_res_amort(round(vpr_pdf,4), t, pl).copy()
-                                dfr_pdf['Fecha'] = dfr_pdf['Mes'].apply(lambda m: (fa + relativedelta(months=m)).strftime('%Y-%m'))
-                                dfr_pdf['Residual_Pactado'] = res
-                                dfr_pdf['VP_Residual']      = round(vpr_pdf, 4)
-                                # Se genera el PDF completo siempre a peticion del usuario
+                            dfa_pdf = dfa.copy() if not dfa.empty else None
+                            dfr_pdf = dfr.copy() if not dfr.empty else None
                             _avp_pdf = calcular_avance_pago(row) if str(row.get('Estatus','')).upper() != 'BAJA' else None
                             pdf_buf = pdf_estado_cuenta(
                                 row, dfa_pdf, dfr=dfr_pdf, avance=_avp_pdf, mes_corte=mes_corte_ec,
