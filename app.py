@@ -7251,6 +7251,7 @@ GRUPOS = {
         "Intereses del Mes",
         "Facturación de Intereses",
         "Conciliación de Facturas",
+        "Auditoría de Balanza (Contpaqi)",
         "Cierre y Conciliación Mensual",
         "Comparar Analíticas",
         "Tablas de Amortización",
@@ -7299,6 +7300,7 @@ DESCRIPCIONES = {
     "Intereses del Mes": "Calcula y revisa los intereses correspondientes al mes en curso.",
     "Facturación de Intereses": "Genera y administra la facturación de los intereses cobrados.",
     "Conciliación de Facturas": "Concilia las facturas CFDI recibidas contra tus contratos registrados.",
+    "Auditoría de Balanza (Contpaqi)": "Auditoría integral y conciliación contrato por contrato de la Balanza de Comprobación Contpaqi vs leasing.db con reporte descargable en Excel.",
     "Cierre y Conciliación Mensual": "Resumen ejecutivo mensual de movimientos, facturación, cobranza y pólizas para cierre de mes contable con exportación PDF.",
     "Comparar Analíticas": "Sube las analíticas contables del contador y compáralas contra lo que el sistema esperaba, con sugerencia de póliza de ajuste.",
     "Tablas de Amortización": "Consulta la tabla de amortización completa de cualquier contrato.",
@@ -11317,6 +11319,10 @@ try:
         )
 
     # CONCILIACIÓN DE FACTURAS (NUEVO)
+    elif menu == "Auditoría de Balanza (Contpaqi)":
+        from reports.auditoria_balanza import render_auditoria_balanza
+        render_auditoria_balanza(db_path=get_db_path())
+
     elif menu == "Conciliación de Facturas":
         try:
             _render_conciliacion()
