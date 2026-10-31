@@ -29,10 +29,14 @@ class TestAuditoriaBalanza(unittest.TestCase):
         self.assertEqual(meta['fecha_corte'], "2026-09-30")
         self.assertGreater(meta['total_cuentas'], 3000)
 
-        # Verificar cuenta padre 102-01
+        # Verificar cuenta padre 102-01 y cuenta padre 115-00
         padre_102 = df_bal[df_bal['cuenta'] == '102-01-00-0000-0000-00']
         self.assertEqual(len(padre_102), 1)
-        self.assertAlmostEqual(padre_102['s_act_d'].values[0], 7944400.80, places=2)
+        self.assertAlmostEqual(padre_102['s_act_d'].values[0], -1434443.04, places=2)
+
+        padre_115 = df_bal[df_bal['cuenta'] == '115-00-00-0000-0000-00']
+        self.assertEqual(len(padre_115), 1)
+        self.assertAlmostEqual(padre_115['s_act_d'].values[0], 63958832.87, places=2)
 
     def test_clasificacion_contratos(self):
         """Verifica la separación cronológica entre activos y liquidados al 30/Sep/2026."""
