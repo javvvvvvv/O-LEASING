@@ -11318,8 +11318,11 @@ try:
             totales_intereses_fn=totales_intereses_desde_tabla_mensual
         )
 
-    # CONCILIACIÓN DE FACTURAS (NUEVO)
+    # AUDITORÍA Y CONCILIACIÓN DE BALANZA CONTPAQI (NIF C-15 / IFRS 16)
     elif menu == "Auditoría de Balanza (Contpaqi)":
+        import importlib
+        import reports.auditoria_balanza
+        importlib.reload(reports.auditoria_balanza)
         from reports.auditoria_balanza import render_auditoria_balanza
         render_auditoria_balanza(db_path=get_db_path())
 

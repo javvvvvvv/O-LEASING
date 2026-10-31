@@ -143,14 +143,23 @@ def obtener_catalogo_cuentas_empresa(db_path):
     return cat
 
 
-def extraer_prefijo_cuenta(cta_str):
-    """Extrae el prefijo de búsqueda para una cuenta del catálogo (ej. 115-00-00 -> 115)."""
+def extraer_rubro_catalogo(cta_str):
+    """
+    Extrae el rubro de 2 segmentos de una cuenta del catálogo.
+    Ejemplo: '115-00-00' -> '115-00', '114-01-00-0000-0000-00' -> '114-01'.
+    Si solo tiene 1 segmento (ej. '115'), retorna '115'.
+    """
     if not cta_str:
         return ''
-    parts = cta_str.split('-')
-    if len(parts) >= 2 and parts[1] != '00':
+    parts = cta_str.strip().split('-')
+    if len(parts) >= 2:
         return f"{parts[0]}-{parts[1]}"
     return parts[0]
+
+
+def extraer_prefijo_cuenta(cta_str):
+    """Compatibilidad: extrae el prefijo de búsqueda para una cuenta del catálogo."""
+    return extraer_rubro_catalogo(cta_str)
 
 
 def parsear_balanza_contpaqi(excel_path):
@@ -225,26 +234,27 @@ def parsear_balanza_contpaqi(excel_path):
             anexo = parts[5] if len(parts) >= 6 else ''
 
             id_contrato = None
-            # Regla 1: Cuentas NIF (115, 125, 114, 126, 208, 228, 413) donde partes son:
-            # [MAYOR, SUBC, PLAZO/00, CONTRATO_MASTER, CONTRATO_ANEXO, 00]
-            if len(parts) == 6 and parts[3] != '0000' and parts[4] != '0000' and parts[5] == '00':
-                if parts[3].isdigit() and parts[4].isdigit():
-                    id_contrato = f"{parts[3]}-{parts[4]}"
-
-            # Regla 2: Cuentas generales donde partes son:
-            # [MAYOR, SUBC, 00, CLIENTE, CONTRATO_MASTER, CONTRATO_ANEXO]
-            if not id_contrato and len(parts) == 6 and master != '0000' and anexo != '00':
-                id_contrato = f"{master}-{anexo.zfill(4)}"
-
-            # Regla 3: Detección inteligente por nombre de la cuenta
+            # Regla 1: Detección inteligente por nombre de la cuenta (prioridad alta ante errores de captura en código)
             if nom_str:
                 m_8d = re.search(r'Contrato\s*N[oO\.]*\s*(\d{4})(\d{4})', nom_str, re.IGNORECASE)
                 if m_8d:
                     id_contrato = f"{m_8d.group(1)}-{m_8d.group(2)}"
                 else:
-                    m_code = re.search(r'(?:Cont-?|Contrato\s*N?[oO\.]*\s*|\b)(\d{3,4})[-_](\d{1,4})\b', nom_str, re.IGNORECASE)
+                    m_code = re.search(r'(?:Cont-?|Contrato\s*N?[oO\.]*\s*|\b)(\d{4})[-_](\d{4})\b', nom_str, re.IGNORECASE)
                     if m_code and m_code.group(1) != '0000':
-                        id_contrato = f"{m_code.group(1).zfill(4)}-{m_code.group(2).zfill(4)}"
+                        id_contrato = f"{m_code.group(1)}-{m_code.group(2)}"
+
+            # Regla 2: Cuentas NIF por segmentos si no se detectó por nombre
+            # [MAYOR, SUBC, PLAZO/00, CONTRATO_MASTER, CONTRATO_ANEXO, 00]
+            if not id_contrato and len(parts) == 6 and parts[3] != '0000' and parts[4] != '0000' and parts[5] == '00':
+                if parts[3].isdigit() and parts[4].isdigit():
+                    id_contrato = f"{parts[3]}-{parts[4]}"
+
+            # Regla 3: Cuentas generales donde partes son:
+            # [MAYOR, SUBC, 00, CLIENTE, CONTRATO_MASTER, CONTRATO_ANEXO]
+            if not id_contrato and len(parts) == 6 and master != '0000' and anexo != '00':
+                if master.isdigit() and anexo.isdigit():
+                    id_contrato = f"{master.zfill(4)}-{anexo.zfill(4)}"
 
             cuentas.append({
                 'fila': r,
@@ -323,6 +333,19 @@ def obtener_datos_sistema(db_path, fecha_corte):
     }
 
 
+def _obtener_saldo_balanza(bal_dict, cid, rubro_req, cta_mayor_fallback=None, tipo='D'):
+    """
+    Busca el saldo acumulado en la balanza para un contrato y rubro según el catálogo.
+    Prioriza el rubro exacto de 2 segmentos (ej. '115-00'), evitando mezclar con lenta recuperación ('115-99').
+    """
+    col = 's_act_d' if tipo == 'D' else 's_act_a'
+    if (cid, rubro_req) in bal_dict:
+        return bal_dict[(cid, rubro_req)][col]
+    if cta_mayor_fallback and (cid, cta_mayor_fallback) in bal_dict:
+        return bal_dict[(cid, cta_mayor_fallback)][col]
+    return 0.0
+
+
 def conciliar_balanza_vs_sistema(df_balanza, datos_sistema, fecha_corte_sistema, fecha_balanza=None):
     """
     Ejecuta el cruce integral cuenta por cuenta y contrato por contrato exclusivamente
@@ -343,25 +366,32 @@ def conciliar_balanza_vs_sistema(df_balanza, datos_sistema, fecha_corte_sistema,
     cta_int_lp = cat.get('INT_LP', {}).get('cuenta', '228-00-00')
     cta_cap_amort = cat.get('CANCELACION_CAPITAL', {}).get('cuenta', '413-00-00')
 
-    pref_cxc_cp = extraer_prefijo_cuenta(cta_cxc_cp)
-    pref_cxc_lp = extraer_prefijo_cuenta(cta_cxc_lp)
-    pref_res_cp = extraer_prefijo_cuenta(cta_res_cp)
-    pref_res_lp = extraer_prefijo_cuenta(cta_res_lp)
-    pref_int_cp = extraer_prefijo_cuenta(cta_int_cp)
-    pref_int_lp = extraer_prefijo_cuenta(cta_int_lp)
-    pref_cap_amort = extraer_prefijo_cuenta(cta_cap_amort)
+    rub_cxc_cp = extraer_rubro_catalogo(cta_cxc_cp)
+    rub_cxc_lp = extraer_rubro_catalogo(cta_cxc_lp)
+    rub_res_cp = extraer_rubro_catalogo(cta_res_cp)
+    rub_res_lp = extraer_rubro_catalogo(cta_res_lp)
+    rub_int_cp = extraer_rubro_catalogo(cta_int_cp)
+    rub_int_lp = extraer_rubro_catalogo(cta_int_lp)
+    rub_cap_amort = extraer_rubro_catalogo(cta_cap_amort)
 
-    # Mapa de subcuentas en balanza por contrato indexado por rubro y cuenta_mayor
-    bal_by_cid = {}
+    # Mapa de subcuentas en balanza acumulando saldos por (cid, rubro) para evitar sobreescritura
+    bal_by_cid_rubro = {}
     for idx, row in df_balanza.iterrows():
         cid = row['id_contrato']
-        cm = row['cuenta_mayor']
         rubro = row['rubro']
+        cm = row['cuenta_mayor']
         if cid:
-            if cid not in bal_by_cid:
-                bal_by_cid[cid] = {}
-            bal_by_cid[cid][cm] = row.to_dict()
-            bal_by_cid[cid][rubro] = row.to_dict()
+            k_rub = (cid, rubro)
+            if k_rub not in bal_by_cid_rubro:
+                bal_by_cid_rubro[k_rub] = {'s_act_d': 0.0, 's_act_a': 0.0}
+            bal_by_cid_rubro[k_rub]['s_act_d'] += row['s_act_d']
+            bal_by_cid_rubro[k_rub]['s_act_a'] += row['s_act_a']
+
+            k_cm = (cid, cm)
+            if k_cm not in bal_by_cid_rubro:
+                bal_by_cid_rubro[k_cm] = {'s_act_d': 0.0, 's_act_a': 0.0}
+            bal_by_cid_rubro[k_cm]['s_act_d'] += row['s_act_d']
+            bal_by_cid_rubro[k_cm]['s_act_a'] += row['s_act_a']
 
     # -------------------------------------------------------------------------
     # 1. PESTAÑA: AUDITORÍA FINANCIERA NIF C-15 / IFRS 16 (LADO A LADO)
@@ -406,32 +436,20 @@ def conciliar_balanza_vs_sistema(df_balanza, datos_sistema, fecha_corte_sistema,
 
         cap_amort_esp = dfa.iloc[:mc]['Capital'].sum()
 
-        # Buscar saldos en Balanza Contpaqi
-        b_map = bal_by_cid.get(cid, {})
-
-        row_cxc_cp = b_map.get(pref_cxc_cp) or b_map.get('115-00') or b_map.get('115') or {}
-        bal_cxc_cp = row_cxc_cp.get('s_act_d', 0.0)
-
-        row_cxc_lp = b_map.get(pref_cxc_lp) or b_map.get('125-00') or b_map.get('125') or {}
-        bal_cxc_lp = row_cxc_lp.get('s_act_d', 0.0)
+        # Buscar saldos en Balanza Contpaqi estrictamente por el rubro configurado en el catálogo
+        bal_cxc_cp = _obtener_saldo_balanza(bal_by_cid_rubro, cid, rub_cxc_cp, cta_cxc_cp.split('-')[0], 'D')
+        bal_cxc_lp = _obtener_saldo_balanza(bal_by_cid_rubro, cid, rub_cxc_lp, cta_cxc_lp.split('-')[0], 'D')
         tot_cart_bal = bal_cxc_cp + bal_cxc_lp
 
-        row_res_cp = b_map.get(pref_res_cp) or b_map.get('114-01') or b_map.get('114') or {}
-        bal_res_cp = row_res_cp.get('s_act_d', 0.0)
-
-        row_res_lp = b_map.get(pref_res_lp) or b_map.get('126-00') or b_map.get('126') or {}
-        bal_res_lp = row_res_lp.get('s_act_d', 0.0)
+        bal_res_cp = _obtener_saldo_balanza(bal_by_cid_rubro, cid, rub_res_cp, cta_res_cp.split('-')[0], 'D')
+        bal_res_lp = _obtener_saldo_balanza(bal_by_cid_rubro, cid, rub_res_lp, cta_res_lp.split('-')[0], 'D')
         tot_res_bal = bal_res_cp + bal_res_lp
 
-        row_int_cp = b_map.get(pref_int_cp) or b_map.get('208-00') or b_map.get('208') or {}
-        bal_int_cp = row_int_cp.get('s_act_a', 0.0)
-
-        row_int_lp = b_map.get(pref_int_lp) or b_map.get('228-00') or b_map.get('228') or {}
-        bal_int_lp = row_int_lp.get('s_act_a', 0.0)
+        bal_int_cp = _obtener_saldo_balanza(bal_by_cid_rubro, cid, rub_int_cp, cta_int_cp.split('-')[0], 'A')
+        bal_int_lp = _obtener_saldo_balanza(bal_by_cid_rubro, cid, rub_int_lp, cta_int_lp.split('-')[0], 'A')
         tot_int_bal = bal_int_cp + bal_int_lp
 
-        row_cap_amort = b_map.get(pref_cap_amort) or b_map.get('413-00') or b_map.get('413') or {}
-        bal_cap_amort = row_cap_amort.get('s_act_a', 0.0)
+        bal_cap_amort = _obtener_saldo_balanza(bal_by_cid_rubro, cid, rub_cap_amort, cta_cap_amort.split('-')[0], 'A')
 
         dif_cart_tot = tot_cart_bal - tot_cart_esp
         dif_cp = bal_cxc_cp - cxc_cp_esp
@@ -501,25 +519,12 @@ def conciliar_balanza_vs_sistema(df_balanza, datos_sistema, fecha_corte_sistema,
     liquidados_list = []
     for idx, con in df_liquidados.iterrows():
         cid = con['ID_Contrato']
-        b = bal_by_cid.get(cid, {})
-
-        row_res_cp = b.get(pref_res_cp) or b.get('114-01') or b.get('114') or {}
-        saldo_res_cp = row_res_cp.get('s_act_d', 0.0)
-
-        row_res_lp = b.get(pref_res_lp) or b.get('126-00') or b.get('126') or {}
-        saldo_res_lp = row_res_lp.get('s_act_d', 0.0)
-
-        row_cxc_cp = b.get(pref_cxc_cp) or b.get('115-00') or b.get('115') or {}
-        saldo_cxc_cp = row_cxc_cp.get('s_act_d', 0.0)
-
-        row_cxc_lp = b.get(pref_cxc_lp) or b.get('125-00') or b.get('125') or {}
-        saldo_cxc_lp = row_cxc_lp.get('s_act_d', 0.0)
-
-        row_int_cp = b.get(pref_int_cp) or b.get('208-00') or b.get('208') or {}
-        saldo_int_cp = row_int_cp.get('s_act_a', 0.0)
-
-        row_int_lp = b.get(pref_int_lp) or b.get('228-00') or b.get('228') or {}
-        saldo_int_lp = row_int_lp.get('s_act_a', 0.0)
+        saldo_res_cp = _obtener_saldo_balanza(bal_by_cid_rubro, cid, rub_res_cp, cta_res_cp.split('-')[0], 'D')
+        saldo_res_lp = _obtener_saldo_balanza(bal_by_cid_rubro, cid, rub_res_lp, cta_res_lp.split('-')[0], 'D')
+        saldo_cxc_cp = _obtener_saldo_balanza(bal_by_cid_rubro, cid, rub_cxc_cp, cta_cxc_cp.split('-')[0], 'D')
+        saldo_cxc_lp = _obtener_saldo_balanza(bal_by_cid_rubro, cid, rub_cxc_lp, cta_cxc_lp.split('-')[0], 'D')
+        saldo_int_cp = _obtener_saldo_balanza(bal_by_cid_rubro, cid, rub_int_cp, cta_int_cp.split('-')[0], 'A')
+        saldo_int_lp = _obtener_saldo_balanza(bal_by_cid_rubro, cid, rub_int_lp, cta_int_lp.split('-')[0], 'A')
 
         tot_saldo_pendiente = saldo_res_cp + saldo_res_lp + saldo_cxc_cp + saldo_cxc_lp + saldo_int_cp + saldo_int_lp
 
@@ -1152,21 +1157,15 @@ def render_auditoria_balanza(db_path=None):
         with c_up2:
             st.info("Catálogo Dinámico Activo:\nLas cuentas NIF se toman de la configuración de pólizas de la empresa activa.")
 
-    path_a_procesar = None
-    if uploaded_file is not None:
-        import tempfile
-        tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
-        tfile.write(uploaded_file.getbuffer())
-        tfile.close()
-        path_a_procesar = tfile.name
-    else:
-        ruta_default = r"C:\Users\cynti\Downloads\BALANZA 26\BALANZZA SEPTIEMBRE.xlsx"
-        if os.path.exists(ruta_default):
-            path_a_procesar = ruta_default
-            st.caption(f"Utilizando balanza disponible: `{ruta_default}`")
-        else:
-            st.warning("Por favor sube un archivo de Balanza de Comprobación (.xlsx).")
-            return
+    if uploaded_file is None:
+        st.info("Por favor sube un archivo de Balanza de Comprobación (.xlsx) en el recuadro superior para iniciar la auditoría.")
+        return
+
+    import tempfile
+    tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
+    tfile.write(uploaded_file.getbuffer())
+    tfile.close()
+    path_a_procesar = tfile.name
 
     try:
         meta_inicial, df_bal_inicial = parsear_balanza_contpaqi(path_a_procesar)
