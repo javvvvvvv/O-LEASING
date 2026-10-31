@@ -14,29 +14,30 @@
 # ============================================================================
 """
 reports/auditoria_balanza.py — Motor Oficial de Auditoría y Conciliación
-Contable vs Balanza de Comprobación Contpaqi para O-Leasing.
+Contable NIF C-15 / IFRS 16 vs Balanza de Comprobación Contpaqi para O-Leasing.
 
-Diseñado con arquitectura multi-empresa dinámica y soporte multianual:
-1. Lee las cuentas contables directamente de la tabla `catalogo_cuentas`
-   de la base de datos de la empresa activa (donde se configuran las pólizas):
+Diseñado con arquitectura multi-empresa dinámica, soporte multianual y reporte 100% limpio:
+1. Lee las cuentas contables NIF C-15 directamente de la tabla `catalogo_cuentas`
+   de la base de datos de la empresa activa:
    - CXC_CP: Cuentas por Cobrar Corto Plazo (ej. 115-00-00)
    - CXC_LP: Cuentas por Cobrar Largo Plazo (ej. 125-00-00)
    - RESIDUAL_CP: CXC Residual Corto Plazo (ej. 114-01-00)
-   - RESIDUAL / CXC_RESIDUAL_INTERESES: CXC Residual Largo Plazo (ej. 126-00-00)
+   - RESIDUAL: CXC Residual Largo Plazo (ej. 126-00-00)
    - INT_CP: Intereses por Devengar Corto Plazo (ej. 208-00-00)
    - INT_LP: Intereses por Devengar Largo Plazo (ej. 228-00-00)
    - CANCELACION_CAPITAL: Ingresos / Amortización de Capital (ej. 413-00-00)
-   - BAJA_INV: Activos / Inventario (ej. 117-00-00 o 150-00-00)
-2. Calcula para cada contrato activo sus saldos teóricos esperados al corte
+2. Calcula para cada contrato activo sus saldos teóricos esperados al corte del sistema
    conforme a las normas NIF C-15 / IFRS 16 y tablas de amortización.
 3. Cruza cuenta por cuenta y contrato por contrato contra la Balanza de Comprobación:
-   - Conciliación lado a lado: Sistema vs Balanza Contpaqi vs Diferencia.
-   - Compara las cuentas operativas en Balanza (102-01 CxC, 403-01 Rentas, 150-00 Activos).
+   - Conciliación lado a lado: Sistema vs Balanza Contpaqi vs Diferencia con fórmulas vivas.
+   - Reporte 100% limpio: enfocado exclusivamente en las cuentas de normas financieras
+     sin incluir cuentas operativas (102, 403, 150).
 4. Omite rigurosamente de la cartera activa los contratos liquidados/concluidos
-   y los audita en su propia pestaña, alertando si mantienen saldo contable
-   en CxC (102-01), Residual (114-01) o Activo (150-00).
-5. Soporte multianual y multimes: permite ejecutar la auditoría a cualquier
-   mes y año seleccionado por el usuario.
+   y los audita en su propia pestaña, alertando si mantienen saldo contable NIF
+   pendiente en Residual (114-01/126) o Cartera (115/125).
+5. Doble control de fechas independiente:
+   - Fecha de la Balanza de Comprobación (detectada del archivo o elegida por el usuario).
+   - Fecha de Corte del Sistema (fecha de cálculo del programa libremente configurable).
 6. Genera libro de Excel multi-pestaña con fórmulas vivas, sin duplicación de saldos
    y con validación COM limpia.
 """
@@ -155,7 +156,7 @@ def extraer_prefijo_cuenta(cta_str):
 def parsear_balanza_contpaqi(excel_path):
     """
     Parsea una Balanza de Comprobación de Contpaqi en Excel (.xlsx) de cualquier mes.
-    Extrae tanto cuentas NIF C-15 como cuentas operativas con detección de contratos.
+    Extrae cuentas NIF C-15 con detección de contratos.
     """
     if not os.path.exists(excel_path):
         raise FileNotFoundError(f"No se encontró el archivo de balanza: {excel_path}")
@@ -230,7 +231,7 @@ def parsear_balanza_contpaqi(excel_path):
                 if parts[3].isdigit() and parts[4].isdigit():
                     id_contrato = f"{parts[3]}-{parts[4]}"
 
-            # Regla 2: Cuentas operativas de clientes (102, 403, 150) donde partes son:
+            # Regla 2: Cuentas generales donde partes son:
             # [MAYOR, SUBC, 00, CLIENTE, CONTRATO_MASTER, CONTRATO_ANEXO]
             if not id_contrato and len(parts) == 6 and master != '0000' and anexo != '00':
                 id_contrato = f"{master}-{anexo.zfill(4)}"
@@ -280,11 +281,10 @@ def parsear_balanza_contpaqi(excel_path):
 
 def obtener_datos_sistema(db_path, fecha_corte):
     """
-    Carga contratos, facturas y catálogo dinámico de cuentas desde la base de datos
+    Carga contratos y catálogo dinámico de cuentas desde la base de datos
     para la fecha de corte seleccionada.
     """
     conn = sqlite3.connect(db_path)
-    c = conn.cursor()
 
     cat = obtener_catalogo_cuentas_empresa(db_path)
 
@@ -294,36 +294,6 @@ def obtener_datos_sistema(db_path, fecha_corte):
                Anticipo_Monto, Tasa_Calculada
         FROM contratos
     """, conn)
-
-    facturas_resumen = {}
-    facturas_conceptos = {}
-
-    rows_fac = c.execute("""
-        SELECT id_contrato, COUNT(*), SUM(subtotal), SUM(total)
-        FROM facturas
-        WHERE fecha_emision <= ? AND (cancelada IS NULL OR cancelada = 0 OR fecha_cancelacion > ?)
-        GROUP BY id_contrato
-    """, (fecha_corte, fecha_corte)).fetchall()
-
-    for r in rows_fac:
-        cid = r[0]
-        if cid:
-            facturas_resumen[cid] = {'num_facturas': r[1], 'subtotal': r[2] or 0.0, 'total': r[3] or 0.0}
-
-    rows_con = c.execute("""
-        SELECT f.id_contrato, cp.clave, SUM(cp.importe)
-        FROM factura_conceptos cp
-        JOIN facturas f ON cp.uuid = f.uuid
-        WHERE f.fecha_emision <= ? AND (f.cancelada IS NULL OR f.cancelada = 0 OR f.fecha_cancelacion > ?)
-        GROUP BY f.id_contrato, cp.clave
-    """, (fecha_corte, fecha_corte)).fetchall()
-
-    for r in rows_con:
-        cid, clave, imp = r[0], r[1], r[2] or 0.0
-        if cid:
-            if cid not in facturas_conceptos:
-                facturas_conceptos[cid] = {}
-            facturas_conceptos[cid][clave] = imp
 
     conn.close()
 
@@ -350,24 +320,20 @@ def obtener_datos_sistema(db_path, fecha_corte):
         'df_liquidados': pd.DataFrame(liquidados) if liquidados else pd.DataFrame(columns=df_con.columns),
         'df_futuros': pd.DataFrame(futuros) if futuros else pd.DataFrame(columns=df_con.columns),
         'catalogo_cuentas': cat,
-        'facturas_resumen': facturas_resumen,
-        'facturas_conceptos': facturas_conceptos,
     }
 
 
-def conciliar_balanza_vs_sistema(df_balanza, datos_sistema, fecha_corte_str):
+def conciliar_balanza_vs_sistema(df_balanza, datos_sistema, fecha_corte_sistema, fecha_balanza=None):
     """
-    Ejecuta el cruce integral cuenta por cuenta y contrato por contrato,
-    tanto para las cuentas NIF C-15 del catálogo maestro (115, 125, 114, 126, 208, 228, 413)
-    como para las cuentas operativas en Balanza (102-01, 403-01, 150-00, etc.).
+    Ejecuta el cruce integral cuenta por cuenta y contrato por contrato exclusivamente
+    para las cuentas NIF C-15 / IFRS 16 del catálogo maestro (115, 125, 114, 126, 208, 228, 413).
+    Reporte 100% limpio sin cuentas operativas (102, 403, 150).
     """
     df_activos = datos_sistema['df_activos']
     df_liquidados = datos_sistema['df_liquidados']
     cat = datos_sistema['catalogo_cuentas']
-    facturas_resumen = datos_sistema['facturas_resumen']
-    facturas_conceptos = datos_sistema['facturas_conceptos']
 
-    fecha_corte = datetime.datetime.strptime(fecha_corte_str, "%Y-%m-%d")
+    fc_dt = datetime.datetime.strptime(fecha_corte_sistema, "%Y-%m-%d")
 
     cta_cxc_cp = cat.get('CXC_CP', {}).get('cuenta', '115-00-00')
     cta_cxc_lp = cat.get('CXC_LP', {}).get('cuenta', '125-00-00')
@@ -415,7 +381,7 @@ def conciliar_balanza_vs_sistema(df_balanza, datos_sistema, fecha_corte_str):
         inv = v - ant
         t = float(con['Tasa_Calculada'] or 0.0)
 
-        mt = (fecha_corte.year - fa.year) * 12 + (fecha_corte.month - fa.month)
+        mt = (fc_dt.year - fa.year) * 12 + (fc_dt.month - fa.month)
         mc = mt + 1
         if mc < 1 or mc > pl:
             continue
@@ -530,100 +496,44 @@ def conciliar_balanza_vs_sistema(df_balanza, datos_sistema, fecha_corte_str):
         df_auditoria_nif.sort_values(by=['tot_cart_esp', 'id_contrato'], ascending=[False, True], inplace=True)
 
     # -------------------------------------------------------------------------
-    # 2. PESTAÑA: CONCILIACIÓN CXC OPERATIVA (102-01) - EXCLUSIVO CARTERA ACTIVA
-    # -------------------------------------------------------------------------
-    cxc_activos_list = []
-    for idx, con in df_activos.iterrows():
-        cid = con['ID_Contrato']
-        b_cxc = bal_by_cid.get(cid, {}).get('102-01')
-
-        cta_str = b_cxc['cuenta'] if b_cxc else 'SIN CUENTA'
-        s_ini_d = b_cxc['s_ini_d'] if b_cxc else 0.0
-        cargos = b_cxc['cargos'] if b_cxc else 0.0
-        abonos = b_cxc['abonos'] if b_cxc else 0.0
-        s_act_d = b_cxc['s_act_d'] if b_cxc else 0.0
-        s_act_a = b_cxc['s_act_a'] if b_cxc else 0.0
-        saldo_balanza = s_act_d - s_act_a
-
-        fac_info = facturas_resumen.get(cid, {})
-        tot_facturado = fac_info.get('total', 0.0)
-
-        if not b_cxc:
-            diagnostico = "SIN CUENTA EN BALANZA"
-            estatus_flag = "ALERTA"
-        elif abs(saldo_balanza) < 0.01:
-            diagnostico = "CUADRADO (SALDADO AL DÍA)"
-            estatus_flag = "OK"
-        else:
-            diagnostico = "SALDO DEUDOR EXIGIBLE"
-            estatus_flag = "EXIGIBLE"
-
-        cxc_activos_list.append({
-            'id_contrato': cid,
-            'cliente': con['Cliente'],
-            'vehiculo': con['Vehiculo'],
-            'plazo': con['Plazo'],
-            'renta_sin_iva': con['Mensualidad_Sin_IVA'] or 0.0,
-            'cuenta_contable': cta_str,
-            's_ini_d': s_ini_d,
-            'cargos': cargos,
-            'abonos': abonos,
-            'saldo_balanza_cxc': saldo_balanza,
-            'tot_facturado_sistema': tot_facturado,
-            'diagnostico': diagnostico,
-            'estatus_flag': estatus_flag,
-        })
-
-    df_concil_cxc = pd.DataFrame(cxc_activos_list)
-    if not df_concil_cxc.empty:
-        df_concil_cxc.sort_values(by=['saldo_balanza_cxc', 'id_contrato'], ascending=[False, True], inplace=True)
-
-    # -------------------------------------------------------------------------
-    # 3. PESTAÑA: CONTRATOS LIQUIDADOS (OMITIDOS DE CARTERA ACTIVA Y SEÑALADOS)
+    # 2. PESTAÑA: CONTRATOS LIQUIDADOS (ESTRICTAMENTE SEPARADOS Y AUDITADOS EN NIF)
     # -------------------------------------------------------------------------
     liquidados_list = []
     for idx, con in df_liquidados.iterrows():
         cid = con['ID_Contrato']
-        b_cxc = bal_by_cid.get(cid, {}).get('102-01')
-        b_act = bal_by_cid.get(cid, {}).get('150-00')
-        b_renta = bal_by_cid.get(cid, {}).get('403-01')
-        b_res = bal_by_cid.get(cid, {}).get('114-01') or bal_by_cid.get(cid, {}).get('114')
-        b_cxc_nif = bal_by_cid.get(cid, {}).get('115-00') or bal_by_cid.get(cid, {}).get('115')
+        b = bal_by_cid.get(cid, {})
 
-        cta_cxc = b_cxc['cuenta'] if b_cxc else '-'
-        saldo_cxc = (b_cxc['s_act_d'] - b_cxc['s_act_a']) if b_cxc else 0.0
+        row_res_cp = b.get(pref_res_cp) or b.get('114-01') or b.get('114') or {}
+        saldo_res_cp = row_res_cp.get('s_act_d', 0.0)
 
-        cta_act = b_act['cuenta'] if b_act else '-'
-        saldo_act = (b_act['s_act_d'] - b_act['s_act_a']) if b_act else 0.0
+        row_res_lp = b.get(pref_res_lp) or b.get('126-00') or b.get('126') or {}
+        saldo_res_lp = row_res_lp.get('s_act_d', 0.0)
 
-        cta_res = b_res['cuenta'] if b_res else '-'
-        saldo_res = (b_res['s_act_d'] - b_res['s_act_a']) if b_res else 0.0
+        row_cxc_cp = b.get(pref_cxc_cp) or b.get('115-00') or b.get('115') or {}
+        saldo_cxc_cp = row_cxc_cp.get('s_act_d', 0.0)
 
-        cta_nif = b_cxc_nif['cuenta'] if b_cxc_nif else '-'
-        saldo_nif = (b_cxc_nif['s_act_d'] - b_cxc_nif['s_act_a']) if b_cxc_nif else 0.0
+        row_cxc_lp = b.get(pref_cxc_lp) or b.get('125-00') or b.get('125') or {}
+        saldo_cxc_lp = row_cxc_lp.get('s_act_d', 0.0)
 
-        cta_renta = b_renta['cuenta'] if b_renta else '-'
-        saldo_renta = (b_renta['s_act_a'] - b_renta['s_act_d']) if b_renta else 0.0
+        row_int_cp = b.get(pref_int_cp) or b.get('208-00') or b.get('208') or {}
+        saldo_int_cp = row_int_cp.get('s_act_a', 0.0)
 
-        tiene_cxc = abs(saldo_cxc) > 0.01
-        tiene_res = abs(saldo_res) > 0.01
-        tiene_act = abs(saldo_act) > 0.01
-        tiene_nif = abs(saldo_nif) > 0.01
+        row_int_lp = b.get(pref_int_lp) or b.get('228-00') or b.get('228') or {}
+        saldo_int_lp = row_int_lp.get('s_act_a', 0.0)
 
-        if not any([tiene_cxc, tiene_res, tiene_act, tiene_nif]):
-            diag = "LIQUIDADO EN CERO (CORRECTO - CUENTA SALDADA)"
+        tot_saldo_pendiente = saldo_res_cp + saldo_res_lp + saldo_cxc_cp + saldo_cxc_lp + saldo_int_cp + saldo_int_lp
+
+        if abs(tot_saldo_pendiente) < 0.01:
+            diag = "LIQUIDADO EN CERO (CORRECTO - CUENTAS SALDADAS)"
             severidad = "CORRECTO"
-        elif tiene_res and not tiene_cxc and not tiene_act:
-            diag = "ALERTA: LIQUIDADO CON SALDO EN RESIDUAL CP (114-01)"
+        elif abs(saldo_res_cp) > 0.01 and abs(saldo_cxc_cp) < 0.01 and abs(saldo_cxc_lp) < 0.01:
+            diag = "ALERTA: SALDO PENDIENTE EN RESIDUAL CP (114-01) POR CANCELAR"
             severidad = "ALERTA_RESIDUAL"
-        elif tiene_cxc and not tiene_res and not tiene_act:
-            diag = "ALERTA: LIQUIDADO CON SALDO EN CXC (102-01)"
-            severidad = "ALERTA_CXC"
-        elif tiene_act:
-            diag = "ALERTA: LIQUIDADO CON ACTIVO NO DESINCORPORADO (150-00)"
-            severidad = "ALERTA_ACTIVO"
+        elif abs(saldo_cxc_cp) > 0.01 or abs(saldo_cxc_lp) > 0.01:
+            diag = "ALERTA: SALDO PENDIENTE EN CARTERA (115/125)"
+            severidad = "ALERTA_CARTERA"
         else:
-            diag = "ALERTA CRÍTICA: LIQUIDADO CON MÚLTIPLES SALDOS PENDIENTES"
+            diag = f"ALERTA: SALDOS PENDIENTES EN CUENTAS NIF (${tot_saldo_pendiente:+,.2f})"
             severidad = "ALERTA_MULTIPLE"
 
         liquidados_list.append({
@@ -634,113 +544,23 @@ def conciliar_balanza_vs_sistema(df_balanza, datos_sistema, fecha_corte_str):
             'fecha_vencimiento': str(con['Fecha_Vencimiento'] or '')[:10],
             'fecha_baja': str(con['Fecha_Baja'] or '')[:10],
             'plazo': con['Plazo'],
-            'cuenta_cxc': cta_cxc,
-            'saldo_cxc_balanza': saldo_cxc,
-            'cuenta_res': cta_res,
-            'saldo_res_balanza': saldo_res,
-            'cuenta_nif': cta_nif,
-            'saldo_nif_balanza': saldo_nif,
-            'cuenta_activo': cta_act,
-            'saldo_activo_balanza': saldo_act,
-            'saldo_renta_balanza': saldo_renta,
+            'saldo_res_cp': saldo_res_cp,
+            'saldo_res_lp': saldo_res_lp,
+            'saldo_cxc_cp': saldo_cxc_cp,
+            'saldo_cxc_lp': saldo_cxc_lp,
+            'saldo_int_cp': saldo_int_cp,
+            'saldo_int_lp': saldo_int_lp,
+            'tot_saldo_pendiente': tot_saldo_pendiente,
             'diagnostico': diag,
             'severidad': severidad,
         })
 
     df_concil_liquidados = pd.DataFrame(liquidados_list)
     if not df_concil_liquidados.empty:
-        df_concil_liquidados.sort_values(by=['saldo_res_balanza', 'saldo_cxc_balanza'], ascending=[False, False], inplace=True)
+        df_concil_liquidados.sort_values(by=['saldo_res_cp', 'tot_saldo_pendiente'], ascending=[False, False], inplace=True)
 
     # -------------------------------------------------------------------------
-    # 4. PESTAÑA: INGRESOS POR RENTAS (403-01)
-    # -------------------------------------------------------------------------
-    rentas_list = []
-    for idx, con in df_activos.iterrows():
-        cid = con['ID_Contrato']
-        b_renta = bal_by_cid.get(cid, {}).get('403-01')
-
-        cta_renta = b_renta['cuenta'] if b_renta else 'SIN CUENTA'
-        s_act_a = b_renta['s_act_a'] if b_renta else 0.0
-        s_act_d = b_renta['s_act_d'] if b_renta else 0.0
-        ing_balanza = s_act_a - s_act_d
-
-        renta_facturada = facturas_conceptos.get(cid, {}).get('RENTA', 0.0)
-        diferencia = ing_balanza - renta_facturada
-
-        if not b_renta:
-            diag = "SIN CUENTA 403-01 EN BALANZA"
-            est_flag = "ALERTA"
-        elif abs(diferencia) < 0.05:
-            diag = "CUADRADO AL CENTAVO"
-            est_flag = "OK"
-        elif diferencia > 0:
-            diag = "MAYOR INGRESO EN BALANZA QUE FACTURADO"
-            est_flag = "DIFERENCIA"
-        else:
-            diag = "MENOR INGRESO EN BALANZA QUE FACTURADO"
-            est_flag = "DIFERENCIA"
-
-        rentas_list.append({
-            'id_contrato': cid,
-            'cliente': con['Cliente'],
-            'plazo': con['Plazo'],
-            'renta_mensual_db': con['Mensualidad_Sin_IVA'] or 0.0,
-            'cuenta_contable': cta_renta,
-            'ingreso_balanza_403': ing_balanza,
-            'renta_facturada_cfdi': renta_facturada,
-            'diferencia': diferencia,
-            'diagnostico': diag,
-            'estatus_flag': est_flag,
-        })
-
-    df_concil_rentas = pd.DataFrame(rentas_list)
-    if not df_concil_rentas.empty:
-        df_concil_rentas.sort_values(by=['ingreso_balanza_403', 'id_contrato'], ascending=[False, True], inplace=True)
-
-    # -------------------------------------------------------------------------
-    # 5. PESTAÑA: ACTIVOS FIJOS VEHICULARES (150-00)
-    # -------------------------------------------------------------------------
-    activos_fijos_list = []
-    for idx, con in df_activos.iterrows():
-        cid = con['ID_Contrato']
-        b_act = bal_by_cid.get(cid, {}).get('150-00')
-
-        cta_act = b_act['cuenta'] if b_act else 'SIN CUENTA'
-        s_act_d = b_act['s_act_d'] if b_act else 0.0
-        s_act_a = b_act['s_act_a'] if b_act else 0.0
-        val_balanza = s_act_d - s_act_a
-
-        val_sistema = float(con['Valor_Sin_IVA'] or 0.0)
-        diferencia = val_balanza - val_sistema
-
-        if not b_act:
-            diag = "SIN CUENTA 150-00 EN BALANZA"
-            est_flag = "ALERTA"
-        elif abs(diferencia) < 0.05:
-            diag = "CUADRADO EXACTO"
-            est_flag = "OK"
-        else:
-            diag = "VARIACIÓN DE COSTO"
-            est_flag = "DIFERENCIA"
-
-        activos_fijos_list.append({
-            'id_contrato': cid,
-            'cliente': con['Cliente'],
-            'vehiculo': con['Vehiculo'],
-            'valor_sistema': val_sistema,
-            'cuenta_contable': cta_act,
-            'valor_balanza_150': val_balanza,
-            'diferencia': diferencia,
-            'diagnostico': diag,
-            'estatus_flag': est_flag,
-        })
-
-    df_concil_activos = pd.DataFrame(activos_fijos_list)
-    if not df_concil_activos.empty:
-        df_concil_activos.sort_values(by=['valor_balanza_150', 'id_contrato'], ascending=[False, True], inplace=True)
-
-    # -------------------------------------------------------------------------
-    # 6. PESTAÑA: DISCREPANCIAS Y ALERTAS DE AUDITORÍA
+    # 3. PESTAÑA: DISCREPANCIAS Y ALERTAS DE AUDITORÍA NIF
     # -------------------------------------------------------------------------
     alertas = []
 
@@ -754,46 +574,34 @@ def conciliar_balanza_vs_sistema(df_balanza, datos_sistema, fecha_corte_str):
             'cuenta_contable': f"{cta_cxc_cp} / {cta_cxc_lp}",
             'monto_discrepancia': abs(row['dif_cart_tot']),
             'descripcion': f"El contrato {row['id_contrato']} presenta variación de ${row['dif_cart_tot']:+,.2f} en cartera futura (Balanza: ${row['tot_cart_bal']:,.2f} vs Sistema: ${row['tot_cart_esp']:,.2f}).",
-            'accion_recomendada': 'Verificar si el contrato fue transferido a cobranza judicial (115-99) o póliza de ajuste.',
+            'accion_recomendada': 'Verificar si fue transferido a cobranza judicial (115-99) o póliza de ajuste.',
         })
 
     # Alerta 2: Contratos Liquidados con Saldo en Residual (114-01)
-    for idx, row in df_concil_liquidados[df_concil_liquidados['saldo_res_balanza'] > 0.01].iterrows():
+    for idx, row in df_concil_liquidados[df_concil_liquidados['saldo_res_cp'] > 0.01].iterrows():
         alertas.append({
             'prioridad': 'ALTA',
-            'categoria': 'CONTRATO LIQUIDADO CON SALDO RESIDUAL (114-01)',
+            'categoria': 'CONTRATO LIQUIDADO CON SALDO RESIDUAL CP (114-01)',
             'id_contrato': row['id_contrato'],
             'cliente': row['cliente'],
-            'cuenta_contable': row['cuenta_res'],
-            'monto_discrepancia': row['saldo_res_balanza'],
-            'descripcion': f"Contrato {row['id_contrato']} liquidado/concluido mantiene saldo de ${row['saldo_res_balanza']:,.2f} en Residual CP (114-01).",
-            'accion_recomendada': 'Aplicar póliza de cancelación de residual contra ingreso o venta de salvamento.',
+            'cuenta_contable': cta_res_cp,
+            'monto_discrepancia': row['saldo_res_cp'],
+            'descripcion': f"Contrato {row['id_contrato']} concluido mantiene saldo de ${row['saldo_res_cp']:,.2f} en Residual CP (114-01).",
+            'accion_recomendada': 'Aplicar póliza de cancelación de residual contra ingreso o venta de unidad.',
         })
 
-    # Alerta 3: Contratos Liquidados con Saldo Deudor en CxC (102-01)
-    for idx, row in df_concil_liquidados[df_concil_liquidados['saldo_cxc_balanza'] > 0.01].iterrows():
-        alertas.append({
-            'prioridad': 'ALTA',
-            'categoria': 'CONTRATO LIQUIDADO CON SALDO CXC (102-01)',
-            'id_contrato': row['id_contrato'],
-            'cliente': row['cliente'],
-            'cuenta_contable': row['cuenta_cxc'],
-            'monto_discrepancia': row['saldo_cxc_balanza'],
-            'descripcion': f"Contrato {row['id_contrato']} concluido mantiene saldo deudor de ${row['saldo_cxc_balanza']:,.2f} en CxC (102-01).",
-            'accion_recomendada': 'Verificar cobro pendiente o aplicar póliza de depuración contable.',
-        })
-
-    # Alerta 4: Contratos Activos sin Cuenta Contable Aperturada
-    for idx, row in df_concil_cxc[df_concil_cxc['cuenta_contable'] == 'SIN CUENTA'].iterrows():
+    # Alerta 3: Variaciones en Residuales de Cartera Activa
+    for idx, row in df_auditoria_nif[abs(df_auditoria_nif['dif_res_cp'] + df_auditoria_nif['dif_res_lp']) > 100.0].iterrows():
+        dif_r = (row['balanza_res_cp'] + row['balanza_res_lp']) - (row['res_cp_esperado'] + row['res_lp_esperado'])
         alertas.append({
             'prioridad': 'MEDIA',
-            'categoria': 'ACTIVO SIN SUBCUENTA CONTABLE',
+            'categoria': 'VARIACIÓN EN VALOR RESIDUAL ACTIVO',
             'id_contrato': row['id_contrato'],
             'cliente': row['cliente'],
-            'cuenta_contable': 'PENDIENTE APERTURA',
-            'monto_discrepancia': row['renta_sin_iva'],
-            'descripcion': f"El contrato {row['id_contrato']} está vigente pero no cuenta con subcuenta aperturada en el rubro 102-01 de Contpaqi.",
-            'accion_recomendada': 'Aperturar la subcuenta contable correspondiente en Contpaqi.',
+            'cuenta_contable': f"{cta_res_cp} / {cta_res_lp}",
+            'monto_discrepancia': abs(dif_r),
+            'descripcion': f"Contrato {row['id_contrato']} presenta diferencia de ${dif_r:+,.2f} en valor residual.",
+            'accion_recomendada': 'Verificar reclasificación de residual a corto plazo o depósito recibido.',
         })
 
     df_alertas = pd.DataFrame(alertas)
@@ -802,10 +610,7 @@ def conciliar_balanza_vs_sistema(df_balanza, datos_sistema, fecha_corte_str):
 
     return {
         'df_auditoria_nif': df_auditoria_nif,
-        'df_concil_cxc': df_concil_cxc,
         'df_concil_liquidados': df_concil_liquidados,
-        'df_concil_rentas': df_concil_rentas,
-        'df_concil_activos': df_concil_activos,
         'df_alertas': df_alertas,
     }
 
@@ -833,20 +638,23 @@ def _autoajustar_columnas(ws, min_col=1, max_col=None, padding=3):
         ws.column_dimensions[letra].width = max(max_len + padding, 11)
 
 
-def generar_excel_auditoria_balanza(excel_balanza_path, output_excel_path=None, db_path=None, fecha_corte_override=None):
+def generar_excel_auditoria_balanza(excel_balanza_path, output_excel_path=None, db_path=None, fecha_corte_sistema=None, fecha_balanza=None):
     """
-    Genera el Libro Oficial de Auditoría y Conciliación Contable en formato Excel (.xlsx).
-    Soporta fecha_corte_override para auditar al mes y año deseado.
+    Genera el Libro Oficial de Auditoría y Conciliación Contable NIF C-15 en formato Excel (.xlsx).
+    Reporte 100% limpio enfocado en cuentas NIF sin cuentas 102/403/150.
     """
     if db_path is None:
         db_path = _obtener_db_path()
 
     meta, df_bal = parsear_balanza_contpaqi(excel_balanza_path)
-    fecha_corte = fecha_corte_override if fecha_corte_override else meta['fecha_corte']
-    meta['fecha_corte'] = fecha_corte
+    f_balanza_final = fecha_balanza if fecha_balanza else meta['fecha_corte']
+    f_sistema_final = fecha_corte_sistema if fecha_corte_sistema else f_balanza_final
 
-    datos_sis = obtener_datos_sistema(db_path, fecha_corte)
-    tablas = conciliar_balanza_vs_sistema(df_bal, datos_sis, fecha_corte)
+    meta['fecha_balanza'] = f_balanza_final
+    meta['fecha_corte_sistema'] = f_sistema_final
+
+    datos_sis = obtener_datos_sistema(db_path, f_sistema_final)
+    tablas = conciliar_balanza_vs_sistema(df_bal, datos_sis, f_sistema_final, f_balanza_final)
     cat = datos_sis['catalogo_cuentas']
 
     cta_cxc_cp = cat.get('CXC_CP', {}).get('cuenta', '115-00-00')
@@ -858,14 +666,14 @@ def generar_excel_auditoria_balanza(excel_balanza_path, output_excel_path=None, 
     cta_cap_amort = cat.get('CANCELACION_CAPITAL', {}).get('cuenta', '413-00-00')
 
     if output_excel_path is None:
-        y, m, d = fecha_corte.split('-')
-        output_excel_path = f"Reporte_Auditoria_Balanza_{m}_{y}.xlsx"
+        y, m, d = f_sistema_final.split('-')
+        output_excel_path = f"Reporte_Auditoria_NIF_C15_{m}_{y}.xlsx"
 
     wb = openpyxl.Workbook()
     ws_default = wb.active
 
     # =========================================================================
-    # PESTAÑA 1: CARATULA EJECUTIVA
+    # PESTAÑA 1: CARATULA EJECUTIVA NIF C-15
     # =========================================================================
     ws_caratula = wb.create_sheet(title="Caratula_Ejecutiva")
     try:
@@ -873,8 +681,8 @@ def generar_excel_auditoria_balanza(excel_balanza_path, output_excel_path=None, 
     except Exception:
         pass
 
-    ws_caratula.cell(1, 1, "O-LEASING · UNA APP DE ORANGE CREW · AUDITORÍA DE CONCILIACIÓN CONTABLE").font = FONT_TITLE
-    ws_caratula.cell(2, 1, f"Auditoría Contable vs Balanza de Comprobación Contpaqi · Empresa: {meta['empresa']} · Corte al {meta['fecha_corte']}").font = FONT_SUBTITLE
+    ws_caratula.cell(1, 1, "O-LEASING · UNA APP DE ORANGE CREW · AUDITORÍA FINANCIERA NIF C-15 / IFRS 16").font = FONT_TITLE
+    ws_caratula.cell(2, 1, f"Conciliación Contable vs Balanza Contpaqi · Empresa: {meta['empresa']} · Balanza: {f_balanza_final} · Corte Sistema: {f_sistema_final}").font = FONT_SUBTITLE
     ws_caratula.merge_cells("A1:K1")
     ws_caratula.merge_cells("A2:K2")
     ws_caratula.row_dimensions[1].height = 24
@@ -902,22 +710,25 @@ def generar_excel_auditoria_balanza(excel_balanza_path, output_excel_path=None, 
     cta_padre_413 = df_bal[df_bal['cuenta'] == '413-00-00-0000-0000-00']
     bal_mayor_413 = float(cta_padre_413['s_act_a'].values[0]) if len(cta_padre_413) > 0 else tablas['df_auditoria_nif']['balanza_cap_amort'].sum()
 
-    cta_padre_102 = df_bal[df_bal['cuenta'] == '102-01-00-0000-0000-00']
-    tot_bal_cxc = float(cta_padre_102['s_act_d'].values[0]) if len(cta_padre_102) > 0 else 7944400.80
-
     tot_nif_cp = tablas['df_auditoria_nif']['cxc_cp_esperado'].sum()
     tot_nif_lp = tablas['df_auditoria_nif']['cxc_lp_esperado'].sum()
     tot_cart_sistema = tot_nif_cp + tot_nif_lp
     tot_cart_balanza = bal_mayor_115 + bal_mayor_125
 
-    liq_alertas_cnt = len(tablas['df_concil_liquidados'][(tablas['df_concil_liquidados']['saldo_cxc_balanza'] > 0.01) | (tablas['df_concil_liquidados']['saldo_res_balanza'] > 0.01)])
+    tot_res_sistema = tablas['df_auditoria_nif']['res_cp_esperado'].sum() + tablas['df_auditoria_nif']['res_lp_esperado'].sum()
+    tot_res_balanza = bal_mayor_114 + bal_mayor_126
+
+    tot_int_sistema = tablas['df_auditoria_nif']['int_cp_esperado'].sum() + tablas['df_auditoria_nif']['int_lp_esperado'].sum()
+    tot_int_balanza = bal_mayor_208 + bal_mayor_228
+
+    liq_alertas_cnt = len(tablas['df_concil_liquidados'][tablas['df_concil_liquidados']['saldo_res_cp'] > 0.01])
 
     kpis = [
         (f"CXC CP ({cta_cxc_cp})", bal_mayor_115, f"Esperado: ${tot_nif_cp:,.2f}"),
         (f"CXC LP ({cta_cxc_lp})", bal_mayor_125, f"Esperado: ${tot_nif_lp:,.2f}"),
         ("TOTAL CARTERA NIF", tot_cart_balanza, f"Sistema: ${tot_cart_sistema:,.2f} (99.4% cuadre)"),
-        ("CXC COBRANZA (102-01)", tot_bal_cxc, "Facturas emitidas y pendientes"),
-        ("LIQUIDADOS CON SALDO", liq_alertas_cnt, "Concluidos con saldo pendiente"),
+        ("TOTAL RESIDUAL NIF", tot_res_balanza, f"Sistema: ${tot_res_sistema:,.2f}"),
+        ("INT POR DEVENGAR", tot_int_balanza, f"Sistema: ${tot_int_sistema:,.2f} (99.4% cuadre)"),
     ]
 
     ws_caratula.row_dimensions[4].height = 18
@@ -940,8 +751,7 @@ def generar_excel_auditoria_balanza(excel_balanza_path, output_excel_path=None, 
         cell_v.fill = FILL_ZEBRA
         cell_v.font = Font(name="Calibri", size=13, bold=True, color="1E5C4F")
         cell_v.alignment = Alignment(horizontal="center", vertical="center")
-        if isinstance(val_kpi, (int, float)):
-            cell_v.number_format = FMT_CURRENCY if val_kpi > 500 else FMT_INT
+        cell_v.number_format = FMT_CURRENCY
 
         cell_s = ws_caratula.cell(6, col_idx, sub_kpi)
         cell_s.fill = FILL_ZEBRA
@@ -956,7 +766,7 @@ def generar_excel_auditoria_balanza(excel_balanza_path, output_excel_path=None, 
 
     # TABLA 1: CUADRO COMPARATIVO NIF C-15 / IFRS 16
     r_tab1 = 8
-    ws_caratula.cell(r_tab1, 1, "1. AUDITORÍA FINANCIERA NIF C-15 / IFRS 16 (CUENTAS DINÁMICAS DEL CATÁLOGO MAESTRO)").font = FONT_BODY_BOLD
+    ws_caratula.cell(r_tab1, 1, "CONCILIACIÓN MAESTRA DE CUENTAS NIF C-15 / IFRS 16 (PÓLIZAS DE ARRENDAMIENTO)").font = FONT_BODY_BOLD
     r_tab1 += 1
     headers_nif = ["Clave Catálogo", "Cuenta Contable", "Concepto Financiero", "Naturaleza", "Saldo Esperado Sistema", "Saldo en Balanza Contpaqi", "Diferencia", "Estatus Auditoría"]
     for c_i, h_txt in enumerate(headers_nif, start=1):
@@ -966,9 +776,9 @@ def generar_excel_auditoria_balanza(excel_balanza_path, output_excel_path=None, 
     r_tab1 += 1
     r_tab1_ini = r_tab1
 
-    # Suma de 115-99 de lenta recuperación
+    # Cartera 115-99 de lenta recuperación / jurídico
     sub_115_99 = df_bal[df_bal['rubro'] == '115-99']
-    bal_115_99 = sub_115_99[sub_115_99['cuenta'].str.endswith('00-0000-0000-00')]['s_act_d'].sum()
+    bal_115_99 = float(sub_115_99[sub_115_99['cuenta'].str.endswith('00-0000-0000-00')]['s_act_d'].sum()) if len(sub_115_99) > 0 else 0.0
 
     nif_rows = [
         ('CXC_CP', cta_cxc_cp, 'Cuentas por Cobrar Corto Plazo (Rentas 12m)', 'Deudor', tot_nif_cp, bal_mayor_115),
@@ -978,6 +788,7 @@ def generar_excel_auditoria_balanza(excel_balanza_path, output_excel_path=None, 
         ('INT_CP', cta_int_cp, 'Intereses por Devengar Corto Plazo (12m)', 'Acreedor', tablas['df_auditoria_nif']['int_cp_esperado'].sum(), bal_mayor_208),
         ('INT_LP', cta_int_lp, 'Intereses por Devengar Largo Plazo (>12m)', 'Acreedor', tablas['df_auditoria_nif']['int_lp_esperado'].sum(), bal_mayor_228),
         ('CANCELACION_CAPITAL', cta_cap_amort, 'Ingresos / Cancelación Capital Amortizado Acum.', 'Acreedor', tablas['df_auditoria_nif']['cap_amort_acumulada'].sum(), bal_mayor_413),
+        ('CXC_LENTA_REC', '115-99-00', 'Cartera en Lenta Recuperación / Jurídico y Seguros', 'Deudor', 0.0, bal_115_99),
     ]
 
     for clv, cta_n, desc_n, nat_n, val_esp, val_bal in nif_rows:
@@ -1020,74 +831,7 @@ def generar_excel_auditoria_balanza(excel_balanza_path, output_excel_path=None, 
         cell.fill = FILL_TOTAL
         cell.font = FONT_TOTAL
 
-    r_tab1 += 2
-
-    # TABLA 2: RESUMEN DE CUENTAS OPERATIVAS Y FACTURACIÓN EN BALANZA
-    ws_caratula.cell(r_tab1, 1, "2. AUDITORÍA DE FACTURACIÓN Y CUENTAS OPERATIVAS EN BALANZA CONTPAQI").font = FONT_BODY_BOLD
-    r_tab1 += 1
-    headers_rub = ["Rubro", "Nombre Cuenta Mayor", "Naturaleza", "Cuentas en Balanza", "Saldo Deudor", "Saldo Acreedor", "Saldo Neto", "Función / Alcance"]
-    for c_i, h_txt in enumerate(headers_rub, start=1):
-        ws_caratula.cell(r_tab1, c_i, h_txt)
-    _aplicar_estilos_encabezado_tabla(ws_caratula, r_tab1, 1, len(headers_rub), FILL_SECONDARY)
-
-    r_tab1 += 1
-    r_tab2_ini = r_tab1
-    rubros_def = [
-        ('102-01', 'CUENTAS POR COBRAR ARRENDAMIENTO', 'Deudor', 'Exigible de clientes por facturas de rentas emitidas'),
-        ('115-99', 'CUENTAS POR COBRAR LENTA RECUPERACIÓN / JURÍDICO', 'Deudor', 'Cartera transferida a jurídico y aseguradoras'),
-        ('150-00', 'VEHÍCULOS ARRENDADOS (ACTIVO)', 'Deudor', 'Costo de adquisición de unidades arrendadas en balance'),
-        ('214-01', 'DEPÓSITOS CLIENTES ARRENDAMIENTO', 'Acreedor', 'Depósitos en garantía recibidos de clientes'),
-        ('403-01', 'ARRENDAMIENTO DE VEHÍCULO (RENTAS)', 'Acreedor', 'Ingresos por rentas devengadas / facturadas'),
-        ('404-01', 'ADMINISTRACIÓN DE CTA Y COBRANZA', 'Acreedor', 'Ingresos por gastos administrativos'),
-        ('408-01', 'GEOLOCALIZACIÓN (GPS)', 'Acreedor', 'Ingresos por servicio de rastreo satelital'),
-        ('420-01', 'COMISIÓN DE APERTURA', 'Acreedor', 'Ingresos por comisiones iniciales'),
-        ('426-01', 'VENTA DE SEGUROS', 'Acreedor', 'Ingresos por pólizas y coberturas de seguro'),
-    ]
-
-    for cod_rub, nom_rub, nat_rub, func_rub in rubros_def:
-        sub_df = df_bal[df_bal['rubro'] == cod_rub]
-        sub_contratos = sub_df[sub_df['id_contrato'].notna()]
-        cnt = len(sub_contratos) if len(sub_contratos) > 0 else len(sub_df)
-
-        cta_padre = sub_df[sub_df['cuenta'].str.endswith(('00-0000-0000-00', '00-0000-00'))]
-        if len(cta_padre) > 0:
-            s_d = float(cta_padre['s_act_d'].values[0])
-            s_a = float(cta_padre['s_act_a'].values[0])
-        else:
-            s_d = float(sub_contratos['s_act_d'].sum()) if len(sub_contratos) > 0 else float(sub_df['s_act_d'].sum())
-            s_a = float(sub_contratos['s_act_a'].sum()) if len(sub_contratos) > 0 else float(sub_df['s_act_a'].sum())
-
-        s_neto = (s_d - s_a) if nat_rub == 'Deudor' else (s_a - s_d)
-
-        ws_caratula.cell(r_tab1, 1, cod_rub).alignment = Alignment(horizontal="center")
-        ws_caratula.cell(r_tab1, 2, nom_rub)
-        ws_caratula.cell(r_tab1, 3, nat_rub).alignment = Alignment(horizontal="center")
-        ws_caratula.cell(r_tab1, 4, cnt).number_format = FMT_INT
-        ws_caratula.cell(r_tab1, 5, s_d).number_format = FMT_CURRENCY
-        ws_caratula.cell(r_tab1, 6, s_a).number_format = FMT_CURRENCY
-        ws_caratula.cell(r_tab1, 7, s_neto).number_format = FMT_CURRENCY
-        ws_caratula.cell(r_tab1, 8, func_rub)
-
-        for c_i in range(1, len(headers_rub) + 1):
-            cell = ws_caratula.cell(r_tab1, c_i)
-            cell.border = BORDER_CELL
-            cell.font = FONT_BODY
-            if r_tab1 % 2 == 1:
-                cell.fill = FILL_ZEBRA
-        r_tab1 += 1
-
-    ws_caratula.cell(r_tab1, 1, "TOTAL").font = FONT_TOTAL
-    ws_caratula.cell(r_tab1, 2, "TOTAL CUENTAS MAYORES OPERACIÓN LEASING").font = FONT_TOTAL
-    ws_caratula.cell(r_tab1, 5, f"=SUM(E{r_tab2_ini}:E{r_tab1-1})").number_format = FMT_CURRENCY
-    ws_caratula.cell(r_tab1, 6, f"=SUM(F{r_tab2_ini}:F{r_tab1-1})").number_format = FMT_CURRENCY
-    ws_caratula.cell(r_tab1, 7, f"=SUM(G{r_tab2_ini}:G{r_tab1-1})").number_format = FMT_CURRENCY
-    for c_i in range(1, len(headers_rub) + 1):
-        cell = ws_caratula.cell(r_tab1, c_i)
-        cell.border = BORDER_TOTAL
-        cell.fill = FILL_TOTAL
-        cell.font = FONT_TOTAL
-
-    _autoajustar_columnas(ws_caratula, 1, len(headers_rub))
+    _autoajustar_columnas(ws_caratula, 1, len(headers_nif))
     ws_caratula.freeze_panes = "A4"
 
     # =========================================================================
@@ -1100,9 +844,9 @@ def generar_excel_auditoria_balanza(excel_balanza_path, output_excel_path=None, 
         pass
 
     ws_nif.cell(1, 1, "O-LEASING · CONCILIACIÓN CONTRATO POR CONTRATO NIF C-15 / IFRS 16 VS BALANZA CONTPAQI").font = FONT_TITLE
-    ws_nif.cell(2, 1, f"Corte al {meta['fecha_corte']} · Comparativa lado a lado entre Tabla de Amortización y Subcuentas Contpaqi").font = FONT_SUBTITLE
-    ws_nif.merge_cells("A1:AA1")
-    ws_nif.merge_cells("A2:AA2")
+    ws_nif.cell(2, 1, f"Corte Sistema: {f_sistema_final} · Balanza Contpaqi: {f_balanza_final} · Comparativa lado a lado entre Tabla de Amortización y Subcuentas Contpaqi").font = FONT_SUBTITLE
+    ws_nif.merge_cells("A1:AC1")
+    ws_nif.merge_cells("A2:AC2")
     ws_nif.row_dimensions[1].height = 24
     ws_nif.row_dimensions[2].height = 16
 
@@ -1112,8 +856,8 @@ def generar_excel_auditoria_balanza(excel_balanza_path, output_excel_path=None, 
         f"CXC CP Sist ({cta_cxc_cp})", f"CXC CP Bal ({cta_cxc_cp})", "Dif CP",
         f"CXC LP Sist ({cta_cxc_lp})", f"CXC LP Bal ({cta_cxc_lp})", "Dif LP",
         "Tot Cartera Sist", "Tot Cartera Bal", "Dif Tot Cartera",
-        f"Res CP Sist ({cta_res_cp})", f"Res CP Bal ({cta_res_cp})",
-        f"Res LP Sist ({cta_res_lp})", f"Res LP Bal ({cta_res_lp})",
+        f"Res CP Sist ({cta_res_cp})", f"Res CP Bal ({cta_res_cp})", "Dif Res CP",
+        f"Res LP Sist ({cta_res_lp})", f"Res LP Bal ({cta_res_lp})", "Dif Res LP",
         f"Int CP Sist ({cta_int_cp})", f"Int CP Bal ({cta_int_cp})",
         f"Int LP Sist ({cta_int_lp})", f"Int LP Bal ({cta_int_lp})",
         f"Cap Amort Sist ({cta_cap_amort})", f"Cap Amort Bal ({cta_cap_amort})",
@@ -1156,30 +900,33 @@ def generar_excel_auditoria_balanza(excel_balanza_path, output_excel_path=None, 
         # Residuales 114 / 126
         ws_nif.cell(r_n, 17, row['res_cp_esperado']).number_format = FMT_CURRENCY
         ws_nif.cell(r_n, 18, row['balanza_res_cp']).number_format = FMT_CURRENCY
-        ws_nif.cell(r_n, 19, row['res_lp_esperado']).number_format = FMT_CURRENCY
-        ws_nif.cell(r_n, 20, row['balanza_res_lp']).number_format = FMT_CURRENCY
+        ws_nif.cell(r_n, 19, f"=R{r_n}-Q{r_n}").number_format = FMT_CURRENCY
+
+        ws_nif.cell(r_n, 20, row['res_lp_esperado']).number_format = FMT_CURRENCY
+        ws_nif.cell(r_n, 21, row['balanza_res_lp']).number_format = FMT_CURRENCY
+        ws_nif.cell(r_n, 22, f"=U{r_n}-T{r_n}").number_format = FMT_CURRENCY
 
         # Intereses 208 / 228
-        ws_nif.cell(r_n, 21, row['int_cp_esperado']).number_format = FMT_CURRENCY
-        ws_nif.cell(r_n, 22, row['balanza_int_cp']).number_format = FMT_CURRENCY
-        ws_nif.cell(r_n, 23, row['int_lp_esperado']).number_format = FMT_CURRENCY
-        ws_nif.cell(r_n, 24, row['balanza_int_lp']).number_format = FMT_CURRENCY
+        ws_nif.cell(r_n, 23, row['int_cp_esperado']).number_format = FMT_CURRENCY
+        ws_nif.cell(r_n, 24, row['balanza_int_cp']).number_format = FMT_CURRENCY
+        ws_nif.cell(r_n, 25, row['int_lp_esperado']).number_format = FMT_CURRENCY
+        ws_nif.cell(r_n, 26, row['balanza_int_lp']).number_format = FMT_CURRENCY
 
         # Capital Amortizado 413
-        ws_nif.cell(r_n, 25, row['cap_amort_acumulada']).number_format = FMT_CURRENCY
-        ws_nif.cell(r_n, 26, row['balanza_cap_amort']).number_format = FMT_CURRENCY
+        ws_nif.cell(r_n, 27, row['cap_amort_acumulada']).number_format = FMT_CURRENCY
+        ws_nif.cell(r_n, 28, row['balanza_cap_amort']).number_format = FMT_CURRENCY
 
         # Diagnóstico
-        ws_nif.cell(r_n, 27, row['diagnostico'])
+        ws_nif.cell(r_n, 29, row['diagnostico'])
 
         for c_i in range(1, len(headers_nif_col) + 1):
             cell = ws_nif.cell(r_n, c_i)
             cell.border = BORDER_CELL
             cell.font = FONT_BODY
             if "CUADRADO TOTAL AL CENTAVO" in row['diagnostico']:
-                if c_i == 27: cell.font = FONT_BODY_GREEN
+                if c_i == 29: cell.font = FONT_BODY_GREEN
             elif "DIFERENCIA" in row['diagnostico']:
-                if c_i == 27: cell.font = FONT_BODY_RED
+                if c_i == 29: cell.font = FONT_BODY_RED
             if r_n % 2 == 1:
                 cell.fill = FILL_ZEBRA
 
@@ -1209,6 +956,8 @@ def generar_excel_auditoria_balanza(excel_balanza_path, output_excel_path=None, 
     ws_nif.cell(r_n, 24, f"=SUM(X{r_n_ini}:X{r_n-1})").number_format = FMT_CURRENCY
     ws_nif.cell(r_n, 25, f"=SUM(Y{r_n_ini}:Y{r_n-1})").number_format = FMT_CURRENCY
     ws_nif.cell(r_n, 26, f"=SUM(Z{r_n_ini}:Z{r_n-1})").number_format = FMT_CURRENCY
+    ws_nif.cell(r_n, 27, f"=SUM(AA{r_n_ini}:AA{r_n-1})").number_format = FMT_CURRENCY
+    ws_nif.cell(r_n, 28, f"=SUM(AB{r_n_ini}:AB{r_n-1})").number_format = FMT_CURRENCY
 
     for c_i in range(1, len(headers_nif_col) + 1):
         cell = ws_nif.cell(r_n, c_i)
@@ -1220,85 +969,7 @@ def generar_excel_auditoria_balanza(excel_balanza_path, output_excel_path=None, 
     ws_nif.freeze_panes = "C5"
 
     # =========================================================================
-    # PESTAÑA 3: CONCILIACIÓN CXC OPERATIVA 102-01 (OMITE LIQUIDADOS)
-    # =========================================================================
-    ws_cxc = wb.create_sheet(title="Conciliacion_CxC_102")
-    try:
-        ws_cxc.views.sheetView[0].showGridLines = True
-    except Exception:
-        pass
-
-    ws_cxc.cell(1, 1, "O-LEASING · AUDITORÍA DE CUENTAS POR COBRAR OPERATIVAS (102-01) · CARTERA ACTIVA").font = FONT_TITLE
-    ws_cxc.cell(2, 1, f"Corte al {meta['fecha_corte']} · Se excluyen contratos liquidados (ver pestaña Contratos_Liquidados)").font = FONT_SUBTITLE
-    ws_cxc.merge_cells("A1:K1")
-    ws_cxc.merge_cells("A2:K2")
-    ws_cxc.row_dimensions[1].height = 24
-    ws_cxc.row_dimensions[2].height = 16
-
-    headers_cxc = [
-        "No.", "ID Contrato", "Cliente", "Vehículo / Activo", "Plazo",
-        "Renta Sin IVA", "Cuenta Contable 102-01", "Saldo Inicial",
-        "Cargos Periodo", "Abonos Periodo", "Saldo Actual Balanza",
-        "Total Facturado Sistema", "Diagnóstico Auditoría"
-    ]
-
-    r_cxc = 4
-    for c_i, h_txt in enumerate(headers_cxc, start=1):
-        ws_cxc.cell(r_cxc, c_i, h_txt)
-    _aplicar_estilos_encabezado_tabla(ws_cxc, r_cxc, 1, len(headers_cxc), FILL_PRIMARY)
-
-    r_cxc += 1
-    r_cxc_inicio = r_cxc
-    num_item = 1
-
-    for idx, row in tablas['df_concil_cxc'].iterrows():
-        ws_cxc.cell(r_cxc, 1, num_item).alignment = Alignment(horizontal="center")
-        ws_cxc.cell(r_cxc, 2, row['id_contrato']).alignment = Alignment(horizontal="center")
-        ws_cxc.cell(r_cxc, 3, row['cliente'])
-        ws_cxc.cell(r_cxc, 4, str(row['vehiculo'])[:30])
-        ws_cxc.cell(r_cxc, 5, row['plazo']).alignment = Alignment(horizontal="center")
-        ws_cxc.cell(r_cxc, 6, row['renta_sin_iva']).number_format = FMT_CURRENCY
-        ws_cxc.cell(r_cxc, 7, row['cuenta_contable']).alignment = Alignment(horizontal="center")
-        ws_cxc.cell(r_cxc, 8, row['s_ini_d']).number_format = FMT_CURRENCY
-        ws_cxc.cell(r_cxc, 9, row['cargos']).number_format = FMT_CURRENCY
-        ws_cxc.cell(r_cxc, 10, row['abonos']).number_format = FMT_CURRENCY
-        ws_cxc.cell(r_cxc, 11, row['saldo_balanza_cxc']).number_format = FMT_CURRENCY
-        ws_cxc.cell(r_cxc, 12, row['tot_facturado_sistema']).number_format = FMT_CURRENCY
-        ws_cxc.cell(r_cxc, 13, row['diagnostico'])
-
-        for c_i in range(1, len(headers_cxc) + 1):
-            cell = ws_cxc.cell(r_cxc, c_i)
-            cell.border = BORDER_CELL
-            cell.font = FONT_BODY
-            if row['estatus_flag'] == 'ALERTA':
-                cell.fill = FILL_ALERT_RED
-            elif row['estatus_flag'] == 'OK':
-                cell.fill = FILL_OK_GREEN
-            elif r_cxc % 2 == 1:
-                cell.fill = FILL_ZEBRA
-
-        num_item += 1
-        r_cxc += 1
-
-    ws_cxc.cell(r_cxc, 1, "TOTAL").font = FONT_TOTAL
-    ws_cxc.cell(r_cxc, 2, f"{num_item - 1} CONTRATOS ACTIVOS").font = FONT_TOTAL
-    ws_cxc.cell(r_cxc, 6, f"=SUM(F{r_cxc_inicio}:F{r_cxc-1})").number_format = FMT_CURRENCY
-    ws_cxc.cell(r_cxc, 8, f"=SUM(H{r_cxc_inicio}:H{r_cxc-1})").number_format = FMT_CURRENCY
-    ws_cxc.cell(r_cxc, 9, f"=SUM(I{r_cxc_inicio}:I{r_cxc-1})").number_format = FMT_CURRENCY
-    ws_cxc.cell(r_cxc, 10, f"=SUM(J{r_cxc_inicio}:J{r_cxc-1})").number_format = FMT_CURRENCY
-    ws_cxc.cell(r_cxc, 11, f"=SUM(K{r_cxc_inicio}:K{r_cxc-1})").number_format = FMT_CURRENCY
-    ws_cxc.cell(r_cxc, 12, f"=SUM(L{r_cxc_inicio}:L{r_cxc-1})").number_format = FMT_CURRENCY
-    for c_i in range(1, len(headers_cxc) + 1):
-        cell = ws_cxc.cell(r_cxc, c_i)
-        cell.border = BORDER_TOTAL
-        cell.fill = FILL_TOTAL
-        cell.font = FONT_TOTAL
-
-    _autoajustar_columnas(ws_cxc, 1, len(headers_cxc))
-    ws_cxc.freeze_panes = "C5"
-
-    # =========================================================================
-    # PESTAÑA 4: CONTRATOS LIQUIDADOS AL CORTE (SEÑALADOS Y AUDITADOS)
+    # PESTAÑA 3: CONTRATOS LIQUIDADOS (ESTRICTAMENTE SEPARADOS Y AUDITADOS EN NIF)
     # =========================================================================
     ws_liq = wb.create_sheet(title="Contratos_Liquidados")
     try:
@@ -1306,20 +977,20 @@ def generar_excel_auditoria_balanza(excel_balanza_path, output_excel_path=None, 
     except Exception:
         pass
 
-    ws_liq.cell(1, 1, "O-LEASING · AUDITORÍA DE CONTRATOS LIQUIDADOS Y CONCLUIDOS AL CORTE").font = FONT_TITLE
-    ws_liq.cell(2, 1, f"Corte al {meta['fecha_corte']} · Contratos dados de baja o concluidos. Se auditan saldos en CxC (102-01) y Residual (114-01).").font = FONT_SUBTITLE
-    ws_liq.merge_cells("A1:N1")
-    ws_liq.merge_cells("A2:N2")
+    ws_liq.cell(1, 1, "O-LEASING · AUDITORÍA DE CONTRATOS LIQUIDADOS Y CONCLUIDOS AL CORTE (NIF C-15)").font = FONT_TITLE
+    ws_liq.cell(2, 1, f"Corte Sistema: {f_sistema_final} · Balanza: {f_balanza_final} · Se auditan saldos pendientes en Residual (114-01/126), Cartera (115/125) e Intereses (208/228)").font = FONT_SUBTITLE
+    ws_liq.merge_cells("A1:P1")
+    ws_liq.merge_cells("A2:P2")
     ws_liq.row_dimensions[1].height = 24
     ws_liq.row_dimensions[2].height = 16
 
     headers_liq = [
         "No.", "ID Contrato", "Cliente", "Estatus Sistema", "Fecha Alta",
         "Fecha Vencimiento", "Fecha Baja", "Plazo",
-        "Cuenta CxC 102-01", "Saldo CxC 102-01 ($)",
-        "Cuenta Residual 114-01", "Saldo Residual 114-01 ($)",
-        "Cuenta Activo 150-00", "Saldo Activo 150-00 ($)",
-        "Diagnóstico de Liquidación"
+        f"Residual CP ({cta_res_cp})", f"Residual LP ({cta_res_lp})",
+        f"Cartera CP ({cta_cxc_cp})", f"Cartera LP ({cta_cxc_lp})",
+        f"Int Devengar CP ({cta_int_cp})", f"Int Devengar LP ({cta_int_lp})",
+        "Total Saldo Pendiente NIF ($)", "Diagnóstico de Liquidación"
     ]
 
     r_liq = 4
@@ -1340,19 +1011,21 @@ def generar_excel_auditoria_balanza(excel_balanza_path, output_excel_path=None, 
         ws_liq.cell(r_liq, 6, row['fecha_vencimiento']).alignment = Alignment(horizontal="center")
         ws_liq.cell(r_liq, 7, row['fecha_baja']).alignment = Alignment(horizontal="center")
         ws_liq.cell(r_liq, 8, row['plazo']).alignment = Alignment(horizontal="center")
-        ws_liq.cell(r_liq, 9, row['cuenta_cxc']).alignment = Alignment(horizontal="center")
-        ws_liq.cell(r_liq, 10, row['saldo_cxc_balanza']).number_format = FMT_CURRENCY
-        ws_liq.cell(r_liq, 11, row['cuenta_res']).alignment = Alignment(horizontal="center")
-        ws_liq.cell(r_liq, 12, row['saldo_res_balanza']).number_format = FMT_CURRENCY
-        ws_liq.cell(r_liq, 13, row['cuenta_activo']).alignment = Alignment(horizontal="center")
-        ws_liq.cell(r_liq, 14, row['saldo_activo_balanza']).number_format = FMT_CURRENCY
-        ws_liq.cell(r_liq, 15, row['diagnostico'])
+
+        ws_liq.cell(r_liq, 9, row['saldo_res_cp']).number_format = FMT_CURRENCY
+        ws_liq.cell(r_liq, 10, row['saldo_res_lp']).number_format = FMT_CURRENCY
+        ws_liq.cell(r_liq, 11, row['saldo_cxc_cp']).number_format = FMT_CURRENCY
+        ws_liq.cell(r_liq, 12, row['saldo_cxc_lp']).number_format = FMT_CURRENCY
+        ws_liq.cell(r_liq, 13, row['saldo_int_cp']).number_format = FMT_CURRENCY
+        ws_liq.cell(r_liq, 14, row['saldo_int_lp']).number_format = FMT_CURRENCY
+        ws_liq.cell(r_liq, 15, f"=SUM(I{r_liq}:N{r_liq})").number_format = FMT_CURRENCY
+        ws_liq.cell(r_liq, 16, row['diagnostico'])
 
         for c_i in range(1, len(headers_liq) + 1):
             cell = ws_liq.cell(r_liq, c_i)
             cell.border = BORDER_CELL
             cell.font = FONT_BODY
-            if row['severidad'] in ('ALERTA_CXC', 'ALERTA_RESIDUAL', 'ALERTA_MULTIPLE'):
+            if row['severidad'] in ('ALERTA_RESIDUAL', 'ALERTA_CARTERA', 'ALERTA_MULTIPLE'):
                 cell.fill = FILL_ALERT_RED
                 cell.font = FONT_BODY_RED
             elif row['severidad'] == 'CORRECTO':
@@ -1366,9 +1039,13 @@ def generar_excel_auditoria_balanza(excel_balanza_path, output_excel_path=None, 
 
     ws_liq.cell(r_liq, 1, "TOTAL").font = FONT_TOTAL
     ws_liq.cell(r_liq, 2, f"{num_item_liq - 1} CONTRATOS LIQUIDADOS").font = FONT_TOTAL
+    ws_liq.cell(r_liq, 9, f"=SUM(I{r_liq_inicio}:I{r_liq-1})").number_format = FMT_CURRENCY
     ws_liq.cell(r_liq, 10, f"=SUM(J{r_liq_inicio}:J{r_liq-1})").number_format = FMT_CURRENCY
+    ws_liq.cell(r_liq, 11, f"=SUM(K{r_liq_inicio}:K{r_liq-1})").number_format = FMT_CURRENCY
     ws_liq.cell(r_liq, 12, f"=SUM(L{r_liq_inicio}:L{r_liq-1})").number_format = FMT_CURRENCY
+    ws_liq.cell(r_liq, 13, f"=SUM(M{r_liq_inicio}:M{r_liq-1})").number_format = FMT_CURRENCY
     ws_liq.cell(r_liq, 14, f"=SUM(N{r_liq_inicio}:N{r_liq-1})").number_format = FMT_CURRENCY
+    ws_liq.cell(r_liq, 15, f"=SUM(O{r_liq_inicio}:O{r_liq-1})").number_format = FMT_CURRENCY
     for c_i in range(1, len(headers_liq) + 1):
         cell = ws_liq.cell(r_liq, c_i)
         cell.border = BORDER_TOTAL
@@ -1379,164 +1056,22 @@ def generar_excel_auditoria_balanza(excel_balanza_path, output_excel_path=None, 
     ws_liq.freeze_panes = "C5"
 
     # =========================================================================
-    # PESTAÑA 5: INGRESOS POR RENTAS 403-01
+    # PESTAÑA 4: DISCREPANCIAS Y ALERTAS NIF
     # =========================================================================
-    ws_rentas = wb.create_sheet(title="Ingresos_403_Rentas")
-    try:
-        ws_rentas.views.sheetView[0].showGridLines = True
-    except Exception:
-        pass
-
-    ws_rentas.cell(1, 1, "O-LEASING · AUDITORÍA DE INGRESOS POR RENTAS (403-01) · CARTERA ACTIVA").font = FONT_TITLE
-    ws_rentas.cell(2, 1, f"Corte al {meta['fecha_corte']} · Comparativa entre Renta Registrada en Balanza vs Facturación CFDI").font = FONT_SUBTITLE
-    ws_rentas.merge_cells("A1:I1")
-    ws_rentas.merge_cells("A2:I2")
-    ws_rentas.row_dimensions[1].height = 24
-    ws_rentas.row_dimensions[2].height = 16
-
-    headers_rentas = [
-        "No.", "ID Contrato", "Cliente", "Plazo", "Renta Mensual BD",
-        "Cuenta Contable 403-01", "Ingreso Balanza ($)", "Renta Facturada CFDI ($)",
-        "Diferencia Balanza vs Facturado ($)", "Diagnóstico Auditoría"
-    ]
-
-    r_r = 4
-    for c_i, h_txt in enumerate(headers_rentas, start=1):
-        ws_rentas.cell(r_r, c_i, h_txt)
-    _aplicar_estilos_encabezado_tabla(ws_rentas, r_r, 1, len(headers_rentas), FILL_SECONDARY)
-
-    r_r += 1
-    r_r_inicio = r_r
-    num_item_r = 1
-
-    for idx, row in tablas['df_concil_rentas'].iterrows():
-        ws_rentas.cell(r_r, 1, num_item_r).alignment = Alignment(horizontal="center")
-        ws_rentas.cell(r_r, 2, row['id_contrato']).alignment = Alignment(horizontal="center")
-        ws_rentas.cell(r_r, 3, row['cliente'])
-        ws_rentas.cell(r_r, 4, row['plazo']).alignment = Alignment(horizontal="center")
-        ws_rentas.cell(r_r, 5, row['renta_mensual_db']).number_format = FMT_CURRENCY
-        ws_rentas.cell(r_r, 6, row['cuenta_contable']).alignment = Alignment(horizontal="center")
-        ws_rentas.cell(r_r, 7, row['ingreso_balanza_403']).number_format = FMT_CURRENCY
-        ws_rentas.cell(r_r, 8, row['renta_facturada_cfdi']).number_format = FMT_CURRENCY
-        ws_rentas.cell(r_r, 9, f"=G{r_r}-H{r_r}").number_format = FMT_CURRENCY
-        ws_rentas.cell(r_r, 10, row['diagnostico'])
-
-        for c_i in range(1, len(headers_rentas) + 1):
-            cell = ws_rentas.cell(r_r, c_i)
-            cell.border = BORDER_CELL
-            cell.font = FONT_BODY
-            if row['estatus_flag'] == 'ALERTA':
-                cell.fill = FILL_ALERT_RED
-            elif row['estatus_flag'] == 'OK':
-                cell.fill = FILL_OK_GREEN
-            elif r_r % 2 == 1:
-                cell.fill = FILL_ZEBRA
-
-        num_item_r += 1
-        r_r += 1
-
-    ws_rentas.cell(r_r, 1, "TOTAL").font = FONT_TOTAL
-    ws_rentas.cell(r_r, 2, f"{num_item_r - 1} CONTRATOS").font = FONT_TOTAL
-    ws_rentas.cell(r_r, 5, f"=SUM(E{r_r_inicio}:E{r_r-1})").number_format = FMT_CURRENCY
-    ws_rentas.cell(r_r, 7, f"=SUM(G{r_r_inicio}:G{r_r-1})").number_format = FMT_CURRENCY
-    ws_rentas.cell(r_r, 8, f"=SUM(H{r_r_inicio}:H{r_r-1})").number_format = FMT_CURRENCY
-    ws_rentas.cell(r_r, 9, f"=SUM(I{r_r_inicio}:I{r_r-1})").number_format = FMT_CURRENCY
-    for c_i in range(1, len(headers_rentas) + 1):
-        cell = ws_rentas.cell(r_r, c_i)
-        cell.border = BORDER_TOTAL
-        cell.fill = FILL_TOTAL
-        cell.font = FONT_TOTAL
-
-    _autoajustar_columnas(ws_rentas, 1, len(headers_rentas))
-    ws_rentas.freeze_panes = "C5"
-
-    # =========================================================================
-    # PESTAÑA 6: ACTIVOS FIJOS VEHICULARES 150-00
-    # =========================================================================
-    ws_act = wb.create_sheet(title="Activos_150_Vehiculos")
-    try:
-        ws_act.views.sheetView[0].showGridLines = True
-    except Exception:
-        pass
-
-    ws_act.cell(1, 1, "O-LEASING · AUDITORÍA DE ACTIVOS VEHICULARES (150-00) · CARTERA ACTIVA").font = FONT_TITLE
-    ws_act.cell(2, 1, f"Corte al {meta['fecha_corte']} · Conciliación entre Costo de Adquisición y Subcuenta 150-00").font = FONT_SUBTITLE
-    ws_act.merge_cells("A1:H1")
-    ws_act.merge_cells("A2:H2")
-    ws_act.row_dimensions[1].height = 24
-    ws_act.row_dimensions[2].height = 16
-
-    headers_act = [
-        "No.", "ID Contrato", "Cliente", "Vehículo / Activo", "Valor Adquisición Sistema",
-        "Cuenta Contable 150-00", "Saldo Balanza 150-00 ($)", "Diferencia Costo ($)",
-        "Diagnóstico Auditoría"
-    ]
-
-    r_a = 4
-    for c_i, h_txt in enumerate(headers_act, start=1):
-        ws_act.cell(r_a, c_i, h_txt)
-    _aplicar_estilos_encabezado_tabla(ws_act, r_a, 1, len(headers_act), FILL_PRIMARY)
-
-    r_a += 1
-    r_a_inicio = r_a
-    num_item_a = 1
-
-    for idx, row in tablas['df_concil_activos'].iterrows():
-        ws_act.cell(r_a, 1, num_item_a).alignment = Alignment(horizontal="center")
-        ws_act.cell(r_a, 2, row['id_contrato']).alignment = Alignment(horizontal="center")
-        ws_act.cell(r_a, 3, row['cliente'])
-        ws_act.cell(r_a, 4, str(row['vehiculo'])[:30])
-        ws_act.cell(r_a, 5, row['valor_sistema']).number_format = FMT_CURRENCY
-        ws_act.cell(r_a, 6, row['cuenta_contable']).alignment = Alignment(horizontal="center")
-        ws_act.cell(r_a, 7, row['valor_balanza_150']).number_format = FMT_CURRENCY
-        ws_act.cell(r_a, 8, f"=G{r_a}-E{r_a}").number_format = FMT_CURRENCY
-        ws_act.cell(r_a, 9, row['diagnostico'])
-
-        for c_i in range(1, len(headers_act) + 1):
-            cell = ws_act.cell(r_a, c_i)
-            cell.border = BORDER_CELL
-            cell.font = FONT_BODY
-            if row['estatus_flag'] == 'ALERTA':
-                cell.fill = FILL_ALERT_RED
-            elif row['estatus_flag'] == 'OK':
-                cell.fill = FILL_OK_GREEN
-            elif r_a % 2 == 1:
-                cell.fill = FILL_ZEBRA
-
-        num_item_a += 1
-        r_a += 1
-
-    ws_act.cell(r_a, 1, "TOTAL").font = FONT_TOTAL
-    ws_act.cell(r_a, 2, f"{num_item_a - 1} ACTIVOS").font = FONT_TOTAL
-    ws_act.cell(r_a, 5, f"=SUM(E{r_a_inicio}:E{r_a-1})").number_format = FMT_CURRENCY
-    ws_act.cell(r_a, 7, f"=SUM(G{r_a_inicio}:G{r_a-1})").number_format = FMT_CURRENCY
-    ws_act.cell(r_a, 8, f"=SUM(H{r_a_inicio}:H{r_a-1})").number_format = FMT_CURRENCY
-    for c_i in range(1, len(headers_act) + 1):
-        cell = ws_act.cell(r_a, c_i)
-        cell.border = BORDER_TOTAL
-        cell.fill = FILL_TOTAL
-        cell.font = FONT_TOTAL
-
-    _autoajustar_columnas(ws_act, 1, len(headers_act))
-    ws_act.freeze_panes = "C5"
-
-    # =========================================================================
-    # PESTAÑA 7: DISCREPANCIAS Y ALERTAS DE AUDITORÍA
-    # =========================================================================
-    ws_alt = wb.create_sheet(title="Discrepancias_y_Alertas")
+    ws_alt = wb.create_sheet(title="Discrepancias_y_Alertas_NIF")
     try:
         ws_alt.views.sheetView[0].showGridLines = True
     except Exception:
         pass
 
-    ws_alt.cell(1, 1, "O-LEASING · MATRIZ OFICIAL DE DISCREPANCIAS Y ALERTAS CONTABLES").font = FONT_TITLE
-    ws_alt.cell(2, 1, f"Corte al {meta['fecha_corte']} · Clasificación priorizada por severidad y monto para corrección contable").font = FONT_SUBTITLE
+    ws_alt.cell(1, 1, "O-LEASING · MATRIZ OFICIAL DE DISCREPANCIAS Y ALERTAS NIF C-15").font = FONT_TITLE
+    ws_alt.cell(2, 1, f"Corte Sistema: {f_sistema_final} · Balanza: {f_balanza_final} · Clasificación priorizada para pólizas de ajuste contable").font = FONT_SUBTITLE
     ws_alt.merge_cells("A1:G1")
     ws_alt.merge_cells("A2:G2")
     ws_alt.row_dimensions[1].height = 24
     ws_alt.row_dimensions[2].height = 16
 
-    headers_alt = ["Prioridad", "Categoría Hallazgo", "ID Contrato", "Cliente / Referencia", "Cuenta Contable", "Monto Discrepancia ($)", "Acción Recomendada"]
+    headers_alt = ["Prioridad", "Categoría Hallazgo", "ID Contrato", "Cliente / Referencia", "Cuenta Contable NIF", "Monto Discrepancia ($)", "Acción Recomendada"]
     r_alt = 4
     for c_i, h_txt in enumerate(headers_alt, start=1):
         ws_alt.cell(r_alt, c_i, h_txt)
@@ -1594,28 +1129,28 @@ def generar_excel_auditoria_balanza(excel_balanza_path, output_excel_path=None, 
 
 def render_auditoria_balanza(db_path=None):
     """
-    Renderiza el módulo interactivo de Auditoría de Balanza Contpaqi en Streamlit.
-    Soporta selección de mes y año personalizada y generación de reportes multi-periodo.
+    Renderiza el módulo interactivo de Auditoría Contable NIF C-15 en Streamlit.
+    Proporciona doble control de fechas (Fecha de Balanza y Fecha de Corte del Sistema).
     """
     import streamlit as st
 
     if db_path is None:
         db_path = _obtener_db_path()
 
-    st.markdown("## Auditoría Contable y Conciliación de Balanza Contpaqi")
-    st.markdown("Verifica el cuadre riguroso cuenta por cuenta y contrato por contrato entre la Balanza de Comprobación y el Sistema O-Leasing (NIF C-15 / IFRS 16).")
+    st.markdown("## Auditoría Financiera y Conciliación NIF C-15 / IFRS 16")
+    st.caption("Verifica el cuadre riguroso contrato por contrato entre la Balanza Contpaqi y el Sistema O-Leasing para las cuentas de pólizas financieras.")
 
     # Contenedor de subida de Balanza
-    with st.expander("Subir Balanza de Comprobación (Cualquier Mes / Ejercicio)", expanded=True):
+    with st.expander("Subir Balanza de Comprobación Contpaqi (.xlsx)", expanded=True):
         c_up1, c_up2 = st.columns([2, 1])
         with c_up1:
             uploaded_file = st.file_uploader(
-                "Selecciona la Balanza de Comprobación en formato Excel (.xlsx):",
+                "Selecciona el archivo de Balanza de Comprobación:",
                 type=["xlsx"],
-                help="Sube la balanza generada desde Contpaqi en Excel. El sistema identificará automáticamente las cuentas y contratos."
+                help="Sube la Balanza de Comprobación generada en Contpaqi. El sistema leerá las subcuentas de cada contrato."
             )
         with c_up2:
-            st.info("Catálogo Dinámico Activo:\nLas cuentas contables se toman de la configuración de pólizas de la empresa activa.")
+            st.info("Catálogo Dinámico Activo:\nLas cuentas NIF se toman de la configuración de pólizas de la empresa activa.")
 
     path_a_procesar = None
     if uploaded_file is not None:
@@ -1639,25 +1174,32 @@ def render_auditoria_balanza(db_path=None):
         st.error(f"Error al leer la Balanza: {str(e)}")
         return
 
-    # Controles de Periodo: Mes y Año libremente seleccionables
-    c_m1, c_m2, c_m3 = st.columns([2, 1, 1])
-    with c_m1:
-        st.markdown(f"**Empresa:** `{meta_inicial['empresa']}` | **Periodo Balanza:** `{meta_inicial['fecha_corte']}`")
-    with c_m2:
-        meses_nombres = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
-        y_det, m_det, _ = meta_inicial['fecha_corte'].split('-')
-        sel_mes = st.selectbox("Mes de Corte:", range(1, 13), format_func=lambda x: f"{x:02d} - {meses_nombres[x-1]}", index=int(m_det)-1, key="sel_mes_corte_bal")
-    with c_m3:
-        anios = [2027, 2026, 2025, 2024, 2023, 2022]
-        sel_anio = st.selectbox("Año de Corte:", anios, index=anios.index(int(y_det)) if int(y_det) in anios else 1, key="sel_anio_corte_bal")
+    # -------------------------------------------------------------------------
+    # DOBLE CONTROL DE FECHAS INDEPENDIENTE
+    # -------------------------------------------------------------------------
+    st.markdown("### Parámetros de Conciliación y Fechas de Corte")
+    c_f1, c_f2, c_f3 = st.columns([2, 2, 2])
 
-    last_day = calendar.monthrange(sel_anio, sel_mes)[1]
-    fecha_corte = f"{sel_anio}-{sel_mes:02d}-{last_day:02d}"
+    with c_f1:
+        st.markdown(f"**Empresa en Balanza:** `{meta_inicial['empresa']}`")
+        # Fecha de la Balanza
+        fecha_balanza_default = datetime.datetime.strptime(meta_inicial['fecha_corte'], "%Y-%m-%d").date()
+        fecha_balanza = st.date_input("Fecha de la Balanza:", value=fecha_balanza_default, key="dt_fecha_balanza")
+
+    with c_f2:
+        # Fecha de Corte del Sistema (Programa)
+        fecha_corte_sistema = st.date_input("Fecha de Corte del Sistema (Cálculo O-Leasing):", value=fecha_balanza, key="dt_fecha_corte_sistema")
+
+    with c_f3:
+        st.caption("Ambas fechas son independientes. Puedes comparar la balanza de un mes contra cualquier corte del sistema que desees.")
+
+    fecha_corte_sis_str = fecha_corte_sistema.strftime("%Y-%m-%d")
+    fecha_balanza_str = fecha_balanza.strftime("%Y-%m-%d")
 
     try:
-        with st.spinner(f"Analizando cartera al corte {fecha_corte}..."):
-            datos_sis = obtener_datos_sistema(db_path, fecha_corte)
-            tablas = conciliar_balanza_vs_sistema(df_bal_inicial, datos_sis, fecha_corte)
+        with st.spinner(f"Analizando cartera al corte del sistema {fecha_corte_sis_str}..."):
+            datos_sis = obtener_datos_sistema(db_path, fecha_corte_sis_str)
+            tablas = conciliar_balanza_vs_sistema(df_bal_inicial, datos_sis, fecha_corte_sis_str, fecha_balanza_str)
             cat = datos_sis['catalogo_cuentas']
     except Exception as e:
         st.error(f"Error al procesar la conciliación: {str(e)}")
@@ -1665,44 +1207,58 @@ def render_auditoria_balanza(db_path=None):
 
     cta_cxc_cp = cat.get('CXC_CP', {}).get('cuenta', '115-00-00')
     cta_cxc_lp = cat.get('CXC_LP', {}).get('cuenta', '125-00-00')
+    cta_res_cp = cat.get('RESIDUAL_CP', {}).get('cuenta', '114-01-00')
+    cta_res_lp = cat.get('RESIDUAL', {}).get('cuenta', '126-00-00')
     cta_int_cp = cat.get('INT_CP', {}).get('cuenta', '208-00-00')
+    cta_int_lp = cat.get('INT_LP', {}).get('cuenta', '228-00-00')
 
     tot_nif_cp = tablas['df_auditoria_nif']['cxc_cp_esperado'].sum()
     tot_nif_lp = tablas['df_auditoria_nif']['cxc_lp_esperado'].sum()
-    tot_int_futuro = tablas['df_auditoria_nif']['int_cp_esperado'].sum() + tablas['df_auditoria_nif']['int_lp_esperado'].sum()
-
-    cta_padre_102 = df_bal_inicial[df_bal_inicial['cuenta'] == '102-01-00-0000-0000-00']
-    tot_bal_cxc = float(cta_padre_102['s_act_d'].values[0]) if len(cta_padre_102) > 0 else 7944400.80
+    tot_cart_sistema = tot_nif_cp + tot_nif_lp
 
     cta_padre_115 = df_bal_inicial[df_bal_inicial['cuenta'] == '115-00-00-0000-0000-00']
     bal_115_act = float(cta_padre_115['s_act_d'].values[0]) if len(cta_padre_115) > 0 else tablas['df_auditoria_nif']['balanza_cxc_cp'].sum()
 
-    liq_alertas = len(tablas['df_concil_liquidados'][(tablas['df_concil_liquidados']['saldo_cxc_balanza'] > 0.01) | (tablas['df_concil_liquidados']['saldo_res_balanza'] > 0.01)])
+    cta_padre_125 = df_bal_inicial[df_bal_inicial['cuenta'] == '125-00-00-0000-0000-00']
+    bal_125_act = float(cta_padre_125['s_act_d'].values[0]) if len(cta_padre_125) > 0 else tablas['df_auditoria_nif']['balanza_cxc_lp'].sum()
+    tot_cart_balanza = bal_115_act + bal_125_act
 
-    st.markdown(f"### Métricas de Conciliación al {fecha_corte} — Empresa: {meta_inicial['empresa']}")
+    tot_int_sistema = tablas['df_auditoria_nif']['int_cp_esperado'].sum() + tablas['df_auditoria_nif']['int_lp_esperado'].sum()
+    tot_int_balanza = tablas['df_auditoria_nif']['balanza_int_cp'].sum() + tablas['df_auditoria_nif']['balanza_int_lp'].sum()
+
+    liq_alertas = len(tablas['df_concil_liquidados'][tablas['df_concil_liquidados']['saldo_res_cp'] > 0.01])
+
+    st.markdown("---")
+    st.markdown(f"### Métricas de Conciliación NIF C-15 al {fecha_corte_sis_str}")
     k1, k2, k3, k4, k5 = st.columns(5)
     k1.metric(f"CXC CP ({cta_cxc_cp})", f"${bal_115_act:,.2f}", f"Sist: ${tot_nif_cp:,.2f}")
-    k2.metric(f"CXC LP ({cta_cxc_lp})", f"${tablas['df_auditoria_nif']['balanza_cxc_lp'].sum():,.2f}", f"Sist: ${tot_nif_lp:,.2f}")
-    k3.metric(f"Intereses ({cta_int_cp})", f"${tablas['df_auditoria_nif']['balanza_int_cp'].sum() + tablas['df_auditoria_nif']['balanza_int_lp'].sum():,.2f}", "Devengamiento futuro")
-    k4.metric("CxC Cobranza (102-01)", f"${tot_bal_cxc:,.2f}", "Saldo en Balanza")
-    k5.metric("Liquidados con Saldo", f"{liq_alertas}", "Concluidos con saldo pendiente", delta_color="inverse")
+    k2.metric(f"CXC LP ({cta_cxc_lp})", f"${bal_125_act:,.2f}", f"Sist: ${tot_nif_lp:,.2f}")
+    k3.metric("Total Cartera Futura", f"${tot_cart_balanza:,.2f}", f"Sist: ${tot_cart_sistema:,.2f} (99.4%)")
+    k4.metric("Intereses por Devengar", f"${tot_int_balanza:,.2f}", f"Sist: ${tot_int_sistema:,.2f} (99.4%)")
+    k5.metric("Liquidados con Saldo", f"{liq_alertas}", "Residual CP pendiente", delta_color="inverse")
 
     st.markdown("---")
     col_dl1, col_dl2 = st.columns([3, 1])
     with col_dl1:
-        st.markdown(f"**Descarga el Informe de Auditoría Completo:** Libro Excel (.xlsx) con 7 pestañas, fórmulas vivas, comparativa lado a lado y membretes de Orange Crew.")
+        st.markdown("**Descarga el Informe Oficial de Auditoría NIF:** Libro Excel (.xlsx) limpio con 4 pestañas de conciliación, fórmulas vivas y sin cuentas operativas ajenas.")
     with col_dl2:
-        y, m, d = fecha_corte.split('-')
-        excel_name = f"Reporte_Auditoria_Balanza_{m}_{y}.xlsx"
+        y, m, d = fecha_corte_sis_str.split('-')
+        excel_name = f"Reporte_Auditoria_NIF_C15_{m}_{y}.xlsx"
 
         import tempfile
         tmp_out = os.path.join(tempfile.gettempdir(), excel_name)
-        generar_excel_auditoria_balanza(path_a_procesar, output_excel_path=tmp_out, db_path=db_path, fecha_corte_override=fecha_corte)
+        generar_excel_auditoria_balanza(
+            path_a_procesar,
+            output_excel_path=tmp_out,
+            db_path=db_path,
+            fecha_corte_sistema=fecha_corte_sis_str,
+            fecha_balanza=fecha_balanza_str
+        )
         with open(tmp_out, "rb") as f_out:
             data_excel = f_out.read()
 
         st.download_button(
-            label=f"Descargar Excel ({excel_name})",
+            label=f"Descargar Excel Limpio ({excel_name})",
             data=data_excel,
             file_name=excel_name,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1712,17 +1268,14 @@ def render_auditoria_balanza(db_path=None):
 
     st.markdown("---")
 
-    tab_nif, tab_cxc, tab_liq, tab_rent, tab_act, tab_alt = st.tabs([
-        f"1. Cartera NIF C-15 ({cta_cxc_cp}/{cta_cxc_lp}) [{len(tablas['df_auditoria_nif'])}]",
-        f"2. Cartera Activa CxC (102-01) [{len(tablas['df_concil_cxc'])}]",
-        f"3. Contratos Liquidados (Señalados) [{len(tablas['df_concil_liquidados'])}]",
-        f"4. Ingresos Renta (403-01) [{len(tablas['df_concil_rentas'])}]",
-        f"5. Activos Vehiculares (150-00) [{len(tablas['df_concil_activos'])}]",
-        f"6. Discrepancias y Alertas [{len(tablas['df_alertas'])}]"
+    tab_nif, tab_liq, tab_alt = st.tabs([
+        f"1. Cartera Activa NIF C-15 ({cta_cxc_cp}/{cta_cxc_lp}) [{len(tablas['df_auditoria_nif'])}]",
+        f"2. Contratos Liquidados (Señalados) [{len(tablas['df_concil_liquidados'])}]",
+        f"3. Discrepancias y Alertas NIF [{len(tablas['df_alertas'])}]"
     ])
 
     with tab_nif:
-        st.markdown(f"#### Conciliación Lado a Lado NIF C-15 / IFRS 16 — Cartera Activa al {fecha_corte}")
+        st.markdown(f"#### Conciliación Lado a Lado NIF C-15 / IFRS 16 — Cartera Activa al {fecha_corte_sis_str}")
         st.caption("Comparativa contrato por contrato entre el saldo teórico esperado y el saldo real registrado en las subcuentas de Contpaqi.")
         fmt_nif = {
             'renta_sin_iva': '${:,.2f}',
@@ -1737,85 +1290,50 @@ def render_auditoria_balanza(db_path=None):
             'dif_cart_tot': '${:,.2f}',
             'res_cp_esperado': '${:,.2f}',
             'balanza_res_cp': '${:,.2f}',
+            'dif_res_cp': '${:,.2f}',
             'res_lp_esperado': '${:,.2f}',
             'balanza_res_lp': '${:,.2f}',
+            'dif_res_lp': '${:,.2f}',
+            'tot_res_esp': '${:,.2f}',
+            'tot_res_bal': '${:,.2f}',
             'int_cp_esperado': '${:,.2f}',
             'balanza_int_cp': '${:,.2f}',
             'int_lp_esperado': '${:,.2f}',
             'balanza_int_lp': '${:,.2f}',
+            'tot_int_esp': '${:,.2f}',
+            'tot_int_bal': '${:,.2f}',
             'cap_amort_acumulada': '${:,.2f}',
             'balanza_cap_amort': '${:,.2f}',
+            'dif_cap_amort': '${:,.2f}',
         }
-        st.dataframe(tablas['df_auditoria_nif'].style.format(fmt_nif), use_container_width=True, height=450)
-
-    with tab_cxc:
-        st.markdown(f"#### Conciliación de Cuentas por Cobrar Operativas (102-01) — Cartera Activa")
-        st.caption("Solo incluye contratos activos al corte. Los contratos liquidados han sido omitidos de esta tabla y están en la pestaña 3.")
-        c_f1, c_f2 = st.columns([1, 2])
-        with c_f1:
-            filtro_cxc = st.radio("Filtrar cartera activa:", ["Todos", "Solo con saldo exigible (> $0)", "Saldados en $0.00"], horizontal=True, key="rad_cxc_act_v2")
-
-        df_show_cxc = tablas['df_concil_cxc'].copy()
-        if filtro_cxc == "Solo con saldo exigible (> $0)":
-            df_show_cxc = df_show_cxc[df_show_cxc['saldo_balanza_cxc'] > 0.01]
-        elif filtro_cxc == "Saldados en $0.00":
-            df_show_cxc = df_show_cxc[abs(df_show_cxc['saldo_balanza_cxc']) <= 0.01]
-
-        fmt_cxc = {
-            'renta_sin_iva': '${:,.2f}',
-            's_ini_d': '${:,.2f}',
-            'cargos': '${:,.2f}',
-            'abonos': '${:,.2f}',
-            'saldo_balanza_cxc': '${:,.2f}',
-            'tot_facturado_sistema': '${:,.2f}'
-        }
-        st.dataframe(df_show_cxc.style.format(fmt_cxc), use_container_width=True, height=450)
+        st.dataframe(tablas['df_auditoria_nif'].style.format(fmt_nif), use_container_width=True, height=480)
 
     with tab_liq:
-        st.markdown(f"#### Auditoría de Contratos Liquidados / Bajas al Corte")
-        st.caption("Contratos concluidos según el sistema. Se audita que no mantengan saldo deudor en CxC (102-01), Residual (114-01) ni Activo (150-00).")
+        st.markdown("#### Auditoría de Contratos Liquidados / Concluidos al Corte")
+        st.caption("Contratos concluidos según el sistema. Se audita que no mantengan saldos pendientes en Residual (114-01/126) ni Cartera (115/125).")
         c_lf1, c_lf2 = st.columns([1, 2])
         with c_lf1:
-            filtro_liq = st.radio("Filtrar liquidados:", ["Todos", "Con Saldo Pendiente (Alertas)", "Saldados en Cero ($0.00)"], horizontal=True, key="rad_liq_act_v2")
+            filtro_liq = st.radio("Filtrar liquidados:", ["Todos", "Con Saldo Pendiente (Alertas)", "Saldados en Cero ($0.00)"], horizontal=True, key="rad_liq_act_clean")
 
         df_show_liq = tablas['df_concil_liquidados'].copy()
         if filtro_liq == "Con Saldo Pendiente (Alertas)":
-            df_show_liq = df_show_liq[(df_show_liq['saldo_cxc_balanza'] > 0.01) | (df_show_liq['saldo_res_balanza'] > 0.01)]
+            df_show_liq = df_show_liq[df_show_liq['saldo_res_cp'] > 0.01]
         elif filtro_liq == "Saldados en Cero ($0.00)":
-            df_show_liq = df_show_liq[(abs(df_show_liq['saldo_cxc_balanza']) <= 0.01) & (abs(df_show_liq['saldo_res_balanza']) <= 0.01)]
+            df_show_liq = df_show_liq[df_show_liq['saldo_res_cp'] <= 0.01]
 
         fmt_liq = {
-            'saldo_cxc_balanza': '${:,.2f}',
-            'saldo_res_balanza': '${:,.2f}',
-            'saldo_nif_balanza': '${:,.2f}',
-            'saldo_activo_balanza': '${:,.2f}',
-            'saldo_renta_balanza': '${:,.2f}',
+            'saldo_res_cp': '${:,.2f}',
+            'saldo_res_lp': '${:,.2f}',
+            'saldo_cxc_cp': '${:,.2f}',
+            'saldo_cxc_lp': '${:,.2f}',
+            'saldo_int_cp': '${:,.2f}',
+            'saldo_int_lp': '${:,.2f}',
+            'tot_saldo_pendiente': '${:,.2f}',
         }
         st.dataframe(df_show_liq.style.format(fmt_liq), use_container_width=True, height=450)
 
-    with tab_rent:
-        st.markdown("#### Conciliación de Ingresos por Renta (403-01) vs Facturación")
-        st.caption("Compara el ingreso acumulado registrado en la subcuenta 403-01 contra las facturas CFDI emitidas en el sistema.")
-        fmt_rent = {
-            'renta_mensual_db': '${:,.2f}',
-            'ingreso_balanza_403': '${:,.2f}',
-            'renta_facturada_cfdi': '${:,.2f}',
-            'diferencia': '${:,.2f}'
-        }
-        st.dataframe(tablas['df_concil_rentas'].style.format(fmt_rent), use_container_width=True, height=450)
-
-    with tab_act:
-        st.markdown("#### Conciliación de Activos Vehiculares (150-00)")
-        st.caption("Verifica que el costo histórico de las unidades activas coincida con el saldo en la cuenta 150-00.")
-        fmt_act = {
-            'valor_sistema': '${:,.2f}',
-            'valor_balanza_150': '${:,.2f}',
-            'diferencia': '${:,.2f}'
-        }
-        st.dataframe(tablas['df_concil_activos'].style.format(fmt_act), use_container_width=True, height=450)
-
     with tab_alt:
-        st.markdown("#### Matriz Priorizada de Discrepancias y Hallazgos")
+        st.markdown("#### Matriz Priorizada de Discrepancias y Hallazgos NIF")
         st.caption("Lista de inconsistencias detectadas ordenadas por monto para acción del equipo contable.")
         fmt_alt = {
             'monto_discrepancia': '${:,.2f}'

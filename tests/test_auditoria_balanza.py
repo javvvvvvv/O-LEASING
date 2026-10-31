@@ -29,14 +29,15 @@ class TestAuditoriaBalanza(unittest.TestCase):
         self.assertEqual(meta['fecha_corte'], "2026-09-30")
         self.assertGreater(meta['total_cuentas'], 3000)
 
-        # Verificar cuenta padre 102-01 y cuenta padre 115-00
-        padre_102 = df_bal[df_bal['cuenta'] == '102-01-00-0000-0000-00']
-        self.assertEqual(len(padre_102), 1)
-        self.assertAlmostEqual(padre_102['s_act_d'].values[0], -1434443.04, places=2)
-
+        # Verificar cuenta padre 115-00 (Cartera Corto Plazo NIF)
         padre_115 = df_bal[df_bal['cuenta'] == '115-00-00-0000-0000-00']
         self.assertEqual(len(padre_115), 1)
         self.assertAlmostEqual(padre_115['s_act_d'].values[0], 63958832.87, places=2)
+
+        # Verificar cuenta padre 125-00 (Cartera Largo Plazo NIF)
+        padre_125 = df_bal[df_bal['cuenta'] == '125-00-00-0000-0000-00']
+        self.assertEqual(len(padre_125), 1)
+        self.assertAlmostEqual(padre_125['s_act_d'].values[0], 62176032.98, places=2)
 
     def test_clasificacion_contratos(self):
         """Verifica la separación cronológica entre activos y liquidados al 30/Sep/2026."""
@@ -45,40 +46,48 @@ class TestAuditoriaBalanza(unittest.TestCase):
         self.assertEqual(len(datos_sis['df_liquidados']), 440)
 
     def test_conciliacion_y_omision_liquidados(self):
-        """Verifica que la cartera activa de 102-01 omita los liquidados y estos se auditen aparte."""
+        """Verifica que la cartera activa NIF omita los liquidados y estos se auditen aparte."""
         meta, df_bal = parsear_balanza_contpaqi(self.balanza_path)
         datos_sis = obtener_datos_sistema(self.db_path, meta['fecha_corte'])
         tablas = conciliar_balanza_vs_sistema(df_bal, datos_sis, meta['fecha_corte'])
 
-        # Cartera activa (102-01) debe tener exactamente los 275 activos
-        df_cxc = tablas['df_concil_cxc']
-        self.assertEqual(len(df_cxc), 275)
+        # Cartera activa NIF debe tener exactamente los 275 activos
+        df_nif = tablas['df_auditoria_nif']
+        self.assertEqual(len(df_nif), 275)
 
         # Contratos liquidados debe tener exactamente los 440 liquidados
         df_liq = tablas['df_concil_liquidados']
         self.assertEqual(len(df_liq), 440)
 
-        # Comprobar que hay contratos liquidados alertados con saldo pendiente
-        con_saldo = df_liq[df_liq['saldo_cxc_balanza'] > 0.01]
+        # Comprobar que hay contratos liquidados alertados con saldo residual pendiente
+        con_saldo = df_liq[df_liq['saldo_res_cp'] > 0.01]
         self.assertGreater(len(con_saldo), 0)
 
-    def test_generacion_excel(self):
-        """Verifica la creación del libro oficial con las 6 pestañas requeridas."""
-        out_test = os.path.join(_ROOT, "scratch", "test_auditoria_output.xlsx")
-        res_path = generar_excel_auditoria_balanza(self.balanza_path, output_excel_path=out_test, db_path=self.db_path)
+    def test_generacion_excel_limpio(self):
+        """Verifica la creación del libro oficial limpio NIF con 4 pestañas requeridas."""
+        out_test = os.path.join(_ROOT, "scratch", "test_auditoria_limpio.xlsx")
+        res_path = generar_excel_auditoria_balanza(
+            self.balanza_path,
+            output_excel_path=out_test,
+            db_path=self.db_path,
+            fecha_corte_sistema="2026-09-30",
+            fecha_balanza="2026-09-30"
+        )
         self.assertTrue(os.path.exists(res_path))
 
         wb = openpyxl.load_workbook(res_path, data_only=False)
         expected_sheets = [
             'Caratula_Ejecutiva',
-            'Conciliacion_CxC_102',
+            'Auditoria_NIF_C15_Cartera',
             'Contratos_Liquidados',
-            'Ingresos_403_Rentas',
-            'Activos_150_Vehiculos',
-            'Discrepancias_y_Alertas'
+            'Discrepancias_y_Alertas_NIF'
         ]
-        for s in expected_sheets:
-            self.assertIn(s, wb.sheetnames)
+        self.assertEqual(wb.sheetnames, expected_sheets)
+        
+        # Verificar que NO contiene hojas con cuentas operativas viejas (102, 403, 150)
+        for s in ['Conciliacion_CxC_102', 'Ingresos_403_Rentas', 'Activos_150_Vehiculos']:
+            self.assertNotIn(s, wb.sheetnames)
+
         wb.close()
 
 
