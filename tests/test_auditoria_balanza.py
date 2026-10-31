@@ -77,10 +77,11 @@ class TestAuditoriaBalanza(unittest.TestCase):
 
         wb = openpyxl.load_workbook(res_path, data_only=False)
         expected_sheets = [
-            'Caratula_Ejecutiva',
+            'Resumen_Ejecutivo',
+            'Analisis_Diferencias_Causas',
             'Auditoria_NIF_C15_Cartera',
-            'Contratos_Liquidados',
-            'Discrepancias_y_Alertas_NIF'
+            'Cartera_Lenta_Recuperacion',
+            'Contratos_Liquidados'
         ]
         self.assertEqual(wb.sheetnames, expected_sheets)
         
