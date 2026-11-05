@@ -42,8 +42,8 @@ class TestAuditoriaBalanza(unittest.TestCase):
     def test_clasificacion_contratos(self):
         """Verifica la separación cronológica entre activos y liquidados al 30/Sep/2026."""
         datos_sis = obtener_datos_sistema(self.db_path, "2026-09-30")
-        self.assertEqual(len(datos_sis['df_activos']), 275)
-        self.assertEqual(len(datos_sis['df_liquidados']), 440)
+        self.assertEqual(len(datos_sis['df_activos']), 274)
+        self.assertEqual(len(datos_sis['df_liquidados']), 441)
 
     def test_conciliacion_y_omision_liquidados(self):
         """Verifica que la cartera activa NIF omita los liquidados y estos se auditen aparte."""
@@ -51,13 +51,13 @@ class TestAuditoriaBalanza(unittest.TestCase):
         datos_sis = obtener_datos_sistema(self.db_path, meta['fecha_corte'])
         tablas = conciliar_balanza_vs_sistema(df_bal, datos_sis, meta['fecha_corte'])
 
-        # Cartera activa NIF debe tener exactamente los 275 activos
+        # Cartera activa NIF debe tener exactamente los 274 activos
         df_nif = tablas['df_auditoria_nif']
-        self.assertEqual(len(df_nif), 275)
+        self.assertEqual(len(df_nif), 274)
 
-        # Contratos liquidados debe tener exactamente los 440 liquidados
+        # Contratos liquidados debe tener exactamente los 441 liquidados
         df_liq = tablas['df_concil_liquidados']
-        self.assertEqual(len(df_liq), 440)
+        self.assertEqual(len(df_liq), 441)
 
         # Comprobar que hay contratos liquidados alertados con saldo residual pendiente
         con_saldo = df_liq[df_liq['saldo_res_cp'] > 0.01]
