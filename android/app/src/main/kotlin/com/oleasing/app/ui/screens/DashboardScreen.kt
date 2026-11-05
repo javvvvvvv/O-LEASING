@@ -1,5 +1,6 @@
 package com.oleasing.app.ui.screens
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -16,10 +17,13 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.oleasing.app.R
 import com.oleasing.app.model.ContratoResumen
 import com.oleasing.app.model.DashboardMetrics
 import com.oleasing.app.network.OLeasingApiClient
@@ -36,7 +40,9 @@ fun DashboardScreen(
     onNavigateToList: () -> Unit,
     onNavigateToNew: () -> Unit,
     onSelectContrato: (String) -> Unit,
-    onNavigateToEstadoCuenta: (String) -> Unit
+    onNavigateToEstadoCuenta: (String) -> Unit,
+    onNavigateToCobranza: () -> Unit,
+    onNavigateToCotizador: () -> Unit
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -76,17 +82,12 @@ fun DashboardScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Column {
-                        Text(
-                            text = "O-LEASING",
-                            fontWeight = FontWeight.Black,
-                            fontSize = 20.sp,
-                            color = OrangePrimary
-                        )
-                        Text(
-                            text = "Sistema de Cartera & Contratos",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.outline
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Image(
+                            painter = painterResource(id = R.drawable.oleasing_logo),
+                            contentDescription = "Logotipo O-Leasing",
+                            modifier = Modifier.height(32.dp),
+                            contentScale = ContentScale.FillHeight
                         )
                     }
                 },
@@ -257,6 +258,30 @@ fun DashboardScreen(
                         Icon(imageVector = Icons.Default.Add, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("Nuevo", fontWeight = FontWeight.SemiBold)
+                    }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = onNavigateToCobranza,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Cobranza del Mes", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = OrangePrimary)
+                    }
+                    OutlinedButton(
+                        onClick = onNavigateToCotizador,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Cotizador Leasing", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = SlateSecondary)
                     }
                 }
                 Spacer(modifier = Modifier.height(8.dp))

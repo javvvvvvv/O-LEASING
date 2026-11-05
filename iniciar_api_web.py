@@ -59,7 +59,7 @@ def main():
     else:
         print(f"[*] Iniciando API de O-Leasing en el puerto {PORT}...")
         api_proc = subprocess.Popen(
-            [sys.executable, "-m", "uvicorn", "api:app", "--host", "0.0.0.0", "--port", str(PORT)],
+            [sys.executable, "-m", "uvicorn", "api:app", "--host", "0.0.0.0", "--port", str(PORT), "--reload"],
             cwd=BASE_DIR,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

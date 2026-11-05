@@ -12,8 +12,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import com.oleasing.app.network.OLeasingApiClient
+import com.oleasing.app.ui.screens.CobranzaMesScreen
 import com.oleasing.app.ui.screens.ContratoDetailScreen
 import com.oleasing.app.ui.screens.ContratosListScreen
+import com.oleasing.app.ui.screens.CotizadorScreen
 import com.oleasing.app.ui.screens.DashboardScreen
 import com.oleasing.app.ui.screens.EstadoCuentaScreen
 import com.oleasing.app.ui.screens.NuevoContratoScreen
@@ -25,6 +27,8 @@ sealed class Screen {
     data class ContratoDetail(val idContrato: String) : Screen()
     data class EstadoCuenta(val idContrato: String) : Screen()
     data object NuevoContrato : Screen()
+    data object CobranzaMes : Screen()
+    data object Cotizador : Screen()
 }
 
 class MainActivity : ComponentActivity() {
@@ -85,7 +89,24 @@ class MainActivity : ComponentActivity() {
                                 onNavigateToList = { navigateTo(Screen.ContratosList) },
                                 onNavigateToNew = { navigateTo(Screen.NuevoContrato) },
                                 onSelectContrato = { id -> navigateTo(Screen.ContratoDetail(id)) },
+                                onNavigateToEstadoCuenta = { id -> navigateTo(Screen.EstadoCuenta(id)) },
+                                onNavigateToCobranza = { navigateTo(Screen.CobranzaMes) },
+                                onNavigateToCotizador = { navigateTo(Screen.Cotizador) }
+                            )
+                        }
+                        is Screen.CobranzaMes -> {
+                            CobranzaMesScreen(
+                                onBack = { navigateBack() },
                                 onNavigateToEstadoCuenta = { id -> navigateTo(Screen.EstadoCuenta(id)) }
+                            )
+                        }
+                        is Screen.Cotizador -> {
+                            CotizadorScreen(
+                                onBack = { navigateBack() },
+                                onNavigateToNewContrato = {
+                                    navigationStack.removeAt(navigationStack.lastIndex)
+                                    navigateTo(Screen.NuevoContrato)
+                                }
                             )
                         }
                         is Screen.ContratosList -> {

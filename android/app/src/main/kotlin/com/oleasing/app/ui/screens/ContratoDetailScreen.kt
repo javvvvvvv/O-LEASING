@@ -1,5 +1,7 @@
 package com.oleasing.app.ui.screens
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -12,9 +14,11 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.oleasing.app.model.AnotacionItem
 import com.oleasing.app.model.ContratoDetalle
 import com.oleasing.app.network.OLeasingApiClient
 import com.oleasing.app.ui.components.InfoRow
@@ -32,8 +36,11 @@ fun ContratoDetailScreen(
     onBack: () -> Unit,
     onNavigateToEstadoCuenta: (String) -> Unit
 ) {
+    val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     var contrato by remember { mutableStateOf<ContratoDetalle?>(null) }
+    var anotacionesList by remember { mutableStateOf<List<AnotacionItem>>(emptyList()) }
+    var nuevaNotaTexto by remember { mutableStateOf("") }
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
@@ -46,6 +53,10 @@ fun ContratoDetailScreen(
                 contrato = result.getOrNull()
             } else {
                 errorMessage = result.exceptionOrNull()?.message
+            }
+            val notesRes = OLeasingApiClient.getAnotaciones(idContrato)
+            if (notesRes.isSuccess) {
+                anotacionesList = notesRes.getOrNull() ?: emptyList()
             }
             isLoading = false
         }
@@ -250,28 +261,131 @@ fun ContratoDetailScreen(
                     }
                 }
 
-                // Anotaciones
-                if (c.anotaciones.isNotBlank()) {
-                    item {
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(14.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-                        ) {
-                            Column(modifier = Modifier.padding(16.dp)) {
+                // Anotaciones y Gestión de Estatus
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text(
+                                text = "Gestión Rápida y Documentos",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 15.sp,
+                                color = SlateSecondary
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text("Cambiar Estatus del Contrato:", fontSize = 12.sp, color = MaterialTheme.colorScheme.outline)
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                listOf("ACTIVO", "CONCLUIDO", "BAJA").forEach { est ->
+                                    val isCurrent = c.estatus.equals(est, ignoreCase = true)
+                                    FilterChip(
+                                        selected = isCurrent,
+                                        onClick = {
+                                            if (!isCurrent) {
+                                                coroutineScope.launch {
+                                                    val upd = OLeasingApiClient.actualizarEstatusContrato(c.idContrato, est)
+                                                    if (upd.isSuccess) {
+                                                        contrato = upd.getOrNull()
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        label = { Text(est, fontSize = 12.sp, fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal) },
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = OrangePrimary,
+                                            selectedLabelColor = Color.White
+                                        )
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(6.dp))
+                            OutlinedButton(
+                                onClick = {
+                                    val pdfUrl = OLeasingApiClient.getPdfEstadoCuentaUrl(c.idContrato)
+                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(pdfUrl))
+                                    context.startActivity(intent)
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("Descargar / Compartir Estado de Cuenta en PDF", fontWeight = FontWeight.Bold, color = OrangePrimary)
+                            }
+                        }
+                    }
+                }
+
+                // Bitácora de Notas y Seguimiento
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text(
+                                text = "Bitácora y Notas del Contrato (${anotacionesList.size})",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 15.sp,
+                                color = SlateSecondary
+                            )
+                            if (c.anotaciones.isNotBlank()) {
+                                Spacer(modifier = Modifier.height(4.dp))
                                 Text(
-                                    text = "Observaciones",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 15.sp,
-                                    color = SlateSecondary
+                                    text = "Nota inicial: ${c.anotaciones}",
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.outline
                                 )
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Text(
-                                    text = c.anotaciones,
-                                    fontSize = 13.sp,
-                                    color = MaterialTheme.colorScheme.onSurface
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                OutlinedTextField(
+                                    value = nuevaNotaTexto,
+                                    onValueChange = { nuevaNotaTexto = it },
+                                    placeholder = { Text("Agregar nota de seguimiento...", fontSize = 12.sp) },
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1f)
                                 )
+                                Button(
+                                    onClick = {
+                                        if (nuevaNotaTexto.isNotBlank()) {
+                                            val txt = nuevaNotaTexto.trim()
+                                            nuevaNotaTexto = ""
+                                            coroutineScope.launch {
+                                                val res = OLeasingApiClient.crearAnotacion(c.idContrato, "Móvil", txt)
+                                                if (res.isSuccess) {
+                                                    anotacionesList = res.getOrNull() ?: emptyList()
+                                                }
+                                            }
+                                        }
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = OrangePrimary),
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Text("Guardar", fontSize = 12.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            anotacionesList.forEach { n ->
+                                HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp), color = MaterialTheme.colorScheme.surfaceVariant)
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(n.tipo, fontWeight = FontWeight.Bold, fontSize = 11.sp, color = OrangePrimary)
+                                    Text(n.fecha, fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
+                                }
+                                Text(n.texto, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface)
                             }
                         }
                     }

@@ -24,8 +24,11 @@ if %errorlevel% neq 0 (
 
 "%PYTHON_EXE%" scripts\generate_cert.py >nul 2>nul
 
+echo [*] Iniciando API Movil y Tunel Web HTTPS en segundo plano...
+start /b "" "%PYTHON_EXE%" iniciar_api_web.py
+
 echo ============================================================
-echo   O-LEASING - Servidor Seguro (HTTPS / SSL)
+echo   O-LEASING - Servidor Seguro (HTTPS / SSL) + API Movil
 echo ============================================================
 echo.
 echo   Acceso seguro en este equipo:   https://localhost:8501
@@ -43,9 +46,8 @@ echo ============================================================
 echo.
 
 start "" https://localhost:8501
-"%PYTHON_EXE%" -m streamlit run app.py --server.port 8501 --server.address 0.0.0.0 --server.sslCertFile certs/cert.pem --server.sslKeyFile certs/key.pem --server.headless true
+"%PYTHON_EXE%" -m streamlit run app.py --server.port 8501 --server.address 0.0.0.0 --server.sslCertFile certs/cert.pem --server.sslKeyFile certs/key.pem --server.headless true --server.runOnSave true
 
 echo.
 echo El servidor se detuvo o hubo un error. Revisa el mensaje de arriba.
 pause
-

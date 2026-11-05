@@ -145,3 +145,38 @@ data class CreateContratoResponse(
     val inversionNeta: Double,
     val fechaVencimiento: String
 )
+
+data class AnotacionItem(
+    val id: Int,
+    val idContrato: String,
+    val fecha: String,
+    val tipo: String,
+    val texto: String
+)
+
+data class CobranzaContratoItem(
+    val idContrato: String,
+    val cliente: String,
+    val vehiculo: String,
+    val mesContrato: Int,
+    val plazo: Int,
+    val rentaSinIva: Double,
+    val iva: Double,
+    val totalConIva: Double,
+    val capitalMes: Double,
+    val interesLeasingMes: Double,
+    val saldoInsoluto: Double
+)
+
+data class CobranzaMesResponse(
+    val anio: Int,
+    val mes: Int,
+    val periodo: String,
+    val contratosEnCobro: Int,
+    val rentaTotalSinIva: Double,
+    val ivaTotal: Double,
+    val totalCobranzaConIva: Double,
+    val capitalTotalMes: Double,
+    val interesTotalMes: Double,
+    val items: List<CobranzaContratoItem>
+)

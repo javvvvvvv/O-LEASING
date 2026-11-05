@@ -34,19 +34,26 @@ object OLeasingApiClient {
         prefs.edit().putString(KEY_BASE_URL, cleaned).apply()
     }
 
-    private suspend fun <T> makeRequest(
+    private val fallbackUrls = listOf(
+        "http://10.0.2.2:8008",
+        "http://192.168.1.97:8008",
+        "http://127.0.0.1:8008"
+    )
+
+    private fun executeSingleHttp(
+        candidateBaseUrl: String,
         path: String,
-        method: String = "GET",
-        bodyJson: String? = null,
-        parser: (String) -> T
-    ): Result<T> = withContext(Dispatchers.IO) {
+        method: String,
+        bodyJson: String?
+    ): Pair<Int, String> {
         var connection: HttpURLConnection? = null
         try {
-            val url = URL(if (path.startsWith("http")) path else "$baseUrl$path")
+            val fullUrl = if (path.startsWith("http")) path else "$candidateBaseUrl$path"
+            val url = URL(fullUrl)
             connection = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = method
-                connectTimeout = 8000
-                readTimeout = 8000
+                connectTimeout = 4500
+                readTimeout = 6000
                 setRequestProperty("Accept", "application/json")
                 setRequestProperty("Content-Type", "application/json")
                 if (bodyJson != null) {
@@ -57,28 +64,52 @@ object OLeasingApiClient {
                     writer.close()
                 }
             }
-
             val statusCode = connection.responseCode
             val stream = if (statusCode in 200..299) connection.inputStream else connection.errorStream
             val reader = BufferedReader(InputStreamReader(stream ?: connection.inputStream, "UTF-8"))
             val responseText = reader.use { it.readText() }
-
-            if (statusCode in 200..299) {
-                Result.success(parser(responseText))
-            } else {
-                val detail = try {
-                    val errorObj = JSONObject(responseText)
-                    errorObj.optString("detail", responseText)
-                } catch (e: Exception) {
-                    responseText
-                }
-                Result.failure(Exception("Error $statusCode: $detail"))
-            }
-        } catch (e: Exception) {
-            Result.failure(Exception("Fallo de red: ${e.message ?: "No se pudo conectar al servidor"}"))
+            return Pair(statusCode, responseText)
         } finally {
             connection?.disconnect()
         }
+    }
+
+    private suspend fun <T> makeRequest(
+        path: String,
+        method: String = "GET",
+        bodyJson: String? = null,
+        parser: (String) -> T
+    ): Result<T> = withContext(Dispatchers.IO) {
+        val candidates = mutableListOf(baseUrl)
+        for (fb in fallbackUrls) {
+            if (!candidates.contains(fb)) {
+                candidates.add(fb)
+            }
+        }
+
+        var lastError: Exception? = null
+        for (candidate in candidates) {
+            try {
+                val (statusCode, responseText) = executeSingleHttp(candidate, path, method, bodyJson)
+                if (statusCode in 200..299) {
+                    if (baseUrl != candidate) {
+                        baseUrl = candidate
+                    }
+                    return@withContext Result.success(parser(responseText))
+                } else {
+                    val detail = try {
+                        val errorObj = JSONObject(responseText)
+                        errorObj.optString("detail", responseText)
+                    } catch (e: Exception) {
+                        responseText
+                    }
+                    return@withContext Result.failure(Exception("Error $statusCode: $detail"))
+                }
+            } catch (e: Exception) {
+                lastError = e
+            }
+        }
+        Result.failure(Exception("Fallo de red: ${lastError?.message ?: "No se pudo conectar al servidor"}"))
     }
 
     suspend fun checkHealth(): Result<String> {
@@ -295,6 +326,135 @@ object OLeasingApiClient {
                 vpResidual = obj.optDouble("vp_residual"),
                 inversionNeta = obj.optDouble("inversion_neta"),
                 fechaVencimiento = obj.optString("fecha_vencimiento")
+            )
+        }
+    }
+
+    fun getPdfEstadoCuentaUrl(idContrato: String): String {
+        val encodedId = URLEncoder.encode(idContrato, "UTF-8")
+        return "$baseUrl/api/contratos/$encodedId/pdf"
+    }
+
+    suspend fun actualizarEstatusContrato(
+        idContrato: String,
+        nuevoEstatus: String,
+        nivelMorosidad: Int = 0
+    ): Result<ContratoDetalle> {
+        val encodedId = URLEncoder.encode(idContrato, "UTF-8")
+        val payload = JSONObject().apply {
+            put("estatus", nuevoEstatus)
+            put("nivel_morosidad", nivelMorosidad)
+        }
+        return makeRequest("/api/contratos/$encodedId/estatus", method = "PUT", bodyJson = payload.toString()) { jsonStr ->
+            val item = JSONObject(jsonStr)
+            ContratoDetalle(
+                idContrato = item.optString("id_contrato"),
+                cliente = item.optString("cliente"),
+                vehiculo = item.optString("vehiculo", ""),
+                fechaAlta = item.optString("fecha_alta", ""),
+                fechaVencimiento = item.optString("fecha_vencimiento", ""),
+                fechaBaja = if (item.isNull("fecha_baja")) null else item.optString("fecha_baja"),
+                estatus = item.optString("estatus", "ACTIVO"),
+                plazo = item.optInt("plazo"),
+                valorSinIva = item.optDouble("valor_sin_iva"),
+                anticipoPct = item.optDouble("anticipo_pct"),
+                anticipoMonto = item.optDouble("anticipo_monto"),
+                inversionNeta = item.optDouble("inversion_neta"),
+                mensualidadSinIva = item.optDouble("mensualidad_sin_iva"),
+                residualPct = item.optDouble("residual_pct"),
+                residualMonto = item.optDouble("residual_monto"),
+                vpResidual = item.optDouble("vp_residual"),
+                comisionAperturaPct = item.optDouble("comision_apertura_pct"),
+                comisionMonto = item.optDouble("comision_monto"),
+                tasaMensualPct = item.optDouble("tasa_mensual_pct"),
+                tasaAnualPct = item.optDouble("tasa_anual_pct"),
+                anotaciones = item.optString("anotaciones", ""),
+                saldoActualEstimado = item.optDouble("saldo_actual_estimado"),
+                interesesTotalesEstimados = item.optDouble("intereses_totales_estimados")
+            )
+        }
+    }
+
+    suspend fun getAnotaciones(idContrato: String): Result<List<AnotacionItem>> {
+        val encodedId = URLEncoder.encode(idContrato, "UTF-8")
+        return makeRequest("/api/contratos/$encodedId/anotaciones") { jsonStr ->
+            val arr = JSONArray(jsonStr.trim())
+            val list = mutableListOf<AnotacionItem>()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                list.add(
+                    AnotacionItem(
+                        id = o.optInt("id"),
+                        idContrato = o.optString("id_contrato"),
+                        fecha = o.optString("fecha"),
+                        tipo = o.optString("tipo", "General"),
+                        texto = o.optString("texto", "")
+                    )
+                )
+            }
+            list
+        }
+    }
+
+    suspend fun crearAnotacion(idContrato: String, tipo: String, texto: String): Result<List<AnotacionItem>> {
+        val encodedId = URLEncoder.encode(idContrato, "UTF-8")
+        val payload = JSONObject().apply {
+            put("tipo", tipo)
+            put("texto", texto)
+        }
+        return makeRequest("/api/contratos/$encodedId/anotaciones", method = "POST", bodyJson = payload.toString()) { jsonStr ->
+            val arr = JSONArray(jsonStr.trim())
+            val list = mutableListOf<AnotacionItem>()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                list.add(
+                    AnotacionItem(
+                        id = o.optInt("id"),
+                        idContrato = o.optString("id_contrato"),
+                        fecha = o.optString("fecha"),
+                        tipo = o.optString("tipo", "General"),
+                        texto = o.optString("texto", "")
+                    )
+                )
+            }
+            list
+        }
+    }
+
+    suspend fun getCobranzaMes(anio: Int, mes: Int): Result<CobranzaMesResponse> {
+        return makeRequest("/api/cobranza_mes?anio=$anio&mes=$mes") { jsonStr ->
+            val obj = JSONObject(jsonStr)
+            val arr = obj.optJSONArray("items") ?: JSONArray()
+            val list = mutableListOf<CobranzaContratoItem>()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                list.add(
+                    CobranzaContratoItem(
+                        idContrato = o.optString("id_contrato"),
+                        cliente = o.optString("cliente"),
+                        vehiculo = o.optString("vehiculo", ""),
+                        mesContrato = o.optInt("mes_contrato"),
+                        plazo = o.optInt("plazo"),
+                        rentaSinIva = o.optDouble("renta_sin_iva"),
+                        iva = o.optDouble("iva"),
+                        totalConIva = o.optDouble("total_con_iva"),
+                        capitalMes = o.optDouble("capital_mes"),
+                        interesLeasingMes = o.optDouble("interes_leasing_mes"),
+                        saldoInsoluto = o.optDouble("saldo_insoluto")
+                    )
+                )
+            }
+            CobranzaMesResponse(
+                anio = obj.optInt("anio", anio),
+                mes = obj.optInt("mes", mes),
+                periodo = obj.optString("periodo", ""),
+                contratosEnCobro = obj.optInt("contratos_en_cobro"),
+                rentaTotalSinIva = obj.optDouble("renta_total_sin_iva"),
+                ivaTotal = obj.optDouble("iva_total"),
+                totalCobranzaConIva = obj.optDouble("total_cobranza_con_iva"),
+                capitalTotalMes = obj.optDouble("capital_total_mes"),
+                interesTotalMes = obj.optDouble("interes_total_mes"),
+                items = list
             )
         }
     }

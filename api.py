@@ -181,6 +181,53 @@ class ContratoCreate(BaseModel):
     anotaciones: Optional[str] = Field("", max_length=500, description="Comentarios u observaciones operativas")
 
 
+class ActualizarEstatusRequest(BaseModel):
+    estatus: str = Field(..., description="ACTIVO, CONCLUIDO o BAJA")
+    nivel_morosidad: Optional[int] = Field(0, ge=0, le=4)
+    fecha_baja: Optional[str] = Field(None)
+
+
+class AnotacionItem(BaseModel):
+    id: int
+    id_contrato: str
+    fecha: str
+    tipo: str
+    texto: str
+
+
+class AnotacionCreateRequest(BaseModel):
+    tipo: str = Field("General", max_length=50)
+    texto: str = Field(..., min_length=1, max_length=1000)
+
+
+class CobranzaContratoItem(BaseModel):
+    id_contrato: str
+    cliente: str
+    vehiculo: str
+    mes_contrato: int
+    plazo: int
+    renta_sin_iva: float
+    iva: float
+    total_con_iva: float
+    capital_mes: float
+    interes_leasing_mes: float
+    saldo_insoluto: float
+
+
+class CobranzaMesResponse(BaseModel):
+    anio: int
+    mes: int
+    periodo: str
+    contratos_en_cobro: int
+    renta_total_sin_iva: float
+    iva_total: float
+    total_cobranza_con_iva: float
+    capital_total_mes: float
+    interes_total_mes: float
+    items: List[CobranzaContratoItem]
+
+
+
 # =============================================================================
 # ENDPOINTS DE CONSULTA Y DASHBOARD
 # =============================================================================
@@ -680,7 +727,246 @@ def crear_contrato_individual(contrato: ContratoCreate):
     return obtener_detalle_contrato(contrato.id_contrato.strip())
 
 
+@app.put("/api/contratos/{id_contrato}/estatus", response_model=ContratoDetalle)
+def actualizar_estatus_contrato(id_contrato: str, req: ActualizarEstatusRequest):
+    """Actualiza el estatus (ACTIVO, CONCLUIDO, BAJA) y nivel de morosidad de un contrato."""
+    est = req.estatus.strip().upper()
+    if est not in ("ACTIVO", "CONCLUIDO", "BAJA"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Estatus inválido. Use ACTIVO, CONCLUIDO o BAJA."
+        )
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT ID_Contrato FROM contratos WHERE ID_Contrato = ?", (id_contrato,))
+    if not cursor.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail="Contrato no encontrado.")
+
+    fb = req.fecha_baja if est == "BAJA" else None
+    if est == "BAJA" and not fb:
+        fb = datetime.date.today().isoformat()
+
+    cursor.execute("""
+        UPDATE contratos
+        SET Estatus = ?, Nivel_Morosidad = ?, Fecha_Baja = ?
+        WHERE ID_Contrato = ?
+    """, (est, req.nivel_morosidad or 0, fb, id_contrato))
+    conn.commit()
+    conn.close()
+    return obtener_detalle_contrato(id_contrato)
+
+
+@app.get("/api/contratos/{id_contrato}/anotaciones", response_model=List[AnotacionItem])
+def listar_anotaciones_contrato(id_contrato: str):
+    """Lista la bitácora de anotaciones de un contrato."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS anotaciones (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ID_Contrato TEXT,
+            Fecha TEXT,
+            Tipo TEXT,
+            Texto TEXT
+        )
+    """)
+    cursor.execute("""
+        SELECT id, ID_Contrato, Fecha, Tipo, Texto
+        FROM anotaciones
+        WHERE ID_Contrato = ?
+        ORDER BY id DESC
+    """, (id_contrato,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        AnotacionItem(
+            id=int(r["id"]),
+            id_contrato=str(r["ID_Contrato"] or id_contrato),
+            fecha=str(r["Fecha"] or ""),
+            tipo=str(r["Tipo"] or "General"),
+            texto=str(r["Texto"] or "")
+        )
+        for r in rows
+    ]
+
+
+@app.post("/api/contratos/{id_contrato}/anotaciones", response_model=List[AnotacionItem])
+def crear_anotacion_contrato(id_contrato: str, req: AnotacionCreateRequest):
+    """Registra una nueva nota en la bitácora del contrato."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS anotaciones (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ID_Contrato TEXT,
+            Fecha TEXT,
+            Tipo TEXT,
+            Texto TEXT
+        )
+    """)
+    ahora = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    cursor.execute("""
+        INSERT INTO anotaciones (ID_Contrato, Fecha, Tipo, Texto)
+        VALUES (?, ?, ?, ?)
+    """, (id_contrato, ahora, req.tipo.strip() or "General", req.texto.strip()))
+    conn.commit()
+    conn.close()
+    return listar_anotaciones_contrato(id_contrato)
+
+
+@app.get("/api/contratos/{id_contrato}/pdf")
+def descargar_pdf_estado_cuenta(id_contrato: str):
+    """Genera y descarga el PDF oficial del Estado de Cuenta de un contrato."""
+    from fastapi.responses import StreamingResponse
+    from dateutil.relativedelta import relativedelta
+    from reports.pdf import pdf_estado_cuenta
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM contratos WHERE ID_Contrato = ?", (id_contrato,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Contrato no encontrado.")
+
+    row_dict = dict(row)
+    valor = float(row_dict.get("Valor_Sin_IVA") or 0.0)
+    ant = float(row_dict.get("Anticipo_Monto") or 0.0)
+    inv = max(valor - ant, 0.0)
+    renta = float(row_dict.get("Mensualidad_Sin_IVA") or 0.0)
+    plazo = int(row_dict.get("Plazo") or 1)
+    res = float(row_dict.get("Residual_Monto") or 0.0)
+    tasa = float(row_dict.get("Tasa_Calculada") or 0.0)
+    vpr = float(row_dict.get("VP_Residual") or 0.0) or (vp_res(res, tasa, plazo) if tasa else 0.0)
+
+    dfa, _, _, _, _ = calc_amort(round(inv, 4), round(renta, 4), round(res, 4), plazo, round(tasa, 8))
+    fa_str = str(row_dict.get("Fecha_Alta") or "")[:10]
+    fa = datetime.datetime.strptime(fa_str, "%Y-%m-%d") if fa_str else datetime.datetime.now()
+    dfa["Fecha"] = [(fa + relativedelta(months=int(m))).strftime("%Y-%m") for m in dfa["Mes"]]
+    dfa["Renta"] = dfa["Capital"] + dfa["Interes"]
+    dfa["Saldo_Ini"] = dfa["Saldo"] + dfa["Capital"]
+    dfa["Saldo_Fin"] = dfa["Saldo"]
+
+    dfr = calc_res_amort(round(vpr, 4), round(tasa, 8), plazo)
+    dfr["Fecha"] = dfa["Fecha"]
+    dfr["VP_Residual"] = round(vpr, 2)
+    dfr["Residual_Pactado"] = round(res, 2)
+
+    buf = pdf_estado_cuenta(
+        row_dict,
+        dfa,
+        dfr=dfr,
+        fecha_hoy_txt=datetime.date.today().strftime("%d/%m/%Y"),
+        nombre_empresa="O-LEASING"
+    )
+    headers = {
+        "Content-Disposition": f'inline; filename="Estado_Cuenta_{id_contrato}.pdf"'
+    }
+    return StreamingResponse(buf, media_type="application/pdf", headers=headers)
+
+
+@app.get("/api/cobranza_mes", response_model=CobranzaMesResponse)
+def obtener_cobranza_mes(
+    anio: Optional[int] = Query(None, description="Año de consulta"),
+    mes: Optional[int] = Query(None, ge=1, le=12, description="Mes de consulta (1-12)")
+):
+    """Calcula la cobranza y devengo mensual de todos los contratos activos en el mes indicado."""
+    hoy = datetime.date.today()
+    y = anio or hoy.year
+    m = mes or hoy.month
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT ID_Contrato, Cliente, Vehiculo, Fecha_Alta, Fecha_Vencimiento, Estatus,
+               Plazo, Valor_Sin_IVA, Anticipo_Monto, Mensualidad_Sin_IVA, Residual_Monto, Tasa_Calculada
+        FROM contratos
+        WHERE Estatus = 'ACTIVO'
+        ORDER BY ID_Contrato ASC
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+
+    items = []
+    tot_renta = 0.0
+    tot_iva = 0.0
+    tot_con_iva = 0.0
+    tot_cap = 0.0
+    tot_int = 0.0
+
+    for r in rows:
+        fa_str = str(r["Fecha_Alta"] or "")[:10]
+        if not fa_str:
+            continue
+        try:
+            fa = datetime.datetime.strptime(fa_str, "%Y-%m-%d")
+        except Exception:
+            continue
+        plazo = int(r["Plazo"] or 0)
+        if plazo <= 0:
+            continue
+        mc = (y - fa.year) * 12 + (m - fa.month) + 1
+        if mc < 1 or mc > plazo:
+            continue
+
+        valor = float(r["Valor_Sin_IVA"] or 0.0)
+        ant = float(r["Anticipo_Monto"] or 0.0)
+        inv = valor - ant
+        renta = float(r["Mensualidad_Sin_IVA"] or 0.0)
+        res = float(r["Residual_Monto"] or 0.0)
+        tasa = float(r["Tasa_Calculada"] or 0.0)
+        if inv <= 0 or renta <= 0 or tasa <= 0:
+            continue
+
+        try:
+            dfa, _, _, _, _ = calc_amort(round(inv, 4), round(renta, 4), round(res, 4), plazo, round(tasa, 8))
+            fila_m = dfa.iloc[mc - 1]
+            cap_m = round(float(fila_m["Capital"]), 2)
+            int_m = round(float(fila_m["Interes"]), 2)
+            saldo_m = round(float(fila_m["Saldo"]), 2)
+            r_sin = round(renta, 2)
+            iva_m = round(r_sin * 0.16, 2)
+            tot_m = round(r_sin + iva_m, 2)
+
+            tot_renta += r_sin
+            tot_iva += iva_m
+            tot_con_iva += tot_m
+            tot_cap += cap_m
+            tot_int += int_m
+
+            items.append(CobranzaContratoItem(
+                id_contrato=r["ID_Contrato"],
+                cliente=r["Cliente"],
+                vehiculo=r["Vehiculo"] or "",
+                mes_contrato=mc,
+                plazo=plazo,
+                renta_sin_iva=r_sin,
+                iva=iva_m,
+                total_con_iva=tot_m,
+                capital_mes=cap_m,
+                interes_leasing_mes=int_m,
+                saldo_insoluto=saldo_m
+            ))
+        except Exception:
+            continue
+
+    return CobranzaMesResponse(
+        anio=y,
+        mes=m,
+        periodo=f"{y:04d}-{m:02d}",
+        contratos_en_cobro=len(items),
+        renta_total_sin_iva=round(tot_renta, 2),
+        iva_total=round(tot_iva, 2),
+        total_cobranza_con_iva=round(tot_con_iva, 2),
+        capital_total_mes=round(tot_cap, 2),
+        interes_total_mes=round(tot_int, 2),
+        items=items
+    )
+
+
 if __name__ == "__main__":
     import uvicorn
-    print("Iniciando O-Leasing Mobile REST API en http://0.0.0.0:8000...")
-    uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
+    print("Iniciando O-Leasing Mobile REST API en http://0.0.0.0:8008...")
+    uvicorn.run("api:app", host="0.0.0.0", port=8008, reload=True)

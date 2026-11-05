@@ -1,5 +1,7 @@
 package com.oleasing.app.ui.screens
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -14,6 +16,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -38,6 +41,7 @@ fun EstadoCuentaScreen(
     onBack: () -> Unit,
     onNavigateToDetail: (String) -> Unit
 ) {
+    val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     var estadoCuenta by remember { mutableStateOf<EstadoCuentaResponse?>(null) }
     var isLoading by remember { mutableStateOf(false) }
@@ -240,12 +244,29 @@ fun EstadoCuentaScreen(
                             InfoRow(label = "Tasa Anual Implícita", value = formatPercent(ec.tasaAnualPct))
 
                             Spacer(modifier = Modifier.height(8.dp))
-                            OutlinedButton(
-                                onClick = { onNavigateToDetail(ec.idContrato) },
+                            Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(10.dp)
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Text("Ver Expediente Técnico del Contrato", color = SlateSecondary, fontSize = 12.sp)
+                                OutlinedButton(
+                                    onClick = { onNavigateToDetail(ec.idContrato) },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Text("Ficha Técnica", color = SlateSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                }
+                                Button(
+                                    onClick = {
+                                        val pdfUrl = OLeasingApiClient.getPdfEstadoCuentaUrl(ec.idContrato)
+                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(pdfUrl))
+                                        context.startActivity(intent)
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(10.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = OrangePrimary)
+                                ) {
+                                    Text("Descargar PDF", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
                             }
                         }
                     }
