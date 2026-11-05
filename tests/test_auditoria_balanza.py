@@ -55,16 +55,28 @@ class TestAuditoriaBalanza(unittest.TestCase):
         df_nif = tablas['df_auditoria_nif']
         self.assertEqual(len(df_nif), 274)
 
+        # Contratos conciliados al 100% (Categorías A y B) deben ser 246 contratos (89.8%)
+        df_concil = tablas['df_conciliados_detalle']
+        self.assertEqual(len(df_concil), 246)
+
+        # Contratos con diferencias analizadas deben ser exactamente 28 contratos
+        df_difs = tablas['df_diferencias_causas']
+        self.assertEqual(len(df_difs), 28)
+
+        # Conciliación de ingresos debe evaluar los 274 contratos activos
+        df_ing = tablas['df_concil_ingresos']
+        self.assertEqual(len(df_ing), 274)
+
         # Contratos liquidados debe tener exactamente los 441 liquidados
         df_liq = tablas['df_concil_liquidados']
         self.assertEqual(len(df_liq), 441)
 
         # Comprobar que hay contratos liquidados alertados con saldo residual pendiente
-        con_saldo = df_liq[df_liq['saldo_res_cp'] > 0.01]
+        con_saldo = df_liq[df_liq['residual'] > 0.01]
         self.assertGreater(len(con_saldo), 0)
 
     def test_generacion_excel_limpio(self):
-        """Verifica la creación del libro oficial limpio NIF con 4 pestañas requeridas."""
+        """Verifica la creación del libro oficial con las 6 hojas requeridas y omisión de Criterios_y_Uso."""
         out_test = os.path.join(_ROOT, "scratch", "test_auditoria_limpio.xlsx")
         res_path = generar_excel_auditoria_balanza(
             self.balanza_path,
@@ -78,13 +90,17 @@ class TestAuditoriaBalanza(unittest.TestCase):
         wb = openpyxl.load_workbook(res_path, data_only=False)
         expected_sheets = [
             'Resumen_Ejecutivo',
-            'Analisis_Diferencias_Causas',
-            'Auditoria_NIF_C15_Cartera',
+            'Analisis_Diferencias',
+            'Contratos_Conciliados',
+            'Conciliacion_Ingresos',
             'Cartera_Lenta_Recuperacion',
             'Contratos_Liquidados'
         ]
         self.assertEqual(wb.sheetnames, expected_sheets)
         
+        # Verificar que NO contiene la hoja omitida 'Criterios_y_Uso'
+        self.assertNotIn('Criterios_y_Uso', wb.sheetnames)
+
         # Verificar que NO contiene hojas con cuentas operativas viejas (102, 403, 150)
         for s in ['Conciliacion_CxC_102', 'Ingresos_403_Rentas', 'Activos_150_Vehiculos']:
             self.assertNotIn(s, wb.sheetnames)
