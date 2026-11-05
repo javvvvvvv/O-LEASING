@@ -1,5 +1,6 @@
 package com.oleasing.app.network
 
+import android.content.Context
 import com.oleasing.app.model.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -13,7 +14,25 @@ import java.net.URL
 import java.net.URLEncoder
 
 object OLeasingApiClient {
+    private const val PREFS_NAME = "oleasing_prefs"
+    private const val KEY_BASE_URL = "api_base_url"
+
     var baseUrl: String = "http://10.0.2.2:8008"
+
+    fun init(context: Context) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val saved = prefs.getString(KEY_BASE_URL, null)
+        if (!saved.isNullOrBlank()) {
+            baseUrl = saved.trim().removeSuffix("/")
+        }
+    }
+
+    fun updateBaseUrl(context: Context, newUrl: String) {
+        val cleaned = newUrl.trim().removeSuffix("/")
+        baseUrl = cleaned
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putString(KEY_BASE_URL, cleaned).apply()
+    }
 
     private suspend fun <T> makeRequest(
         path: String,
@@ -167,6 +186,55 @@ object OLeasingApiClient {
                 anotaciones = item.optString("anotaciones", ""),
                 saldoActualEstimado = item.optDouble("saldo_actual_estimado"),
                 interesesTotalesEstimados = item.optDouble("intereses_totales_estimados")
+            )
+        }
+    }
+
+    suspend fun getEstadoCuenta(idContrato: String): Result<EstadoCuentaResponse> {
+        val encodedId = URLEncoder.encode(idContrato, "UTF-8")
+        return makeRequest("/api/contratos/$encodedId/estado_cuenta") { jsonStr ->
+            val obj = JSONObject(jsonStr)
+            val tablaArr = obj.optJSONArray("tabla_amortizacion") ?: JSONArray()
+            val tabla = mutableListOf<PeriodoAmortizacion>()
+            for (i in 0 until tablaArr.length()) {
+                val p = tablaArr.getJSONObject(i)
+                tabla.add(
+                    PeriodoAmortizacion(
+                        periodo = p.optInt("periodo"),
+                        fechaEstimada = p.optString("fecha_estimada", ""),
+                        rentaSinIva = p.optDouble("renta_sin_iva"),
+                        capital = p.optDouble("capital"),
+                        interes = p.optDouble("interes"),
+                        iva = p.optDouble("iva"),
+                        totalConIva = p.optDouble("total_con_iva"),
+                        saldoInsoluto = p.optDouble("saldo_insoluto"),
+                        estatus = p.optString("estatus", "PENDIENTE")
+                    )
+                )
+            }
+            EstadoCuentaResponse(
+                idContrato = obj.optString("id_contrato"),
+                cliente = obj.optString("cliente"),
+                vehiculo = obj.optString("vehiculo", ""),
+                estatus = obj.optString("estatus", "ACTIVO"),
+                fechaAlta = obj.optString("fecha_alta", ""),
+                fechaVencimiento = obj.optString("fecha_vencimiento", ""),
+                plazo = obj.optInt("plazo"),
+                valorSinIva = obj.optDouble("valor_sin_iva"),
+                anticipoMonto = obj.optDouble("anticipo_monto"),
+                inversionNeta = obj.optDouble("inversion_neta"),
+                mensualidadSinIva = obj.optDouble("mensualidad_sin_iva"),
+                residualMonto = obj.optDouble("residual_monto"),
+                tasaMensualPct = obj.optDouble("tasa_mensual_pct"),
+                tasaAnualPct = obj.optDouble("tasa_anual_pct"),
+                mesesTranscurridos = obj.optInt("meses_transcurridos"),
+                pagosRestantes = obj.optInt("pagos_restantes"),
+                saldoActualEstimado = obj.optDouble("saldo_actual_estimado"),
+                capitalAmortizado = obj.optDouble("capital_amortizado"),
+                interesDevengado = obj.optDouble("interes_devengado"),
+                totalInteresesPlazo = obj.optDouble("total_intereses_plazo"),
+                porcentajeAvance = obj.optDouble("porcentaje_avance"),
+                tablaAmortizacion = tabla
             )
         }
     }

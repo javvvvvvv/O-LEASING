@@ -52,3 +52,6 @@ android/**/.gradle/
 android/**/build/
 android/local.properties
 android/.cxx/
+*.apk
+tunnel_url.txt
+qr_conexion_movil.png

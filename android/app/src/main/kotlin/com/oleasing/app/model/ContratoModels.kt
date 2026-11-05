@@ -59,6 +59,43 @@ data class ContratoDetalle(
     val interesesTotalesEstimados: Double
 )
 
+data class PeriodoAmortizacion(
+    val periodo: Int,
+    val fechaEstimada: String,
+    val rentaSinIva: Double,
+    val capital: Double,
+    val interes: Double,
+    val iva: Double,
+    val totalConIva: Double,
+    val saldoInsoluto: Double,
+    val estatus: String
+)
+
+data class EstadoCuentaResponse(
+    val idContrato: String,
+    val cliente: String,
+    val vehiculo: String,
+    val estatus: String,
+    val fechaAlta: String,
+    val fechaVencimiento: String,
+    val plazo: Int,
+    val valorSinIva: Double,
+    val anticipoMonto: Double,
+    val inversionNeta: Double,
+    val mensualidadSinIva: Double,
+    val residualMonto: Double,
+    val tasaMensualPct: Double,
+    val tasaAnualPct: Double,
+    val mesesTranscurridos: Int,
+    val pagosRestantes: Int,
+    val saldoActualEstimado: Double,
+    val capitalAmortizado: Double,
+    val interesDevengado: Double,
+    val totalInteresesPlazo: Double,
+    val porcentajeAvance: Double,
+    val tablaAmortizacion: List<PeriodoAmortizacion>
+)
+
 data class CotizacionRequest(
     val valorSinIva: Double,
     val plazo: Int,

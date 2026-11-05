@@ -102,6 +102,43 @@ class ContratoDetalle(BaseModel):
     intereses_totales_estimados: float
 
 
+class PeriodoAmortizacion(BaseModel):
+    periodo: int
+    fecha_estimada: str
+    renta_sin_iva: float
+    capital: float
+    interes: float
+    iva: float
+    total_con_iva: float
+    saldo_insoluto: float
+    estatus: str
+
+
+class EstadoCuentaResponse(BaseModel):
+    id_contrato: str
+    cliente: str
+    vehiculo: str
+    estatus: str
+    fecha_alta: str
+    fecha_vencimiento: str
+    plazo: int
+    valor_sin_iva: float
+    anticipo_monto: float
+    inversion_neta: float
+    mensualidad_sin_iva: float
+    residual_monto: float
+    tasa_mensual_pct: float
+    tasa_anual_pct: float
+    meses_transcurridos: int
+    pagos_restantes: int
+    saldo_actual_estimado: float
+    capital_amortizado: float
+    interes_devengado: float
+    total_intereses_plazo: float
+    porcentaje_avance: float
+    tabla_amortizacion: List[PeriodoAmortizacion]
+
+
 class CotizacionRequest(BaseModel):
     valor_sin_iva: float = Field(..., gt=0, description="Valor del activo sin IVA")
     plazo: int = Field(..., gt=0, le=120, description="Plazo en meses")
@@ -338,6 +375,120 @@ def obtener_detalle_contrato(id_contrato: str):
         anotaciones=row['Anotaciones'] or "",
         saldo_actual_estimado=round(saldo_actual, 2),
         intereses_totales_estimados=round(intereses_totales, 2)
+    )
+
+
+@app.get("/api/contratos/{id_contrato}/estado_cuenta", response_model=EstadoCuentaResponse)
+def obtener_estado_cuenta(id_contrato: str):
+    """Retorna el estado de cuenta completo y la tabla de amortización periódica."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT ID_Contrato, Cliente, Vehiculo, Fecha_Alta, Fecha_Vencimiento, Fecha_Baja,
+               Estatus, Plazo, Valor_Sin_IVA, Anticipo_Pct, Anticipo_Monto,
+               Mensualidad_Sin_IVA, Residual_Pct, Residual_Monto, VP_Residual,
+               Comision_Apertura_Pct, Comision_Monto, Tasa_Calculada, Anotaciones
+        FROM contratos
+        WHERE ID_Contrato = ?
+    """, (id_contrato,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Contrato con ID '{id_contrato}' no encontrado."
+        )
+
+    valor = float(row['Valor_Sin_IVA'] or 0.0)
+    ant = float(row['Anticipo_Monto'] or 0.0)
+    inv = valor - ant
+    renta = float(row['Mensualidad_Sin_IVA'] or 0.0)
+    plazo = int(row['Plazo'] or 1)
+    res = float(row['Residual_Monto'] or 0.0)
+    tasa = float(row['Tasa_Calculada'] or 0.0)
+
+    from dateutil.relativedelta import relativedelta
+
+    fa_str = str(row['Fecha_Alta'] or "")[:10]
+    fa = datetime.datetime.strptime(fa_str, "%Y-%m-%d") if fa_str else datetime.datetime.now()
+    hoy = datetime.date.today()
+    meses_transcurridos = max((hoy.year - fa.year) * 12 + (hoy.month - fa.month), 0)
+    pagos_restantes = max(plazo - meses_transcurridos, 0)
+    porcentaje_avance = round(min(meses_transcurridos / max(plazo, 1) * 100, 100.0), 1)
+
+    tabla = []
+    capital_amortizado = 0.0
+    interes_devengado = 0.0
+    total_intereses = 0.0
+    saldo_actual = inv
+
+    if tasa > 0 and inv > 0 and renta > 0:
+        try:
+            df_a, _, _, _, _ = calc_amort(round(inv, 4), round(renta, 4), round(res, 4), plazo, round(tasa, 8))
+            total_intereses = float(df_a['Interes'].sum())
+            for idx, r_a in df_a.iterrows():
+                p = int(r_a['Mes'])
+                cap = float(r_a['Capital'])
+                inte = float(r_a['Interes'])
+                r_sin = cap + inte
+                r_iva = round(r_sin * 0.16, 2)
+                tot = round(r_sin + r_iva, 2)
+                saldo = float(r_a['Saldo'])
+                f_pago = (fa + relativedelta(months=p)).strftime("%Y-%m-%d")
+
+                if p < meses_transcurridos:
+                    st_pago = "PAGADO"
+                    capital_amortizado += cap
+                    interes_devengado += inte
+                elif p == meses_transcurridos:
+                    st_pago = "ACTUAL"
+                    capital_amortizado += cap
+                    interes_devengado += inte
+                else:
+                    st_pago = "PENDIENTE"
+
+                tabla.append(PeriodoAmortizacion(
+                    periodo=p,
+                    fecha_estimada=f_pago,
+                    renta_sin_iva=round(r_sin, 2),
+                    capital=round(cap, 2),
+                    interes=round(inte, 2),
+                    iva=r_iva,
+                    total_con_iva=tot,
+                    saldo_insoluto=round(saldo, 2),
+                    estatus=st_pago
+                ))
+
+            idx_s = min(meses_transcurridos, plazo) - 1
+            if idx_s >= 0:
+                saldo_actual = float(df_a.iloc[idx_s]['Saldo'])
+        except Exception:
+            pass
+
+    return EstadoCuentaResponse(
+        id_contrato=row['ID_Contrato'],
+        cliente=row['Cliente'],
+        vehiculo=row['Vehiculo'] or "",
+        estatus=row['Estatus'] or "ACTIVO",
+        fecha_alta=str(row['Fecha_Alta'] or "")[:10],
+        fecha_vencimiento=str(row['Fecha_Vencimiento'] or "")[:10],
+        plazo=plazo,
+        valor_sin_iva=round(valor, 2),
+        anticipo_monto=round(ant, 2),
+        inversion_neta=round(inv, 2),
+        mensualidad_sin_iva=round(renta, 2),
+        residual_monto=round(res, 2),
+        tasa_mensual_pct=round(tasa * 100, 2),
+        tasa_anual_pct=round(tasa * 12 * 100, 2),
+        meses_transcurridos=meses_transcurridos,
+        pagos_restantes=pagos_restantes,
+        saldo_actual_estimado=round(saldo_actual, 2),
+        capital_amortizado=round(capital_amortizado, 2),
+        interes_devengado=round(interes_devengado, 2),
+        total_intereses_plazo=round(total_intereses, 2),
+        porcentaje_avance=porcentaje_avance,
+        tabla_amortizacion=tabla
     )
 
 

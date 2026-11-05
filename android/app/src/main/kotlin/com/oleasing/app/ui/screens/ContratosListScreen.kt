@@ -37,6 +37,7 @@ import kotlinx.coroutines.launch
 fun ContratosListScreen(
     onBack: () -> Unit,
     onSelectContrato: (String) -> Unit,
+    onNavigateToEstadoCuenta: (String) -> Unit,
     onNavigateToNew: () -> Unit
 ) {
     val coroutineScope = rememberCoroutineScope()
@@ -252,6 +253,29 @@ fun ContratosListScreen(
                                     Column(horizontalAlignment = Alignment.End) {
                                         Text("Tasa Anual", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
                                         Text(formatPercent(c.tasaAnualPct), fontWeight = FontWeight.Bold, fontSize = 13.sp, color = SlateSecondary)
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(10.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    OutlinedButton(
+                                        onClick = { onSelectContrato(c.idContrato) },
+                                        modifier = Modifier.weight(1f).height(34.dp),
+                                        shape = RoundedCornerShape(8.dp),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                                    ) {
+                                        Text("Ficha Técnica", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = SlateSecondary)
+                                    }
+                                    Button(
+                                        onClick = { onNavigateToEstadoCuenta(c.idContrato) },
+                                        modifier = Modifier.weight(1f).height(34.dp),
+                                        shape = RoundedCornerShape(8.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = OrangePrimary),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                                    ) {
+                                        Text("Estado de Cuenta", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
                                     }
                                 }
                             }

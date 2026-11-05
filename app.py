@@ -194,6 +194,33 @@ def save_empresas(lst):
     with open(MASTER_FILE,"w",encoding="utf-8") as f:
         json.dump(lst, f, ensure_ascii=False, indent=2)
 
+def generar_qr_contrato_b64(id_contrato: str) -> str:
+    """Genera un código QR en base64 para abrir el contrato en la app móvil O-Leasing."""
+    try:
+        import qrcode
+        import io
+        import base64
+        qr = qrcode.QRCode(
+            version=1,
+            box_size=4,
+            border=2,
+        )
+        qr_uri = f"oleasing://contrato/{id_contrato}"
+        t_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tunnel_url.txt")
+        if os.path.exists(t_path):
+            u = open(t_path, encoding="utf-8").read().strip().rstrip("/")
+            if u.startswith("http"):
+                qr_uri = f"{qr_uri}?api={u}"
+        qr.add_data(qr_uri)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="#E65C00", back_color="white")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return base64.b64encode(buf.getvalue()).decode()
+    except Exception:
+        return ""
+
+
 def get_empresas_permitidas(auth_user=None):
     if auth_user is None:
         auth_user = st.session_state.get('auth_user')
@@ -7937,9 +7964,19 @@ try:
                     if es_baja_hdr else
                     f"<div><b style='color:var(--text-primary);'>Fecha Vencimiento</b><br><span style='color:var(--text-secondary);'>{str(row.get('Fecha_Vencimiento','—'))[:10]}</span></div>"
                 )
+                _qr_b64 = generar_qr_contrato_b64(str(sel_ec))
+                _qr_html = f"""
+                <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;background:#fff;border:1px solid #fed7aa;border-radius:10px;padding:8px 12px;box-shadow:0 1px 3px rgba(0,0,0,0.05);min-width:130px;">
+                    <img src="data:image/png;base64,{_qr_b64}" width="110" height="110" style="display:block;border-radius:6px;" alt="QR {sel_ec}" />
+                    <div style="font-size:.72rem;font-weight:700;color:#e65c00;margin-top:4px;">App O-Leasing</div>
+                    <div style="font-size:.65rem;color:#64748b;text-align:center;">Escanea con tu celular</div>
+                </div>
+                """ if _qr_b64 else ""
+
                 st.markdown(f"""
-                <div>
-                  <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;">
+                <div style="display:flex;gap:18px;align-items:flex-start;justify-content:space-between;">
+                  <div style="flex:1;">
+                    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;">
                     {badge_mora} {badge_baja} {badge_excl} {badge_avance}
                   </div>
                   <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;font-size:.85rem;">
@@ -7956,6 +7993,8 @@ try:
                     <div><b style="color:var(--text-primary);">Tasa anual impl.</b><br><span style="color:var(--text-secondary);">{float(row.get('Tasa_Calculada',0))*1200:.2f}%</span></div>
                   </div>
                   {('<div style="margin-top:12px;font-size:.8rem;color:var(--danger);"><b>Motivo exclusión:</b> ' + motivo_excl + '</div>') if motivo_excl else ""}
+                  </div>
+                  {_qr_html}
                 </div>
                 """, unsafe_allow_html=True)
 

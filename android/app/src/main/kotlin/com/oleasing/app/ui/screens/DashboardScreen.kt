@@ -16,6 +16,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -34,8 +35,10 @@ import kotlinx.coroutines.launch
 fun DashboardScreen(
     onNavigateToList: () -> Unit,
     onNavigateToNew: () -> Unit,
-    onSelectContrato: (String) -> Unit
+    onSelectContrato: (String) -> Unit,
+    onNavigateToEstadoCuenta: (String) -> Unit
 ) {
+    val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     var metrics by remember { mutableStateOf<DashboardMetrics?>(null) }
     var recentContratos by remember { mutableStateOf<List<ContratoResumen>>(emptyList()) }
@@ -43,6 +46,8 @@ fun DashboardScreen(
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var showServerDialog by remember { mutableStateOf(false) }
     var serverHostInput by remember { mutableStateOf(OLeasingApiClient.baseUrl) }
+    var showQuickJumpDialog by remember { mutableStateOf(false) }
+    var quickJumpId by remember { mutableStateOf("") }
 
     fun loadData() {
         coroutineScope.launch {
@@ -86,7 +91,10 @@ fun DashboardScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = { showServerDialog = true }) {
+                    IconButton(onClick = {
+                        serverHostInput = OLeasingApiClient.baseUrl
+                        showServerDialog = true
+                    }) {
                         Icon(
                             imageVector = Icons.Default.Settings,
                             contentDescription = "Configurar Servidor",
@@ -137,12 +145,23 @@ fun DashboardScreen(
                                 fontSize = 12.sp
                             )
                             Spacer(modifier = Modifier.height(8.dp))
-                            Button(
-                                onClick = { loadData() },
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                            ) {
-                                Text("Reintentar Conexión", fontSize = 12.sp)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(
+                                    onClick = { loadData() },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                                ) {
+                                    Text("Reintentar", fontSize = 12.sp)
+                                }
+                                OutlinedButton(
+                                    onClick = {
+                                        serverHostInput = OLeasingApiClient.baseUrl
+                                        showServerDialog = true
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                                ) {
+                                    Text("Configurar URL", fontSize = 12.sp, color = Color(0xFFB91C1C))
+                                }
                             }
                         }
                     }
@@ -240,6 +259,20 @@ fun DashboardScreen(
                         Text("Nuevo", fontWeight = FontWeight.SemiBold)
                     }
                 }
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = { showQuickJumpDialog = true },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(46.dp),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text(
+                        text = "Ir a Estado de Cuenta por ID / Código QR",
+                        fontWeight = FontWeight.SemiBold,
+                        color = SlateSecondary
+                    )
+                }
             }
 
             item {
@@ -291,7 +324,7 @@ fun DashboardScreen(
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { onSelectContrato(c.idContrato) },
+                            .clickable { onNavigateToEstadoCuenta(c.idContrato) },
                         shape = RoundedCornerShape(10.dp),
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
@@ -335,9 +368,10 @@ fun DashboardScreen(
                                     fontWeight = FontWeight.Medium
                                 )
                                 Text(
-                                    text = "Plazo: ${c.plazo} m",
+                                    text = "Plazo: ${c.plazo} m · Ver Estado Cta.",
                                     fontSize = 12.sp,
-                                    color = MaterialTheme.colorScheme.outline
+                                    color = OrangePrimary,
+                                    fontWeight = FontWeight.Medium
                                 )
                             }
                         }
@@ -354,19 +388,19 @@ fun DashboardScreen(
     if (showServerDialog) {
         AlertDialog(
             onDismissRequest = { showServerDialog = false },
-            title = { Text("Configuración de Servidor API", fontWeight = FontWeight.Bold) },
+            title = { Text("Conexión del Servidor O-Leasing", fontWeight = FontWeight.Bold) },
             text = {
                 Column {
                     Text(
-                        "Ingresa la dirección base del backend FastAPI (ej. http://10.0.2.2:8008 para emulador o http://192.168.1.97:8008 para celular físico en la misma red Wi-Fi):",
-                        fontSize = 13.sp,
+                        "Ingresa tu URL de Túnel Web (ej. https://tu-tunel.trycloudflare.com) para conectarte desde cualquier lugar sin usar IP local, o http://10.0.2.2:8008 en emulador:",
+                        fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.outline
                     )
                     Spacer(modifier = Modifier.height(10.dp))
                     OutlinedTextField(
                         value = serverHostInput,
                         onValueChange = { serverHostInput = it },
-                        label = { Text("URL Base") },
+                        label = { Text("URL Base del Servidor") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -375,17 +409,61 @@ fun DashboardScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        OLeasingApiClient.baseUrl = serverHostInput.trim()
+                        OLeasingApiClient.updateBaseUrl(context, serverHostInput)
                         showServerDialog = false
                         loadData()
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = OrangePrimary)
                 ) {
-                    Text("Guardar y Probar")
+                    Text("Guardar Permanente")
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showServerDialog = false }) {
+                    Text("Cancelar")
+                }
+            }
+        )
+    }
+
+    if (showQuickJumpDialog) {
+        AlertDialog(
+            onDismissRequest = { showQuickJumpDialog = false },
+            title = { Text("Abrir Estado de Cuenta", fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text(
+                        "También puedes escanear el código QR del Estado de Cuenta directamente con la cámara de tu teléfono y se abrirá automáticamente aquí.",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.outline
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = quickJumpId,
+                        onValueChange = { quickJumpId = it.uppercase() },
+                        label = { Text("ID Contrato (ej. 0786-0001)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val targetId = quickJumpId.trim()
+                        if (targetId.isNotEmpty()) {
+                            showQuickJumpDialog = false
+                            quickJumpId = ""
+                            onNavigateToEstadoCuenta(targetId)
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = OrangePrimary)
+                ) {
+                    Text("Abrir Estado de Cuenta")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showQuickJumpDialog = false }) {
                     Text("Cancelar")
                 }
             }

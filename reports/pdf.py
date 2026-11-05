@@ -158,8 +158,29 @@ def pdf_estado_cuenta(row, dfa, dfr=None, avance=None, mes_corte=None, fecha_hoy
         Paragraph("Estado de Cuenta", esub),
         Paragraph(f"<b>{row['ID_Contrato']}</b> — {row['Cliente']}", es['Normal']),
         Paragraph(f"Generado el {fecha_hoy_txt} · Cifras en Pesos Mexicanos (MXN)", enota),
-        Spacer(1, 10),
+        Spacer(1, 6),
     ]
+    try:
+        import qrcode
+        qr = qrcode.QRCode(version=1, box_size=3, border=1)
+        qr_uri = f"oleasing://contrato/{row['ID_Contrato']}"
+        t_path = os.path.join(_BASE_DIR, "tunnel_url.txt")
+        if os.path.exists(t_path):
+            u = open(t_path, encoding="utf-8").read().strip().rstrip("/")
+            if u.startswith("http"):
+                qr_uri = f"{qr_uri}?api={u}"
+        qr.add_data(qr_uri)
+        qr.make(fit=True)
+        qr_img = qr.make_image(fill_color="#E65C00", back_color="white")
+        qr_buf = io.BytesIO()
+        qr_img.save(qr_buf, format="PNG")
+        qr_buf.seek(0)
+        rl_qr = RLImage(qr_buf, width=60, height=60)
+        rl_qr.hAlign = 'RIGHT'
+        elems.append(rl_qr)
+        elems.append(Spacer(1, 6))
+    except Exception:
+        pass
 
     if str(row.get('Estatus','')).upper() == 'BAJA':
         _fb = str(row.get('Fecha_Baja','') or '')[:10]

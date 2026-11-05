@@ -29,7 +29,8 @@ import kotlinx.coroutines.launch
 @Composable
 fun ContratoDetailScreen(
     idContrato: String,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onNavigateToEstadoCuenta: (String) -> Unit
 ) {
     val coroutineScope = rememberCoroutineScope()
     var contrato by remember { mutableStateOf<ContratoDetalle?>(null) }
@@ -149,6 +150,21 @@ fun ContratoDetailScreen(
                                     text = c.vehiculo,
                                     fontSize = 13.sp,
                                     color = MaterialTheme.colorScheme.outline
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Button(
+                                onClick = { onNavigateToEstadoCuenta(c.idContrato) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = OrangePrimary)
+                            ) {
+                                Text(
+                                    text = "Ver Estado de Cuenta y Amortización",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp
                                 )
                             }
                         }
