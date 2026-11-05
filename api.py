@@ -189,12 +189,17 @@ def get_dashboard_metrics():
     conn.close()
 
     return {
+        "total_contratos": total_historico,
+        "total_historico": total_historico,
         "contratos_activos": n_activos,
-        "cartera_activa_monto": round(cartera_activa_monto, 2),
-        "flujo_mensual_rentas": round(renta_mensual_total, 2),
         "contratos_concluidos": n_concluidos,
+        "contratos_baja": n_bajas,
         "contratos_bajas": n_bajas,
-        "total_historico": total_historico
+        "cartera_activa_valor": round(cartera_activa_monto, 2),
+        "cartera_activa_monto": round(cartera_activa_monto, 2),
+        "flujo_mensual_estimado": round(renta_mensual_total, 2),
+        "flujo_mensual_rentas": round(renta_mensual_total, 2),
+        "fecha_corte": datetime.date.today().isoformat()
     }
 
 

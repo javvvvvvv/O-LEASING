@@ -358,7 +358,7 @@ fun DashboardScreen(
             text = {
                 Column {
                     Text(
-                        "Ingresa la dirección base del backend FastAPI (ej. http://10.0.2.2:8000 para el emulador o la IP local de tu PC para dispositivo físico):",
+                        "Ingresa la dirección base del backend FastAPI (ej. http://10.0.2.2:8008 para emulador o http://192.168.1.97:8008 para celular físico en la misma red Wi-Fi):",
                         fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.outline
                     )

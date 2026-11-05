@@ -13,7 +13,7 @@ import java.net.URL
 import java.net.URLEncoder
 
 object OLeasingApiClient {
-    var baseUrl: String = "http://10.0.2.2:8000"
+    var baseUrl: String = "http://10.0.2.2:8008"
 
     private suspend fun <T> makeRequest(
         path: String,
@@ -73,12 +73,12 @@ object OLeasingApiClient {
         return makeRequest("/api/dashboard") { jsonStr ->
             val obj = JSONObject(jsonStr)
             DashboardMetrics(
-                totalContratos = obj.optInt("total_contratos"),
+                totalContratos = if (obj.has("total_contratos")) obj.optInt("total_contratos") else obj.optInt("total_historico"),
                 contratosActivos = obj.optInt("contratos_activos"),
                 contratosConcluidos = obj.optInt("contratos_concluidos"),
-                contratosBaja = obj.optInt("contratos_baja"),
-                carteraActivaValor = obj.optDouble("cartera_activa_valor"),
-                flujoMensualEstimado = obj.optDouble("flujo_mensual_estimado"),
+                contratosBaja = if (obj.has("contratos_baja")) obj.optInt("contratos_baja") else obj.optInt("contratos_bajas"),
+                carteraActivaValor = if (obj.has("cartera_activa_valor")) obj.optDouble("cartera_activa_valor") else obj.optDouble("cartera_activa_monto"),
+                flujoMensualEstimado = if (obj.has("flujo_mensual_estimado")) obj.optDouble("flujo_mensual_estimado") else obj.optDouble("flujo_mensual_rentas"),
                 fechaCorte = obj.optString("fecha_corte")
             )
         }
@@ -102,8 +102,13 @@ object OLeasingApiClient {
         val path = "/api/contratos?" + params.joinToString("&")
 
         return makeRequest(path) { jsonStr ->
-            val obj = JSONObject(jsonStr)
-            val itemsArr = obj.optJSONArray("items") ?: JSONArray()
+            val trimmed = jsonStr.trim()
+            val itemsArr = if (trimmed.startsWith("[")) {
+                JSONArray(trimmed)
+            } else {
+                val obj = JSONObject(trimmed)
+                obj.optJSONArray("items") ?: JSONArray()
+            }
             val list = mutableListOf<ContratoResumen>()
             for (i in 0 until itemsArr.length()) {
                 val item = itemsArr.getJSONObject(i)
@@ -126,9 +131,9 @@ object OLeasingApiClient {
                 )
             }
             ContratoListResponse(
-                total = obj.optInt("total"),
-                limit = obj.optInt("limit"),
-                offset = obj.optInt("offset"),
+                total = list.size,
+                limit = limit,
+                offset = offset,
                 items = list
             )
         }
