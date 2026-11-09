@@ -71,46 +71,52 @@ def main():
         print(f"[OK] API iniciada correctamente en http://127.0.0.1:{PORT}")
 
     cf_bin = find_cloudflared()
-    print("[*] Creando enlace web seguro HTTPS (Cloudflare Tunnel)...")
-    cf_proc = subprocess.Popen(
-        [cf_bin, "tunnel", "--url", f"http://127.0.0.1:{PORT}"],
-        cwd=BASE_DIR,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-
-    url_pattern = re.compile(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com")
-    public_url = None
+    url_pattern = re.compile(r"https://(?!api\.)[a-zA-Z0-9-]+\.trycloudflare\.com")
 
     try:
-        for line in cf_proc.stdout:
-            m = url_pattern.search(line)
-            if m and not public_url:
-                public_url = m.group(0)
-                with open(TUNNEL_URL_FILE, "w", encoding="utf-8") as f:
-                    f.write(public_url)
-                save_connection_qr(public_url)
-                print("\n" + "=" * 72)
-                print("  CONEXION WEB ACTIVA (SIN IP LOCAL)")
-                print("=" * 72)
-                print(f"  URL Web para la App Movil : {public_url}")
-                print(f"  Guardada automaticamente  : {TUNNEL_URL_FILE}")
-                print(f"  QR de Conexion rapida     : {QR_CONEXION_FILE}")
-                print("-" * 72)
-                print("  Como funciona:")
-                print("  1. Todos los codigos QR de Estado de Cuenta en la App Web y PDFs")
-                print("     ahora incluyen automaticamente esta URL web.")
-                print("  2. Al escanear cualquier QR de un contrato con la camara de tu")
-                print("     telefono, la app movil se conectara sola por internet y")
-                print("     abrira directamente el Estado de Cuenta de ese cliente.")
-                print("=" * 72 + "\n")
+        while True:
+            print("[*] Creando enlace web seguro HTTPS (Cloudflare Tunnel)...")
+            cf_proc = subprocess.Popen(
+                [cf_bin, "tunnel", "--url", f"http://127.0.0.1:{PORT}"],
+                cwd=BASE_DIR,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            public_url = None
+            for line in cf_proc.stdout:
+                m = url_pattern.search(line)
+                if m and not public_url:
+                    public_url = m.group(0)
+                    with open(TUNNEL_URL_FILE, "w", encoding="utf-8") as f:
+                        f.write(public_url)
+                    save_connection_qr(public_url)
+                    print("\n" + "=" * 72)
+                    print("  CONEXION WEB ACTIVA (SIN IP LOCAL)")
+                    print("=" * 72)
+                    print(f"  URL Web para la App Movil : {public_url}")
+                    print(f"  Guardada automaticamente  : {TUNNEL_URL_FILE}")
+                    print(f"  QR de Conexion rapida     : {QR_CONEXION_FILE}")
+                    print("-" * 72)
+                    print("  Como funciona:")
+                    print("  1. Todos los codigos QR de Estado de Cuenta en la App Web y PDFs")
+                    print("     ahora incluyen automaticamente esta URL web.")
+                    print("  2. Al escanear cualquier QR de un contrato con la camara de tu")
+                    print("     telefono, la app movil se conectara sola por internet y")
+                    print("     abrira directamente el Estado de Cuenta de ese cliente.")
+                    print("=" * 72 + "\n")
+            cf_proc.wait()
+            print("[!] El tunel web se desconecto; reintentando en 10 segundos (la API local sigue activa)...")
+            time.sleep(10)
     except KeyboardInterrupt:
         print("\n[*] Cerrando tunel web y servidor API...")
     finally:
-        cf_proc.terminate()
+        try:
+            cf_proc.terminate()
+        except Exception:
+            pass
         if api_proc:
             api_proc.terminate()
 

@@ -587,4 +587,75 @@ object OLeasingApiClient {
             )
         }
     }
+
+    suspend fun editarContrato(idContrato: String, req: ContratoCreate): Result<ContratoDetalle> {
+        val encodedId = URLEncoder.encode(idContrato, "UTF-8")
+        val payload = JSONObject().apply {
+            put("cliente", req.cliente)
+            put("vehiculo", req.vehiculo)
+            put("fecha_alta", req.fechaAlta)
+            put("plazo", req.plazo)
+            put("valor_sin_iva", req.valorSinIva)
+            put("anticipo_monto", req.anticipoMonto)
+            put("mensualidad_sin_iva", req.mensualidadSinIva)
+            put("residual_monto", req.residualMonto)
+            put("comision_pct", req.comisionPct)
+            put("anotaciones", req.anotaciones)
+        }
+        return makeRequest("/api/contratos/$encodedId", method = "PUT", bodyJson = payload.toString()) { jsonStr ->
+            val item = JSONObject(jsonStr)
+            ContratoDetalle(
+                idContrato = item.optString("id_contrato"),
+                cliente = item.optString("cliente"),
+                vehiculo = item.optString("vehiculo", ""),
+                fechaAlta = item.optString("fecha_alta", ""),
+                fechaVencimiento = item.optString("fecha_vencimiento", ""),
+                fechaBaja = if (item.isNull("fecha_baja")) null else item.optString("fecha_baja"),
+                estatus = item.optString("estatus", "ACTIVO"),
+                plazo = item.optInt("plazo"),
+                valorSinIva = item.optDouble("valor_sin_iva"),
+                anticipoPct = item.optDouble("anticipo_pct"),
+                anticipoMonto = item.optDouble("anticipo_monto"),
+                inversionNeta = item.optDouble("inversion_neta"),
+                mensualidadSinIva = item.optDouble("mensualidad_sin_iva"),
+                residualPct = item.optDouble("residual_pct"),
+                residualMonto = item.optDouble("residual_monto"),
+                vpResidual = item.optDouble("vp_residual"),
+                comisionAperturaPct = item.optDouble("comision_apertura_pct"),
+                comisionMonto = item.optDouble("comision_monto"),
+                tasaMensualPct = item.optDouble("tasa_mensual_pct"),
+                tasaAnualPct = item.optDouble("tasa_anual_pct"),
+                anotaciones = item.optString("anotaciones", ""),
+                saldoActualEstimado = item.optDouble("saldo_actual_estimado"),
+                interesesTotalesEstimados = item.optDouble("intereses_totales_estimados"),
+                nivelMorosidad = item.optInt("nivel_morosidad", 0)
+            )
+        }
+    }
+
+    suspend fun getClientes(query: String? = null): Result<List<ClienteResumen>> {
+        val path = if (!query.isNullOrBlank()) {
+            "/api/clientes?q=" + URLEncoder.encode(query.trim(), "UTF-8")
+        } else {
+            "/api/clientes"
+        }
+        return makeRequest(path) { jsonStr ->
+            val arr = JSONArray(jsonStr.trim())
+            val list = mutableListOf<ClienteResumen>()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                list.add(
+                    ClienteResumen(
+                        cliente = o.optString("cliente"),
+                        contratosActivos = o.optInt("contratos_activos"),
+                        totalContratos = o.optInt("total_contratos"),
+                        inversionActiva = o.optDouble("inversion_activa"),
+                        rentaMensualTotal = o.optDouble("renta_mensual_total"),
+                        residualTotal = o.optDouble("residual_total")
+                    )
+                )
+            }
+            list
+        }
+    }
 }

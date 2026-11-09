@@ -218,3 +218,12 @@ data class CobranzaMesResponse(
     val interesTotalMes: Double,
     val items: List<CobranzaContratoItem>
 )
+
+data class ClienteResumen(
+    val cliente: String,
+    val contratosActivos: Int,
+    val totalContratos: Int,
+    val inversionActiva: Double,
+    val rentaMensualTotal: Double,
+    val residualTotal: Double
+)

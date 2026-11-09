@@ -3,6 +3,7 @@ package com.oleasing.app.ui.screens
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -21,6 +22,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.oleasing.app.model.EstadoCuentaResponse
+import com.oleasing.app.model.PeriodoAmortizacion
 import com.oleasing.app.network.OLeasingApiClient
 import com.oleasing.app.ui.components.InfoRow
 import com.oleasing.app.ui.components.StatusBadge
@@ -48,6 +50,7 @@ fun EstadoCuentaScreen(
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var filtroPeriodo by remember { mutableStateOf("Todos") }
+    var periodoLiquidacion by remember { mutableStateOf<PeriodoAmortizacion?>(null) }
     val filtros = listOf("Todos", "Pagados", "Pendientes")
 
     fun loadEstadoCuenta() {
@@ -308,9 +311,9 @@ fun EstadoCuentaScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "Tabla de Amortización (${periodosFiltrados.size})",
+                            text = "Tabla de Amortización (${periodosFiltrados.size}) · Toca un mes para simular liquidación",
                             fontWeight = FontWeight.Bold,
-                            fontSize = 15.sp,
+                            fontSize = 13.sp,
                             color = MaterialTheme.colorScheme.onBackground
                         )
                     }
@@ -340,7 +343,9 @@ fun EstadoCuentaScreen(
                     }
 
                     Card(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { periodoLiquidacion = p },
                         shape = RoundedCornerShape(10.dp),
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
@@ -427,5 +432,73 @@ fun EstadoCuentaScreen(
                 item { Spacer(modifier = Modifier.height(28.dp)) }
             }
         }
+    }
+
+    if (periodoLiquidacion != null && estadoCuenta != null) {
+        val p = periodoLiquidacion!!
+        val ec = estadoCuenta!!
+        val finiquitoSinIva = p.rentaSinIva + p.saldoInsoluto
+        val finiquitoConIva = finiquitoSinIva * 1.16
+
+        AlertDialog(
+            onDismissRequest = { periodoLiquidacion = null },
+            title = {
+                Text(
+                    text = "Simulación de Liquidación · Mes ${p.periodo}",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp,
+                    color = SlateSecondary
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = "${ec.idContrato} · ${ec.cliente}",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = OrangePrimary
+                    )
+                    Text(
+                        text = "Fecha de corte del periodo: ${p.fechaEstimada}",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.outline
+                    )
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    InfoRow(label = "Renta del Mes ${p.periodo} (s/IVA)", value = formatCurrency(p.rentaSinIva))
+                    InfoRow(label = "Capital del Mes ${p.periodo}", value = formatCurrency(p.capital))
+                    InfoRow(label = "Interés del Mes ${p.periodo}", value = formatCurrency(p.interes))
+                    InfoRow(label = "Saldo Insoluto post-pago ${p.periodo}", value = formatCurrency(p.saldoInsoluto), isBold = true)
+                    InfoRow(label = "Residual Incluido en Saldo", value = formatCurrency(ec.residualMonto))
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    InfoRow(label = "Total Finiquito Est. (s/IVA)", value = formatCurrency(finiquitoSinIva), isBold = true)
+                    InfoRow(label = "Total Finiquito Est. (c/IVA 16%)", value = formatCurrency(finiquitoConIva), isBold = true)
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val txt = buildString {
+                            appendLine("O-LEASING · CÁLCULO DE LIQUIDACIÓN ANTICIPADA")
+                            appendLine("Contrato: ${ec.idContrato} — ${ec.cliente}")
+                            if (ec.vehiculo.isNotBlank()) appendLine("Unidad: ${ec.vehiculo}")
+                            appendLine("Corte al Mes ${p.periodo} (${p.fechaEstimada}):")
+                            appendLine("- Renta del Mes ${p.periodo} s/IVA: ${formatCurrency(p.rentaSinIva)}")
+                            appendLine("- Saldo Insoluto (incluye residual): ${formatCurrency(p.saldoInsoluto)}")
+                            appendLine("- Total Liquidación s/IVA: ${formatCurrency(finiquitoSinIva)}")
+                            appendLine("- Total Liquidación c/IVA (16%): ${formatCurrency(finiquitoConIva)}")
+                        }
+                        shareExecutiveText(context, "Liquidación ${ec.idContrato} Mes ${p.periodo}", txt)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = OrangePrimary)
+                ) {
+                    Text("Compartir Liquidación")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { periodoLiquidacion = null }) {
+                    Text("Cerrar")
+                }
+            }
+        )
     }
 }

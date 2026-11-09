@@ -365,6 +365,28 @@ class CobranzaMesResponse(BaseModel):
     items: List[CobranzaContratoItem]
 
 
+class ClienteResumen(BaseModel):
+    cliente: str
+    contratos_activos: int
+    total_contratos: int
+    inversion_activa: float
+    renta_mensual_total: float
+    residual_total: float
+
+
+class ContratoUpdate(BaseModel):
+    cliente: str = Field(..., min_length=2, max_length=200)
+    vehiculo: Optional[str] = Field("", max_length=200)
+    fecha_alta: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
+    plazo: int = Field(..., gt=0, le=120)
+    valor_sin_iva: float = Field(..., gt=0)
+    anticipo_monto: Optional[float] = Field(0.0, ge=0)
+    mensualidad_sin_iva: float = Field(..., gt=0)
+    residual_monto: Optional[float] = Field(0.0, ge=0)
+    comision_pct: Optional[float] = Field(0.0, ge=0)
+    anotaciones: Optional[str] = Field("", max_length=500)
+
+
 
 # =============================================================================
 # ENDPOINTS DE AUTENTICACIÓN Y CONSULTA
@@ -979,6 +1001,145 @@ def crear_contrato_individual(contrato: ContratoCreate, user: dict = Depends(usu
 
     # Retornar detalle del contrato recién creado
     return obtener_detalle_contrato(contrato.id_contrato.strip(), user=user)
+
+
+@app.put("/api/contratos/{id_contrato}", response_model=ContratoDetalle)
+def editar_contrato_individual(id_contrato: str, datos: ContratoUpdate, user: dict = Depends(usuario_escritura)):
+    """Actualiza los parámetros financieros y generales de un contrato y recalcula tasa, VP residual y vencimiento."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT ID_Contrato FROM contratos WHERE ID_Contrato = ?", (id_contrato,))
+    if not cursor.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail="Contrato no encontrado.")
+
+    valor = datos.valor_sin_iva
+    ant = datos.anticipo_monto or 0.0
+    inv = valor - ant
+    if inv <= 0:
+        conn.close()
+        raise HTTPException(status_code=400, detail="La inversión neta (Valor - Anticipo) debe ser positiva.")
+
+    res = datos.residual_monto or 0.0
+    renta = datos.mensualidad_sin_iva
+    plazo = datos.plazo
+
+    tasa = calc_tasa(plazo, renta, inv, res)
+    if tasa is None or tasa <= 0:
+        conn.close()
+        raise HTTPException(status_code=400, detail="Los valores ingresados no forman un flujo financiero válido.")
+
+    vp = vp_res(res, tasa, plazo)
+    ant_pct = round((ant / valor) * 100, 2) if valor else 0.0
+    res_pct = round((res / valor) * 100, 2) if valor else 0.0
+    com_pct = datos.comision_pct or 0.0
+    com_monto = round(valor * (com_pct / 100.0), 2)
+
+    fa_dt = datetime.datetime.strptime(datos.fecha_alta, "%Y-%m-%d")
+    m_venc = fa_dt.month + plazo
+    y_venc = fa_dt.year + (m_venc - 1) // 12
+    m_venc = (m_venc - 1) % 12 + 1
+    d_venc = min(fa_dt.day, 28)
+    fv_str = f"{y_venc:04d}-{m_venc:02d}-{d_venc:02d}"
+
+    cursor.execute("""
+        UPDATE contratos
+        SET Cliente = ?,
+            Vehiculo = ?,
+            Fecha_Alta = ?,
+            Fecha_Vencimiento = ?,
+            Plazo = ?,
+            Valor_Sin_IVA = ?,
+            Anticipo_Pct = ?,
+            Anticipo_Monto = ?,
+            Mensualidad_Sin_IVA = ?,
+            Residual_Pct = ?,
+            Residual_Monto = ?,
+            VP_Residual = ?,
+            Comision_Apertura_Pct = ?,
+            Comision_Monto = ?,
+            Tasa_Calculada = ?,
+            Anotaciones = ?
+        WHERE ID_Contrato = ?
+    """, (
+        datos.cliente.strip(),
+        (datos.vehiculo or "").strip(),
+        datos.fecha_alta,
+        fv_str,
+        plazo,
+        valor,
+        ant_pct,
+        ant,
+        renta,
+        res_pct,
+        res,
+        round(vp, 2),
+        com_pct,
+        com_monto,
+        round(tasa, 8),
+        datos.anotaciones or "",
+        id_contrato
+    ))
+
+    # Registrar auditoría en bitácora
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS anotaciones (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ID_Contrato TEXT,
+            Fecha TEXT,
+            Tipo TEXT,
+            Texto TEXT
+        )
+    """)
+    autor = user.get("nombre_completo") or user.get("username") or "Usuario"
+    ahora = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    cursor.execute("""
+        INSERT INTO anotaciones (ID_Contrato, Fecha, Tipo, Texto)
+        VALUES (?, ?, 'Edición Móvil', ?)
+    """, (id_contrato, ahora, f"[{autor}] Actualizó parámetros del contrato (Renta: ${renta:,.2f}, Plazo: {plazo}m)."))
+
+    conn.commit()
+    conn.close()
+    return obtener_detalle_contrato(id_contrato, user=user)
+
+
+@app.get("/api/clientes", response_model=List[ClienteResumen])
+def listar_clientes_exposicion(
+    q: Optional[str] = Query(None, description="Filtro por nombre de cliente"),
+    user: dict = Depends(usuario_actual)
+):
+    """Agrupa la cartera por cliente mostrando contratos activos, inversión neta activa, renta mensual y residual."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    sql = """
+        SELECT Cliente,
+               SUM(CASE WHEN Estatus = 'ACTIVO' THEN 1 ELSE 0 END) AS activos,
+               COUNT(*) AS total,
+               SUM(CASE WHEN Estatus = 'ACTIVO' THEN (COALESCE(Valor_Sin_IVA,0) - COALESCE(Anticipo_Monto,0)) ELSE 0 END) AS inv_activa,
+               SUM(CASE WHEN Estatus = 'ACTIVO' THEN COALESCE(Mensualidad_Sin_IVA,0) ELSE 0 END) AS renta_mensual,
+               SUM(CASE WHEN Estatus = 'ACTIVO' THEN COALESCE(Residual_Monto,0) ELSE 0 END) AS residual_tot
+        FROM contratos
+        WHERE Cliente IS NOT NULL AND TRIM(Cliente) != ''
+    """
+    params = []
+    if q and q.strip():
+        sql += " AND Cliente LIKE ?"
+        params.append(f"%{q.strip()}%")
+    sql += " GROUP BY Cliente ORDER BY inv_activa DESC, activos DESC, total DESC LIMIT 100"
+    cursor.execute(sql, params)
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        ClienteResumen(
+            cliente=str(r["Cliente"]),
+            contratos_activos=int(r["activos"] or 0),
+            total_contratos=int(r["total"] or 0),
+            inversion_activa=round(float(r["inv_activa"] or 0.0), 2),
+            renta_mensual_total=round(float(r["renta_mensual"] or 0.0), 2),
+            residual_total=round(float(r["residual_tot"] or 0.0), 2)
+        )
+        for r in rows
+    ]
 
 
 @app.put("/api/contratos/{id_contrato}/estatus", response_model=ContratoDetalle)
