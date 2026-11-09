@@ -14,10 +14,16 @@ import os
 import sys
 import sqlite3
 import datetime
+import hmac
+import hashlib
+import secrets
+import threading
+import time
 from typing import List, Optional
 from pydantic import BaseModel, Field
-from fastapi import FastAPI, HTTPException, Query, status
+from fastapi import FastAPI, HTTPException, Query, status, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 # Asegurar importación del motor financiero
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -25,23 +31,129 @@ if _BASE_DIR not in sys.path:
     sys.path.insert(0, _BASE_DIR)
 
 from finanzas import calc_tasa, vp_res, calc_amort, calc_rent_amort, calc_res_amort
+from models.auth import (
+    get_auth_db_path, init_auth_db, verificar_login,
+    crear_sesion, validar_sesion, cerrar_sesion,
+)
+
+_DOCS_ON = os.environ.get("OLEASING_API_DOCS", "0") == "1"
 
 app = FastAPI(
     title="O-Leasing Mobile API",
     description="API REST para consulta y creación individual de contratos de arrendamiento financiero",
-    version="1.0.0"
+    version="2.0.0",
+    docs_url="/docs" if _DOCS_ON else None,
+    redoc_url=None,
+    openapi_url="/openapi.json" if _DOCS_ON else None,
 )
 
-# Habilitar CORS para peticiones desde app móvil, emulador y clientes web
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# La app móvil nativa no necesita CORS. Solo se habilitan orígenes web
+# si se declaran explícitamente en OLEASING_CORS_ORIGINS (separados por coma).
+_cors = [o.strip() for o in os.environ.get("OLEASING_CORS_ORIGINS", "").split(",") if o.strip()]
+if _cors:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "PUT"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
+
+
+@app.middleware("http")
+async def _cabeceras_seguridad(request: Request, call_next):
+    resp = await call_next(request)
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["Referrer-Policy"] = "no-referrer"
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
 
 DB_PATH = os.path.join(_BASE_DIR, "leasing.db")
+AUTH_DB = get_auth_db_path(os.path.join(_BASE_DIR, "data"))
+init_auth_db(AUTH_DB)
+
+# Duración de la sesión móvil (días). Al expirar, la app pide login otra vez.
+SESION_MOVIL_DIAS = int(os.environ.get("OLEASING_SESION_DIAS", "7"))
+
+# Llave para firmar enlaces temporales de PDF. Se genera una sola vez y se
+# guarda en data/ (que nunca se sube al repositorio).
+_SECRET_PATH = os.path.join(_BASE_DIR, "data", "api_secret.key")
+
+
+def _cargar_secreto() -> bytes:
+    try:
+        if os.path.exists(_SECRET_PATH):
+            with open(_SECRET_PATH, "rb") as f:
+                data = f.read().strip()
+                if len(data) >= 32:
+                    return data
+        os.makedirs(os.path.dirname(_SECRET_PATH), exist_ok=True)
+        data = secrets.token_hex(32).encode()
+        with open(_SECRET_PATH, "wb") as f:
+            f.write(data)
+        return data
+    except Exception:
+        return secrets.token_hex(32).encode()
+
+
+_API_SECRET = _cargar_secreto()
+
+# --- Protección contra fuerza bruta en el login -----------------------------
+_INTENTOS_MAX = 5
+_VENTANA_SEG = 15 * 60
+_intentos: dict = {}
+_intentos_lock = threading.Lock()
+
+
+def _clave_intento(ip: str, usuario: str) -> str:
+    return f"{ip}|{(usuario or '').strip().lower()}"
+
+
+def _bloqueado(clave: str) -> int:
+    ahora = time.time()
+    with _intentos_lock:
+        lst = [t for t in _intentos.get(clave, []) if ahora - t < _VENTANA_SEG]
+        _intentos[clave] = lst
+        if len(lst) >= _INTENTOS_MAX:
+            return int(_VENTANA_SEG - (ahora - lst[0]))
+    return 0
+
+
+def _registrar_fallo(clave: str):
+    with _intentos_lock:
+        _intentos.setdefault(clave, []).append(time.time())
+
+
+def _limpiar_intentos(clave: str):
+    with _intentos_lock:
+        _intentos.pop(clave, None)
+
+
+# --- Dependencias de autenticación y permisos -------------------------------
+_bearer = HTTPBearer(auto_error=False)
+
+
+def usuario_actual(cred: Optional[HTTPAuthorizationCredentials] = Depends(_bearer)) -> dict:
+    if not cred or not cred.credentials:
+        raise HTTPException(status_code=401, detail="Sesión requerida. Inicia sesión en la app.")
+    user = validar_sesion(AUTH_DB, cred.credentials)
+    if not user:
+        raise HTTPException(status_code=401, detail="Tu sesión expiró. Vuelve a iniciar sesión.")
+    user["_token"] = cred.credentials
+    return user
+
+
+def usuario_escritura(user: dict = Depends(usuario_actual)) -> dict:
+    if user.get("rol") not in ("admin", "captura"):
+        raise HTTPException(status_code=403, detail="Tu usuario es de solo lectura.")
+    return user
+
+
+def _firmar_pdf(id_contrato: str, expira: int) -> str:
+    msg = f"{id_contrato}|{expira}".encode()
+    return hmac.new(_API_SECRET, msg, hashlib.sha256).hexdigest()
 
 
 def get_db_connection():
@@ -49,7 +161,7 @@ def get_db_connection():
     if not os.path.exists(DB_PATH):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Base de datos leasing.db no encontrada en {_BASE_DIR}"
+            detail="Base de datos no disponible."
         )
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -59,6 +171,25 @@ def get_db_connection():
 # =============================================================================
 # MODELOS PYDANTIC
 # =============================================================================
+
+class LoginRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=60)
+    password: str = Field(..., min_length=1, max_length=120)
+    dias_sesion: int = Field(14, ge=1, le=30)
+
+
+class UsuarioResponse(BaseModel):
+    username: str
+    nombre_completo: str
+    rol: str
+    puede_editar: bool
+
+
+class LoginResponse(BaseModel):
+    token: str
+    expira_dias: int
+    usuario: UsuarioResponse
+
 
 class ContratoResumen(BaseModel):
     id_contrato: str
@@ -229,28 +360,72 @@ class CobranzaMesResponse(BaseModel):
 
 
 # =============================================================================
-# ENDPOINTS DE CONSULTA Y DASHBOARD
+# ENDPOINTS DE AUTENTICACIÓN Y CONSULTA
 # =============================================================================
+
+@app.post("/api/auth/login", response_model=LoginResponse)
+def login_movil(req: LoginRequest, request: Request):
+    """Autentica al usuario contra usuarios.db con protección anti-fuerza bruta y emite token de sesión."""
+    ip = request.client.host if request.client else "unknown"
+    clave_ip = f"{ip}:{req.username.strip().lower()}"
+    if _bloqueado(clave_ip):
+        raise HTTPException(
+            status_code=429,
+            detail="Demasiados intentos fallidos. Espera 15 minutos antes de volver a intentar."
+        )
+
+    user = verificar_login(AUTH_DB, req.username.strip(), req.password)
+    if not user:
+        _registrar_fallo(clave_ip)
+        raise HTTPException(status_code=401, detail="Usuario o contraseña incorrectos.")
+
+    _limpiar_intentos(clave_ip)
+    token = crear_sesion(AUTH_DB, user["id"], dias=req.dias_sesion)
+    rol = user.get("rol", "lectura")
+    return LoginResponse(
+        token=token,
+        expira_dias=req.dias_sesion,
+        usuario=UsuarioResponse(
+            username=user["username"],
+            nombre_completo=user.get("nombre_completo") or user["username"],
+            rol=rol,
+            puede_editar=(rol in ("admin", "captura"))
+        )
+    )
+
+
+@app.get("/api/auth/me", response_model=UsuarioResponse)
+def sesion_actual(user: dict = Depends(usuario_actual)):
+    """Retorna la información del usuario autenticado."""
+    rol = user.get("rol", "lectura")
+    return UsuarioResponse(
+        username=user["username"],
+        nombre_completo=user.get("nombre_completo") or user["username"],
+        rol=rol,
+        puede_editar=(rol in ("admin", "captura"))
+    )
+
+
+@app.post("/api/auth/logout")
+def logout_movil(user: dict = Depends(usuario_actual)):
+    """Revoca el token de sesión actual en la base de datos."""
+    cerrar_sesion(AUTH_DB, user.get("_token", ""))
+    return {"ok": True}
+
 
 @app.get("/api/health")
 def health_check():
-    """Verifica estado del servicio y conteo general de contratos en base de datos."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM contratos")
-    total = cursor.fetchone()[0]
-    conn.close()
+    """Verifica estado del servicio (sin exponer datos sensibles)."""
     return {
         "status": "online",
         "service": "O-Leasing Mobile API",
-        "database": os.path.basename(DB_PATH),
-        "total_contratos_bd": total,
+        "auth_required": True,
         "timestamp": datetime.datetime.now().isoformat()
     }
 
 
 @app.get("/api/dashboard")
-def get_dashboard_metrics():
+def get_dashboard_metrics(user: dict = Depends(usuario_actual)):
     """Retorna las métricas clave del portafolio para la pantalla de inicio móvil."""
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -292,7 +467,8 @@ def listar_contratos(
     q: Optional[str] = Query(None, description="Texto de búsqueda por ID, Cliente o Vehículo"),
     estatus: Optional[str] = Query("ACTIVO", description="Filtro por estatus: ACTIVO, CONCLUIDO, BAJA o TODOS"),
     limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0)
+    offset: int = Query(0, ge=0),
+    user: dict = Depends(usuario_actual)
 ):
     """Consulta paginada y filtrable de contratos para la lista principal de la app."""
     conn = get_db_connection()
@@ -346,7 +522,7 @@ def listar_contratos(
 
 
 @app.get("/api/contratos/{id_contrato}", response_model=ContratoDetalle)
-def obtener_detalle_contrato(id_contrato: str):
+def obtener_detalle_contrato(id_contrato: str, user: dict = Depends(usuario_actual)):
     """Consulta a fondo de un contrato individual con desglose financiero de amortización."""
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -426,7 +602,7 @@ def obtener_detalle_contrato(id_contrato: str):
 
 
 @app.get("/api/contratos/{id_contrato}/estado_cuenta", response_model=EstadoCuentaResponse)
-def obtener_estado_cuenta(id_contrato: str):
+def obtener_estado_cuenta(id_contrato: str, user: dict = Depends(usuario_actual)):
     """Retorna el estado de cuenta completo y la tabla de amortización periódica."""
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -544,7 +720,7 @@ def obtener_estado_cuenta(id_contrato: str):
 # =============================================================================
 
 @app.post("/api/cotizar", response_model=CotizacionResponse)
-def cotizar_leasing(req: CotizacionRequest):
+def cotizar_leasing(req: CotizacionRequest, user: dict = Depends(usuario_actual)):
     """
     Calculadora financiera instantánea con las fórmulas exactas de O-Leasing.
     Permite calcular la tasa implícita a partir de la renta, o la renta a partir de la tasa.
@@ -619,7 +795,7 @@ def cotizar_leasing(req: CotizacionRequest):
 
 
 @app.post("/api/contratos", response_model=ContratoDetalle, status_code=status.HTTP_201_CREATED)
-def crear_contrato_individual(contrato: ContratoCreate):
+def crear_contrato_individual(contrato: ContratoCreate, user: dict = Depends(usuario_escritura)):
     """
     Crea un contrato nuevo de forma individual en leasing.db.
     Calcula tasa implícita, valor presente del residual y fecha de vencimiento automáticamente.
@@ -724,11 +900,11 @@ def crear_contrato_individual(contrato: ContratoCreate):
     conn.close()
 
     # Retornar detalle del contrato recién creado
-    return obtener_detalle_contrato(contrato.id_contrato.strip())
+    return obtener_detalle_contrato(contrato.id_contrato.strip(), user=user)
 
 
 @app.put("/api/contratos/{id_contrato}/estatus", response_model=ContratoDetalle)
-def actualizar_estatus_contrato(id_contrato: str, req: ActualizarEstatusRequest):
+def actualizar_estatus_contrato(id_contrato: str, req: ActualizarEstatusRequest, user: dict = Depends(usuario_escritura)):
     """Actualiza el estatus (ACTIVO, CONCLUIDO, BAJA) y nivel de morosidad de un contrato."""
     est = req.estatus.strip().upper()
     if est not in ("ACTIVO", "CONCLUIDO", "BAJA"):
@@ -754,11 +930,11 @@ def actualizar_estatus_contrato(id_contrato: str, req: ActualizarEstatusRequest)
     """, (est, req.nivel_morosidad or 0, fb, id_contrato))
     conn.commit()
     conn.close()
-    return obtener_detalle_contrato(id_contrato)
+    return obtener_detalle_contrato(id_contrato, user=user)
 
 
 @app.get("/api/contratos/{id_contrato}/anotaciones", response_model=List[AnotacionItem])
-def listar_anotaciones_contrato(id_contrato: str):
+def listar_anotaciones_contrato(id_contrato: str, user: dict = Depends(usuario_actual)):
     """Lista la bitácora de anotaciones de un contrato."""
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -792,7 +968,7 @@ def listar_anotaciones_contrato(id_contrato: str):
 
 
 @app.post("/api/contratos/{id_contrato}/anotaciones", response_model=List[AnotacionItem])
-def crear_anotacion_contrato(id_contrato: str, req: AnotacionCreateRequest):
+def crear_anotacion_contrato(id_contrato: str, req: AnotacionCreateRequest, user: dict = Depends(usuario_escritura)):
     """Registra una nueva nota en la bitácora del contrato."""
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -806,18 +982,41 @@ def crear_anotacion_contrato(id_contrato: str, req: AnotacionCreateRequest):
         )
     """)
     ahora = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    autor = user.get("nombre_completo") or user.get("username") or "Usuario"
+    texto_auditado = f"[{autor}] {req.texto.strip()}"
     cursor.execute("""
         INSERT INTO anotaciones (ID_Contrato, Fecha, Tipo, Texto)
         VALUES (?, ?, ?, ?)
-    """, (id_contrato, ahora, req.tipo.strip() or "General", req.texto.strip()))
+    """, (id_contrato, ahora, req.tipo.strip() or "General", texto_auditado))
     conn.commit()
     conn.close()
-    return listar_anotaciones_contrato(id_contrato)
+    return listar_anotaciones_contrato(id_contrato, user=user)
+
+
+@app.get("/api/contratos/{id_contrato}/pdf_link")
+def generar_link_pdf_firmado(id_contrato: str, user: dict = Depends(usuario_actual)):
+    """Genera un enlace temporal firmado con HMAC-SHA256 (válido por 5 minutos) para abrir el PDF."""
+    expira = int(time.time()) + 300
+    sig = _firmar_pdf(id_contrato, expira)
+    return {
+        "path": f"/api/contratos/{id_contrato}/pdf?e={expira}&s={sig}",
+        "expira": expira
+    }
 
 
 @app.get("/api/contratos/{id_contrato}/pdf")
-def descargar_pdf_estado_cuenta(id_contrato: str):
-    """Genera y descarga el PDF oficial del Estado de Cuenta de un contrato."""
+def descargar_pdf_estado_cuenta(
+    id_contrato: str,
+    e: int = Query(..., description="Timestamp de expiración"),
+    s: str = Query(..., description="Firma HMAC-SHA256")
+):
+    """Genera y descarga el PDF oficial del Estado de Cuenta validando firma temporal."""
+    if int(time.time()) > e:
+        raise HTTPException(status_code=403, detail="El enlace del PDF expiró. Genéralo nuevamente desde la app.")
+    esperado = _firmar_pdf(id_contrato, e)
+    if not hmac.compare_digest(esperado, s):
+        raise HTTPException(status_code=403, detail="Firma de descarga inválida.")
+
     from fastapi.responses import StreamingResponse
     from dateutil.relativedelta import relativedelta
     from reports.pdf import pdf_estado_cuenta
@@ -870,7 +1069,8 @@ def descargar_pdf_estado_cuenta(id_contrato: str):
 @app.get("/api/cobranza_mes", response_model=CobranzaMesResponse)
 def obtener_cobranza_mes(
     anio: Optional[int] = Query(None, description="Año de consulta"),
-    mes: Optional[int] = Query(None, ge=1, le=12, description="Mes de consulta (1-12)")
+    mes: Optional[int] = Query(None, ge=1, le=12, description="Mes de consulta (1-12)"),
+    user: dict = Depends(usuario_actual)
 ):
     """Calcula la cobranza y devengo mensual de todos los contratos activos en el mes indicado."""
     hoy = datetime.date.today()

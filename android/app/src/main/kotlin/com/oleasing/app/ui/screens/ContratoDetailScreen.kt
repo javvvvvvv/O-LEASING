@@ -277,39 +277,46 @@ fun ContratoDetailScreen(
                                 color = SlateSecondary
                             )
                             Spacer(modifier = Modifier.height(8.dp))
-                            Text("Cambiar Estatus del Contrato:", fontSize = 12.sp, color = MaterialTheme.colorScheme.outline)
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                listOf("ACTIVO", "CONCLUIDO", "BAJA").forEach { est ->
-                                    val isCurrent = c.estatus.equals(est, ignoreCase = true)
-                                    FilterChip(
-                                        selected = isCurrent,
-                                        onClick = {
-                                            if (!isCurrent) {
-                                                coroutineScope.launch {
-                                                    val upd = OLeasingApiClient.actualizarEstatusContrato(c.idContrato, est)
-                                                    if (upd.isSuccess) {
-                                                        contrato = upd.getOrNull()
+                            val canEdit = OLeasingApiClient.currentUser?.puedeEditar != false
+                            if (canEdit) {
+                                Text("Cambiar Estatus del Contrato:", fontSize = 12.sp, color = MaterialTheme.colorScheme.outline)
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    listOf("ACTIVO", "CONCLUIDO", "BAJA").forEach { est ->
+                                        val isCurrent = c.estatus.equals(est, ignoreCase = true)
+                                        FilterChip(
+                                            selected = isCurrent,
+                                            onClick = {
+                                                if (!isCurrent) {
+                                                    coroutineScope.launch {
+                                                        val upd = OLeasingApiClient.actualizarEstatusContrato(c.idContrato, est)
+                                                        if (upd.isSuccess) {
+                                                            contrato = upd.getOrNull()
+                                                        }
                                                     }
                                                 }
-                                            }
-                                        },
-                                        label = { Text(est, fontSize = 12.sp, fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal) },
-                                        colors = FilterChipDefaults.filterChipColors(
-                                            selectedContainerColor = OrangePrimary,
-                                            selectedLabelColor = Color.White
+                                            },
+                                            label = { Text(est, fontSize = 12.sp, fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal) },
+                                            colors = FilterChipDefaults.filterChipColors(
+                                                selectedContainerColor = OrangePrimary,
+                                                selectedLabelColor = Color.White
+                                            )
                                         )
-                                    )
+                                    }
                                 }
+                                Spacer(modifier = Modifier.height(6.dp))
                             }
-                            Spacer(modifier = Modifier.height(6.dp))
                             OutlinedButton(
                                 onClick = {
-                                    val pdfUrl = OLeasingApiClient.getPdfEstadoCuentaUrl(c.idContrato)
-                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(pdfUrl))
-                                    context.startActivity(intent)
+                                    coroutineScope.launch {
+                                        val linkRes = OLeasingApiClient.requestPdfSignedUrl(c.idContrato)
+                                        if (linkRes.isSuccess) {
+                                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(linkRes.getOrNull()!!))
+                                            context.startActivity(intent)
+                                        }
+                                    }
                                 },
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(10.dp)
@@ -343,36 +350,38 @@ fun ContratoDetailScreen(
                                     color = MaterialTheme.colorScheme.outline
                                 )
                             }
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                OutlinedTextField(
-                                    value = nuevaNotaTexto,
-                                    onValueChange = { nuevaNotaTexto = it },
-                                    placeholder = { Text("Agregar nota de seguimiento...", fontSize = 12.sp) },
-                                    singleLine = true,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                Button(
-                                    onClick = {
-                                        if (nuevaNotaTexto.isNotBlank()) {
-                                            val txt = nuevaNotaTexto.trim()
-                                            nuevaNotaTexto = ""
-                                            coroutineScope.launch {
-                                                val res = OLeasingApiClient.crearAnotacion(c.idContrato, "Móvil", txt)
-                                                if (res.isSuccess) {
-                                                    anotacionesList = res.getOrNull() ?: emptyList()
+                            if (OLeasingApiClient.currentUser?.puedeEditar != false) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    OutlinedTextField(
+                                        value = nuevaNotaTexto,
+                                        onValueChange = { nuevaNotaTexto = it },
+                                        placeholder = { Text("Agregar nota de seguimiento...", fontSize = 12.sp) },
+                                        singleLine = true,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Button(
+                                        onClick = {
+                                            if (nuevaNotaTexto.isNotBlank()) {
+                                                val txt = nuevaNotaTexto.trim()
+                                                nuevaNotaTexto = ""
+                                                coroutineScope.launch {
+                                                    val res = OLeasingApiClient.crearAnotacion(c.idContrato, "Móvil", txt)
+                                                    if (res.isSuccess) {
+                                                        anotacionesList = res.getOrNull() ?: emptyList()
+                                                    }
                                                 }
                                             }
-                                        }
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = OrangePrimary),
-                                    shape = RoundedCornerShape(10.dp)
-                                ) {
-                                    Text("Guardar", fontSize = 12.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = OrangePrimary),
+                                        shape = RoundedCornerShape(10.dp)
+                                    ) {
+                                        Text("Guardar", fontSize = 12.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                                    }
                                 }
                             }
                             Spacer(modifier = Modifier.height(8.dp))

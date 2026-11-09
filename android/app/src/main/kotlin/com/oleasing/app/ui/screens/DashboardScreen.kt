@@ -1,5 +1,6 @@
 package com.oleasing.app.ui.screens
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -8,6 +9,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -16,6 +18,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -30,7 +33,9 @@ import com.oleasing.app.network.OLeasingApiClient
 import com.oleasing.app.ui.components.StatCard
 import com.oleasing.app.ui.components.StatusBadge
 import com.oleasing.app.ui.components.formatCurrency
+import com.oleasing.app.ui.theme.AppCardBorder
 import com.oleasing.app.ui.theme.OrangePrimary
+import com.oleasing.app.ui.theme.SlateDark
 import com.oleasing.app.ui.theme.SlateSecondary
 import kotlinx.coroutines.launch
 
@@ -42,10 +47,14 @@ fun DashboardScreen(
     onSelectContrato: (String) -> Unit,
     onNavigateToEstadoCuenta: (String) -> Unit,
     onNavigateToCobranza: () -> Unit,
-    onNavigateToCotizador: () -> Unit
+    onNavigateToCotizador: () -> Unit,
+    onLogout: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
+    val currentUser = OLeasingApiClient.currentUser
+    val canEdit = currentUser?.puedeEditar != false
+
     var metrics by remember { mutableStateOf<DashboardMetrics?>(null) }
     var recentContratos by remember { mutableStateOf<List<ContratoResumen>>(emptyList()) }
     var isLoading by remember { mutableStateOf(false) }
@@ -86,7 +95,7 @@ fun DashboardScreen(
                         Image(
                             painter = painterResource(id = R.drawable.oleasing_logo),
                             contentDescription = "Logotipo O-Leasing",
-                            modifier = Modifier.height(32.dp),
+                            modifier = Modifier.height(30.dp),
                             contentScale = ContentScale.FillHeight
                         )
                     }
@@ -109,6 +118,18 @@ fun DashboardScreen(
                             tint = OrangePrimary
                         )
                     }
+                    IconButton(onClick = {
+                        coroutineScope.launch {
+                            OLeasingApiClient.logout(context)
+                            onLogout()
+                        }
+                    }) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ExitToApp,
+                            contentDescription = "Cerrar Sesión",
+                            tint = Color(0xFFDC2626)
+                        )
+                    }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface
@@ -122,14 +143,105 @@ fun DashboardScreen(
                 .padding(padding)
                 .background(MaterialTheme.colorScheme.background)
                 .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             item {
                 Spacer(modifier = Modifier.height(4.dp))
-                if (errorMessage != null) {
+                // Executive Hero Card
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(
+                                Brush.horizontalGradient(
+                                    colors = listOf(SlateDark, SlateSecondary)
+                                )
+                            )
+                            .padding(18.dp)
+                    ) {
+                        Column {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column {
+                                    Text(
+                                        text = "PORTAFOLIO EJECUTIVO O-LEASING",
+                                        color = Color(0xFF94A3B8),
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        letterSpacing = 0.8.sp
+                                    )
+                                    Text(
+                                        text = currentUser?.nombreCompleto ?: "Sesión Activa",
+                                        color = Color.White,
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .background(OrangePrimary, RoundedCornerShape(8.dp))
+                                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                                ) {
+                                    Text(
+                                        text = (currentUser?.rol ?: "ADMIN").uppercase(),
+                                        color = Color.White,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.ExtraBold
+                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(14.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.Bottom
+                            ) {
+                                Column {
+                                    Text(
+                                        text = "Valor Cartera Activa (s/IVA)",
+                                        color = Color(0xFFCBD5E1),
+                                        fontSize = 11.sp
+                                    )
+                                    Text(
+                                        text = metrics?.let { formatCurrency(it.carteraActivaValor) } ?: "$0.00",
+                                        color = Color.White,
+                                        fontSize = 24.sp,
+                                        fontWeight = FontWeight.ExtraBold
+                                    )
+                                }
+                                Column(horizontalAlignment = Alignment.End) {
+                                    Text(
+                                        text = "Flujo Mensual",
+                                        color = Color(0xFFCBD5E1),
+                                        fontSize = 11.sp
+                                    )
+                                    Text(
+                                        text = metrics?.let { formatCurrency(it.flujoMensualEstimado) } ?: "$0.00",
+                                        color = Color(0xFFFFB380),
+                                        fontSize = 16.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (errorMessage != null) {
+                item {
                     Card(
                         colors = CardDefaults.cardColors(containerColor = Color(0xFFFEE2E2)),
-                        shape = RoundedCornerShape(10.dp),
+                        shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Column(modifier = Modifier.padding(14.dp)) {
@@ -170,37 +282,6 @@ fun DashboardScreen(
             }
 
             item {
-                Text(
-                    text = "Resumen de Cartera",
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-            }
-
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    StatCard(
-                        title = "Cartera Activa",
-                        value = metrics?.let { formatCurrency(it.carteraActivaValor) } ?: "$0.00",
-                        subtitle = "Valor en colocación",
-                        colorAccent = OrangePrimary,
-                        modifier = Modifier.weight(1f)
-                    )
-                    StatCard(
-                        title = "Flujo Mensual",
-                        value = metrics?.let { formatCurrency(it.flujoMensualEstimado) } ?: "$0.00",
-                        subtitle = "Renta mensual bruta",
-                        colorAccent = SlateSecondary,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-            }
-
-            item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -208,14 +289,14 @@ fun DashboardScreen(
                     StatCard(
                         title = "Contratos Activos",
                         value = metrics?.contratosActivos?.toString() ?: "0",
-                        subtitle = "Vigentes en sistema",
+                        subtitle = "Concluidos: ${metrics?.contratosConcluidos ?: 0}",
                         colorAccent = Color(0xFF16A34A),
                         modifier = Modifier.weight(1f)
                     )
                     StatCard(
                         title = "Total Histórico",
                         value = metrics?.totalContratos?.toString() ?: "0",
-                        subtitle = "Contratos registrados",
+                        subtitle = "Bajas: ${metrics?.contratosBaja ?: 0}",
                         colorAccent = SlateSecondary,
                         modifier = Modifier.weight(1f)
                     )
@@ -224,64 +305,42 @@ fun DashboardScreen(
 
             item {
                 Text(
-                    text = "Operaciones Rápidas",
-                    fontSize = 16.sp,
+                    text = "Operaciones y Accesos Directos",
+                    fontSize = 15.sp,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onBackground
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Button(
                         onClick = onNavigateToList,
                         modifier = Modifier
                             .weight(1f)
-                            .height(52.dp),
+                            .height(50.dp),
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = SlateSecondary)
                     ) {
                         Icon(imageVector = Icons.Default.Search, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Consultar", fontWeight = FontWeight.SemiBold)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Cartera", fontWeight = FontWeight.Bold)
                     }
 
-                    Button(
-                        onClick = onNavigateToNew,
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(52.dp),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = OrangePrimary)
-                    ) {
-                        Icon(imageVector = Icons.Default.Add, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Nuevo", fontWeight = FontWeight.SemiBold)
-                    }
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = onNavigateToCobranza,
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(48.dp),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Text("Cobranza del Mes", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = OrangePrimary)
-                    }
-                    OutlinedButton(
-                        onClick = onNavigateToCotizador,
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(48.dp),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Text("Cotizador Leasing", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = SlateSecondary)
+                    if (canEdit) {
+                        Button(
+                            onClick = onNavigateToNew,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(50.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = OrangePrimary)
+                        ) {
+                            Icon(imageVector = Icons.Default.Add, contentDescription = null)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Alta Contrato", fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
                 Spacer(modifier = Modifier.height(8.dp))
@@ -290,12 +349,14 @@ fun DashboardScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(46.dp),
-                    shape = RoundedCornerShape(12.dp)
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, OrangePrimary)
                 ) {
                     Text(
-                        text = "Ir a Estado de Cuenta por ID / Código QR",
-                        fontWeight = FontWeight.SemiBold,
-                        color = SlateSecondary
+                        text = "Abrir Estado de Cuenta por ID o Escaneo QR",
+                        fontWeight = FontWeight.Bold,
+                        color = OrangePrimary,
+                        fontSize = 13.sp
                     )
                 }
             }
@@ -308,12 +369,12 @@ fun DashboardScreen(
                 ) {
                     Text(
                         text = "Contratos Activos Recientes",
-                        fontSize = 16.sp,
+                        fontSize = 15.sp,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onBackground
                     )
                     TextButton(onClick = onNavigateToList) {
-                        Text("Ver Todos", color = OrangePrimary, fontSize = 13.sp)
+                        Text("Ver Cartera Completa", color = OrangePrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -333,8 +394,9 @@ fun DashboardScreen(
                 item {
                     Card(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(10.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        border = BorderStroke(1.dp, AppCardBorder)
                     ) {
                         Text(
                             text = "No hay contratos cargados o el servidor no responde.",
@@ -350,9 +412,10 @@ fun DashboardScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable { onNavigateToEstadoCuenta(c.idContrato) },
-                        shape = RoundedCornerShape(10.dp),
+                        shape = RoundedCornerShape(14.dp),
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                        border = BorderStroke(1.dp, AppCardBorder)
                     ) {
                         Column(modifier = Modifier.padding(14.dp)) {
                             Row(
@@ -362,7 +425,7 @@ fun DashboardScreen(
                             ) {
                                 Text(
                                     text = c.idContrato,
-                                    fontWeight = FontWeight.Bold,
+                                    fontWeight = FontWeight.ExtraBold,
                                     fontSize = 14.sp,
                                     color = OrangePrimary
                                 )
@@ -371,7 +434,7 @@ fun DashboardScreen(
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 text = c.cliente,
-                                fontWeight = FontWeight.SemiBold,
+                                fontWeight = FontWeight.Bold,
                                 fontSize = 14.sp,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
@@ -382,21 +445,26 @@ fun DashboardScreen(
                                     color = MaterialTheme.colorScheme.outline
                                 )
                             }
-                            Spacer(modifier = Modifier.height(6.dp))
+                            HorizontalDivider(
+                                modifier = Modifier.padding(vertical = 8.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant
+                            )
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
                                     text = "Renta: ${formatCurrency(c.mensualidadSinIva)}/mes",
                                     fontSize = 12.sp,
-                                    fontWeight = FontWeight.Medium
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = SlateSecondary
                                 )
                                 Text(
-                                    text = "Plazo: ${c.plazo} m · Ver Estado Cta.",
+                                    text = "Plazo ${c.plazo} m · Estado Cta.",
                                     fontSize = 12.sp,
                                     color = OrangePrimary,
-                                    fontWeight = FontWeight.Medium
+                                    fontWeight = FontWeight.Bold
                                 )
                             }
                         }
@@ -405,7 +473,7 @@ fun DashboardScreen(
             }
 
             item {
-                Spacer(modifier = Modifier.height(24.dp))
+                Spacer(modifier = Modifier.height(16.dp))
             }
         }
     }

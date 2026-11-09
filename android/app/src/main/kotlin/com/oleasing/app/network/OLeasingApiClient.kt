@@ -16,14 +16,33 @@ import java.net.URLEncoder
 object OLeasingApiClient {
     private const val PREFS_NAME = "oleasing_prefs"
     private const val KEY_BASE_URL = "api_base_url"
+    private const val KEY_AUTH_TOKEN = "auth_token"
+    private const val KEY_USERNAME = "auth_username"
+    private const val KEY_NOMBRE = "auth_nombre"
+    private const val KEY_ROL = "auth_rol"
+    private const val KEY_PUEDE_EDITAR = "auth_puede_editar"
 
     var baseUrl: String = "http://10.0.2.2:8008"
+    var authToken: String? = null
+    var currentUser: UsuarioSesion? = null
+    var onUnauthorized: (() -> Unit)? = null
 
     fun init(context: Context) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val saved = prefs.getString(KEY_BASE_URL, null)
         if (!saved.isNullOrBlank()) {
             baseUrl = saved.trim().removeSuffix("/")
+        }
+        val savedToken = prefs.getString(KEY_AUTH_TOKEN, null)
+        val savedUser = prefs.getString(KEY_USERNAME, null)
+        if (!savedToken.isNullOrBlank() && !savedUser.isNullOrBlank()) {
+            authToken = savedToken
+            currentUser = UsuarioSesion(
+                username = savedUser,
+                nombreCompleto = prefs.getString(KEY_NOMBRE, savedUser) ?: savedUser,
+                rol = prefs.getString(KEY_ROL, "lectura") ?: "lectura",
+                puedeEditar = prefs.getBoolean(KEY_PUEDE_EDITAR, false)
+            )
         }
     }
 
@@ -32,6 +51,32 @@ object OLeasingApiClient {
         baseUrl = cleaned
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         prefs.edit().putString(KEY_BASE_URL, cleaned).apply()
+    }
+
+    fun saveSession(context: Context, token: String, user: UsuarioSesion) {
+        authToken = token
+        currentUser = user
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit()
+            .putString(KEY_AUTH_TOKEN, token)
+            .putString(KEY_USERNAME, user.username)
+            .putString(KEY_NOMBRE, user.nombreCompleto)
+            .putString(KEY_ROL, user.rol)
+            .putBoolean(KEY_PUEDE_EDITAR, user.puedeEditar)
+            .apply()
+    }
+
+    fun clearSession(context: Context) {
+        authToken = null
+        currentUser = null
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit()
+            .remove(KEY_AUTH_TOKEN)
+            .remove(KEY_USERNAME)
+            .remove(KEY_NOMBRE)
+            .remove(KEY_ROL)
+            .remove(KEY_PUEDE_EDITAR)
+            .apply()
     }
 
     private val fallbackUrls = listOf(
@@ -56,6 +101,10 @@ object OLeasingApiClient {
                 readTimeout = 6000
                 setRequestProperty("Accept", "application/json")
                 setRequestProperty("Content-Type", "application/json")
+                val token = authToken
+                if (!token.isNullOrBlank()) {
+                    setRequestProperty("Authorization", "Bearer $token")
+                }
                 if (bodyJson != null) {
                     doOutput = true
                     val writer = OutputStreamWriter(outputStream, "UTF-8")
@@ -103,6 +152,13 @@ object OLeasingApiClient {
                     } catch (e: Exception) {
                         responseText
                     }
+                    if (statusCode == 401 && path != "/api/auth/login") {
+                        authToken = null
+                        currentUser = null
+                        withContext(Dispatchers.Main) {
+                            onUnauthorized?.invoke()
+                        }
+                    }
                     return@withContext Result.failure(Exception("Error $statusCode: $detail"))
                 }
             } catch (e: Exception) {
@@ -110,6 +166,41 @@ object OLeasingApiClient {
             }
         }
         Result.failure(Exception("Fallo de red: ${lastError?.message ?: "No se pudo conectar al servidor"}"))
+    }
+
+    suspend fun login(context: Context, username: String, password: String): Result<LoginResponse> {
+        val payload = JSONObject().apply {
+            put("username", username.trim())
+            put("password", password)
+            put("dias_sesion", 14)
+        }
+        val res = makeRequest("/api/auth/login", method = "POST", bodyJson = payload.toString()) { jsonStr ->
+            val obj = JSONObject(jsonStr)
+            val uObj = obj.getJSONObject("usuario")
+            val user = UsuarioSesion(
+                username = uObj.optString("username"),
+                nombreCompleto = uObj.optString("nombre_completo"),
+                rol = uObj.optString("rol", "lectura"),
+                puedeEditar = uObj.optBoolean("puede_editar", false)
+            )
+            LoginResponse(
+                token = obj.optString("token"),
+                expiraDias = obj.optInt("expira_dias", 14),
+                usuario = user
+            )
+        }
+        res.onSuccess { loginResp ->
+            saveSession(context, loginResp.token, loginResp.usuario)
+        }
+        return res
+    }
+
+    suspend fun logout(context: Context) {
+        try {
+            makeRequest("/api/auth/logout", method = "POST") { it }
+        } catch (_: Exception) {
+        }
+        clearSession(context)
     }
 
     suspend fun checkHealth(): Result<String> {
@@ -330,9 +421,13 @@ object OLeasingApiClient {
         }
     }
 
-    fun getPdfEstadoCuentaUrl(idContrato: String): String {
+    suspend fun requestPdfSignedUrl(idContrato: String): Result<String> {
         val encodedId = URLEncoder.encode(idContrato, "UTF-8")
-        return "$baseUrl/api/contratos/$encodedId/pdf"
+        return makeRequest("/api/contratos/$encodedId/pdf_link") { jsonStr ->
+            val obj = JSONObject(jsonStr)
+            val relPath = obj.optString("path", "/api/contratos/$encodedId/pdf")
+            "$baseUrl$relPath"
+        }
     }
 
     suspend fun actualizarEstatusContrato(

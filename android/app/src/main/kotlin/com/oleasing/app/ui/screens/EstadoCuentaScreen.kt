@@ -257,9 +257,13 @@ fun EstadoCuentaScreen(
                                 }
                                 Button(
                                     onClick = {
-                                        val pdfUrl = OLeasingApiClient.getPdfEstadoCuentaUrl(ec.idContrato)
-                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(pdfUrl))
-                                        context.startActivity(intent)
+                                        coroutineScope.launch {
+                                            val linkRes = OLeasingApiClient.requestPdfSignedUrl(ec.idContrato)
+                                            if (linkRes.isSuccess) {
+                                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(linkRes.getOrNull()!!))
+                                                context.startActivity(intent)
+                                            }
+                                        }
                                     },
                                     modifier = Modifier.weight(1f),
                                     shape = RoundedCornerShape(10.dp),

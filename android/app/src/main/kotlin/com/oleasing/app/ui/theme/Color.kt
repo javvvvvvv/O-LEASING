@@ -7,6 +7,7 @@ val OrangeOnPrimary = Color(0xFFFFFFFF)
 val OrangePrimaryContainer = Color(0xFFFFDCC2)
 val OrangeOnPrimaryContainer = Color(0xFF2E1500)
 
+val SlateDark = Color(0xFF0F172A)
 val SlateSecondary = Color(0xFF1E293B)
 val SlateOnSecondary = Color(0xFFFFFFFF)
 val SlateSecondaryContainer = Color(0xFF334155)

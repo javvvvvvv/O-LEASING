@@ -95,13 +95,15 @@ fun ContratosListScreen(
             )
         },
         floatingActionButton = {
-            FloatingActionButton(
-                onClick = onNavigateToNew,
-                containerColor = OrangePrimary,
-                contentColor = Color.White,
-                shape = RoundedCornerShape(16.dp)
-            ) {
-                Icon(imageVector = Icons.Default.Add, contentDescription = "Nuevo Contrato")
+            if (OLeasingApiClient.currentUser?.puedeEditar != false) {
+                FloatingActionButton(
+                    onClick = onNavigateToNew,
+                    containerColor = OrangePrimary,
+                    contentColor = Color.White,
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Icon(imageVector = Icons.Default.Add, contentDescription = "Nuevo Contrato")
+                }
             }
         }
     ) { padding ->

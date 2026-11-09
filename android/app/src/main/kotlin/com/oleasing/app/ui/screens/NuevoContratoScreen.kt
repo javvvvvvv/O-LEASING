@@ -19,6 +19,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.oleasing.app.model.ContratoCreate
+import com.oleasing.app.model.CotizacionDraft
 import com.oleasing.app.model.CotizacionRequest
 import com.oleasing.app.model.CotizacionResponse
 import com.oleasing.app.network.OLeasingApiClient
@@ -35,6 +36,7 @@ import java.util.Locale
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NuevoContratoScreen(
+    draft: CotizacionDraft? = null,
     onBack: () -> Unit,
     onContratoCreated: (String) -> Unit
 ) {
@@ -45,12 +47,12 @@ fun NuevoContratoScreen(
     var cliente by remember { mutableStateOf("") }
     var vehiculo by remember { mutableStateOf("") }
     var fechaAlta by remember { mutableStateOf(todayStr) }
-    var plazoStr by remember { mutableStateOf("36") }
-    var valorActivoStr by remember { mutableStateOf("") }
-    var anticipoStr by remember { mutableStateOf("0") }
-    var mensualidadStr by remember { mutableStateOf("") }
-    var residualStr by remember { mutableStateOf("0") }
-    var comisionStr by remember { mutableStateOf("0") }
+    var plazoStr by remember { mutableStateOf(draft?.plazo?.toString() ?: "36") }
+    var valorActivoStr by remember { mutableStateOf(draft?.valorSinIva?.toString() ?: "") }
+    var anticipoStr by remember { mutableStateOf(draft?.anticipoMonto?.toString() ?: "0") }
+    var mensualidadStr by remember { mutableStateOf(draft?.mensualidadSinIva?.toString() ?: "") }
+    var residualStr by remember { mutableStateOf(draft?.residualMonto?.toString() ?: "0") }
+    var comisionStr by remember { mutableStateOf(draft?.comisionPct?.toString() ?: "0") }
     var anotaciones by remember { mutableStateOf("") }
 
     var isSimulating by remember { mutableStateOf(false) }

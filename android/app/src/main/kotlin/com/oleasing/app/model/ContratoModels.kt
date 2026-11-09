@@ -1,5 +1,27 @@
 package com.oleasing.app.model
 
+data class UsuarioSesion(
+    val username: String,
+    val nombreCompleto: String,
+    val rol: String,
+    val puedeEditar: Boolean
+)
+
+data class LoginResponse(
+    val token: String,
+    val expiraDias: Int,
+    val usuario: UsuarioSesion
+)
+
+data class CotizacionDraft(
+    val valorSinIva: Double,
+    val plazo: Int,
+    val anticipoMonto: Double,
+    val mensualidadSinIva: Double,
+    val residualMonto: Double,
+    val comisionPct: Double
+)
+
 data class DashboardMetrics(
     val totalContratos: Int,
     val contratosActivos: Int,

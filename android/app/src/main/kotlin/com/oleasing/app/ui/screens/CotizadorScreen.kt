@@ -18,6 +18,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.oleasing.app.model.CotizacionDraft
 import com.oleasing.app.model.CotizacionRequest
 import com.oleasing.app.model.CotizacionResponse
 import com.oleasing.app.network.OLeasingApiClient
@@ -32,7 +33,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun CotizadorScreen(
     onBack: () -> Unit,
-    onNavigateToNewContrato: () -> Unit
+    onNavigateToNewContrato: (CotizacionDraft) -> Unit
 ) {
     val coroutineScope = rememberCoroutineScope()
     var valorSinIva by remember { mutableStateOf("450000") }
@@ -338,12 +339,26 @@ fun CotizadorScreen(
                             InfoRow(label = "Costo Total del Arrendamiento", value = formatCurrency(res.costoTotalLeasing), isBold = true)
 
                             Spacer(modifier = Modifier.height(12.dp))
-                            OutlinedButton(
-                                onClick = onNavigateToNewContrato,
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(10.dp)
-                            ) {
-                                Text("Dar de Alta Contrato Nuevo", fontWeight = FontWeight.Bold, color = OrangePrimary)
+                            if (OLeasingApiClient.currentUser?.puedeEditar != false) {
+                                Button(
+                                    onClick = {
+                                        onNavigateToNewContrato(
+                                            CotizacionDraft(
+                                                valorSinIva = res.valorSinIva,
+                                                plazo = res.plazo,
+                                                anticipoMonto = res.anticipoMonto,
+                                                mensualidadSinIva = res.mensualidadSinIva,
+                                                residualMonto = res.residualMonto,
+                                                comisionPct = comisionPct.toDoubleOrNull() ?: 0.0
+                                            )
+                                        )
+                                    },
+                                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                                    shape = RoundedCornerShape(10.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = SlateSecondary)
+                                ) {
+                                    Text("Dar de Alta Contrato con esta Cotización", fontWeight = FontWeight.Bold, color = Color.White)
+                                }
                             }
                         }
                     }

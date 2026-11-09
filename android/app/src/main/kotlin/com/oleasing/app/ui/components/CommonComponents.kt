@@ -1,5 +1,6 @@
 package com.oleasing.app.ui.components
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -35,15 +36,16 @@ fun StatusBadge(estatus: String, modifier: Modifier = Modifier) {
 
     Box(
         modifier = modifier
-            .background(bgColor, shape = RoundedCornerShape(6.dp))
-            .padding(horizontal = 8.dp, vertical = 3.dp),
+            .background(bgColor, shape = RoundedCornerShape(8.dp))
+            .padding(horizontal = 10.dp, vertical = 4.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(
             text = estatus.uppercase(),
             color = textColor,
             fontSize = 11.sp,
-            fontWeight = FontWeight.Bold
+            fontWeight = FontWeight.ExtraBold,
+            letterSpacing = 0.4.sp
         )
     }
 }
@@ -58,35 +60,45 @@ fun StatCard(
 ) {
     Card(
         modifier = modifier,
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        border = BorderStroke(1.dp, AppCardBorder)
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(14.dp)
-        ) {
-            Text(
-                text = title,
-                color = MaterialTheme.colorScheme.outline,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Medium
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(4.dp)
+                    .background(colorAccent)
             )
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = value,
-                color = colorAccent,
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold
-            )
-            if (subtitle != null) {
-                Spacer(modifier = Modifier.height(2.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp)
+            ) {
                 Text(
-                    text = subtitle,
+                    text = title.uppercase(),
                     color = MaterialTheme.colorScheme.outline,
-                    fontSize = 11.sp
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.5.sp
                 )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = value,
+                    color = colorAccent,
+                    fontSize = 19.sp,
+                    fontWeight = FontWeight.ExtraBold
+                )
+                if (subtitle != null) {
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = subtitle,
+                        color = MaterialTheme.colorScheme.outline,
+                        fontSize = 11.sp
+                    )
+                }
             }
         }
     }
