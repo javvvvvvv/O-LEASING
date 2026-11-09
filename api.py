@@ -33,7 +33,7 @@ if _BASE_DIR not in sys.path:
 from finanzas import calc_tasa, vp_res, calc_amort, calc_rent_amort, calc_res_amort
 from models.auth import (
     get_auth_db_path, init_auth_db, verificar_login,
-    crear_sesion, validar_sesion, cerrar_sesion,
+    crear_sesion, validar_sesion, cerrar_sesion, resetear_password,
 )
 
 _DOCS_ON = os.environ.get("OLEASING_API_DOCS", "0") == "1"
@@ -191,6 +191,11 @@ class LoginResponse(BaseModel):
     usuario: UsuarioResponse
 
 
+class CambiarPasswordRequest(BaseModel):
+    password_actual: str = Field(..., min_length=1, max_length=120)
+    password_nueva: str = Field(..., min_length=6, max_length=120)
+
+
 class ContratoResumen(BaseModel):
     id_contrato: str
     cliente: str
@@ -205,6 +210,7 @@ class ContratoResumen(BaseModel):
     residual_monto: float
     tasa_mensual_pct: float
     tasa_anual_pct: float
+    nivel_morosidad: int = 0
 
 
 class ContratoDetalle(BaseModel):
@@ -231,6 +237,7 @@ class ContratoDetalle(BaseModel):
     anotaciones: Optional[str] = ""
     saldo_actual_estimado: float
     intereses_totales_estimados: float
+    nivel_morosidad: int = 0
 
 
 class PeriodoAmortizacion(BaseModel):
@@ -413,6 +420,21 @@ def logout_movil(user: dict = Depends(usuario_actual)):
     return {"ok": True}
 
 
+@app.post("/api/auth/cambiar_password")
+def cambiar_password_movil(req: CambiarPasswordRequest, user: dict = Depends(usuario_actual)):
+    """Permite al usuario autenticado actualizar su contraseña corporativa validando la actual."""
+    ok, msg = resetear_password(
+        AUTH_DB,
+        user["id"],
+        req.password_nueva,
+        password_actual=req.password_actual,
+        require_actual=True
+    )
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"ok": True, "message": msg}
+
+
 @app.get("/api/health")
 def health_check():
     """Verifica estado del servicio (sin exponer datos sensibles)."""
@@ -426,15 +448,23 @@ def health_check():
 
 @app.get("/api/dashboard")
 def get_dashboard_metrics(user: dict = Depends(usuario_actual)):
-    """Retorna las métricas clave del portafolio para la pantalla de inicio móvil."""
+    """Retorna las métricas clave del portafolio y alertas de vencimiento para la pantalla de inicio móvil."""
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    cursor.execute("SELECT COUNT(*), SUM(Valor_Sin_IVA - Anticipo_Monto), SUM(Mensualidad_Sin_IVA) FROM contratos WHERE Estatus = 'ACTIVO'")
+    cursor.execute("""
+        SELECT COUNT(*),
+               SUM(Valor_Sin_IVA - Anticipo_Monto),
+               SUM(Mensualidad_Sin_IVA),
+               SUM(Residual_Monto)
+        FROM contratos
+        WHERE Estatus = 'ACTIVO'
+    """)
     row_act = cursor.fetchone()
     n_activos = row_act[0] or 0
     cartera_activa_monto = row_act[1] or 0.0
     renta_mensual_total = row_act[2] or 0.0
+    residual_total_activo = row_act[3] or 0.0
 
     cursor.execute("SELECT COUNT(*) FROM contratos WHERE Estatus = 'CONCLUIDO'")
     n_concluidos = cursor.fetchone()[0] or 0
@@ -444,6 +474,43 @@ def get_dashboard_metrics(user: dict = Depends(usuario_actual)):
 
     cursor.execute("SELECT COUNT(*) FROM contratos")
     total_historico = cursor.fetchone()[0] or 0
+
+    cursor.execute("SELECT COUNT(*) FROM contratos WHERE Estatus = 'ACTIVO' AND COALESCE(Nivel_Morosidad, 0) > 0")
+    contratos_en_mora = cursor.fetchone()[0] or 0
+
+    hoy = datetime.date.today()
+    limite_90d = (hoy + datetime.timedelta(days=90)).isoformat()
+    hoy_str = hoy.isoformat()
+
+    cursor.execute("""
+        SELECT ID_Contrato, Cliente, Vehiculo, Fecha_Vencimiento, Residual_Monto, Mensualidad_Sin_IVA
+        FROM contratos
+        WHERE Estatus = 'ACTIVO'
+          AND Fecha_Vencimiento IS NOT NULL
+          AND substr(Fecha_Vencimiento, 1, 10) >= ?
+          AND substr(Fecha_Vencimiento, 1, 10) <= ?
+        ORDER BY substr(Fecha_Vencimiento, 1, 10) ASC
+    """, (hoy_str, limite_90d))
+    rows_venc = cursor.fetchall()
+    contratos_por_vencer_90d = len(rows_venc)
+
+    vencimientos_proximos = []
+    for rv in rows_venc[:6]:
+        fv_s = str(rv["Fecha_Vencimiento"] or "")[:10]
+        try:
+            fv_d = datetime.date.fromisoformat(fv_s)
+            dias_rest = (fv_d - hoy).days
+        except Exception:
+            dias_rest = 0
+        vencimientos_proximos.append({
+            "id_contrato": rv["ID_Contrato"],
+            "cliente": rv["Cliente"],
+            "vehiculo": rv["Vehiculo"] or "",
+            "fecha_vencimiento": fv_s,
+            "dias_restantes": max(dias_rest, 0),
+            "residual_monto": round(float(rv["Residual_Monto"] or 0.0), 2),
+            "mensualidad_sin_iva": round(float(rv["Mensualidad_Sin_IVA"] or 0.0), 2),
+        })
 
     conn.close()
 
@@ -458,14 +525,18 @@ def get_dashboard_metrics(user: dict = Depends(usuario_actual)):
         "cartera_activa_monto": round(cartera_activa_monto, 2),
         "flujo_mensual_estimado": round(renta_mensual_total, 2),
         "flujo_mensual_rentas": round(renta_mensual_total, 2),
-        "fecha_corte": datetime.date.today().isoformat()
+        "residual_total_activo": round(residual_total_activo, 2),
+        "contratos_por_vencer_90d": contratos_por_vencer_90d,
+        "contratos_en_mora": contratos_en_mora,
+        "vencimientos_proximos": vencimientos_proximos,
+        "fecha_corte": hoy_str
     }
 
 
 @app.get("/api/contratos", response_model=List[ContratoResumen])
 def listar_contratos(
     q: Optional[str] = Query(None, description="Texto de búsqueda por ID, Cliente o Vehículo"),
-    estatus: Optional[str] = Query("ACTIVO", description="Filtro por estatus: ACTIVO, CONCLUIDO, BAJA o TODOS"),
+    estatus: Optional[str] = Query("ACTIVO", description="Filtro por estatus: ACTIVO, CONCLUIDO, BAJA, MORA o TODOS"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     user: dict = Depends(usuario_actual)
@@ -477,15 +548,19 @@ def listar_contratos(
     sql = """
         SELECT ID_Contrato, Cliente, Vehiculo, Fecha_Alta, Fecha_Vencimiento,
                Estatus, Plazo, Valor_Sin_IVA, Anticipo_Monto, Mensualidad_Sin_IVA,
-               Residual_Monto, Tasa_Calculada
+               Residual_Monto, Tasa_Calculada, COALESCE(Nivel_Morosidad, 0) AS Nivel_Morosidad
         FROM contratos
         WHERE 1=1
     """
     params = []
 
-    if estatus and estatus.upper() != "TODOS":
-        sql += " AND Estatus = ?"
-        params.append(estatus.upper())
+    if estatus:
+        est_up = estatus.upper()
+        if est_up == "MORA":
+            sql += " AND COALESCE(Nivel_Morosidad, 0) > 0"
+        elif est_up != "TODOS":
+            sql += " AND Estatus = ?"
+            params.append(est_up)
 
     if q:
         sql += " AND (ID_Contrato LIKE ? OR Cliente LIKE ? OR Vehiculo LIKE ?)"
@@ -516,6 +591,7 @@ def listar_contratos(
             residual_monto=round(float(r['Residual_Monto'] or 0.0), 2),
             tasa_mensual_pct=round(tasa_m * 100, 2),
             tasa_anual_pct=round(tasa_m * 12 * 100, 2),
+            nivel_morosidad=int(r['Nivel_Morosidad'] or 0),
         ))
 
     return resultado
@@ -531,7 +607,8 @@ def obtener_detalle_contrato(id_contrato: str, user: dict = Depends(usuario_actu
         SELECT ID_Contrato, Cliente, Vehiculo, Fecha_Alta, Fecha_Vencimiento, Fecha_Baja,
                Estatus, Plazo, Valor_Sin_IVA, Anticipo_Pct, Anticipo_Monto,
                Mensualidad_Sin_IVA, Residual_Pct, Residual_Monto, VP_Residual,
-               Comision_Apertura_Pct, Comision_Monto, Tasa_Calculada, Anotaciones
+               Comision_Apertura_Pct, Comision_Monto, Tasa_Calculada, Anotaciones,
+               COALESCE(Nivel_Morosidad, 0) AS Nivel_Morosidad
         FROM contratos
         WHERE ID_Contrato = ?
     """, (id_contrato,))
@@ -597,7 +674,8 @@ def obtener_detalle_contrato(id_contrato: str, user: dict = Depends(usuario_actu
         tasa_anual_pct=round(tasa * 12 * 100, 2),
         anotaciones=row['Anotaciones'] or "",
         saldo_actual_estimado=round(saldo_actual, 2),
-        intereses_totales_estimados=round(intereses_totales, 2)
+        intereses_totales_estimados=round(intereses_totales, 2),
+        nivel_morosidad=int(row['Nivel_Morosidad'] or 0)
     )
 
 

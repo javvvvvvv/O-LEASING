@@ -14,6 +14,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -25,6 +26,7 @@ import com.oleasing.app.network.OLeasingApiClient
 import com.oleasing.app.ui.components.InfoRow
 import com.oleasing.app.ui.components.formatCurrency
 import com.oleasing.app.ui.components.formatPercent
+import com.oleasing.app.ui.components.shareExecutiveText
 import com.oleasing.app.ui.theme.OrangePrimary
 import com.oleasing.app.ui.theme.SlateSecondary
 import kotlinx.coroutines.launch
@@ -35,6 +37,7 @@ fun CotizadorScreen(
     onBack: () -> Unit,
     onNavigateToNewContrato: (CotizacionDraft) -> Unit
 ) {
+    val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     var valorSinIva by remember { mutableStateOf("450000") }
     var plazo by remember { mutableStateOf("36") }
@@ -339,7 +342,28 @@ fun CotizadorScreen(
                             InfoRow(label = "Costo Total del Arrendamiento", value = formatCurrency(res.costoTotalLeasing), isBold = true)
 
                             Spacer(modifier = Modifier.height(12.dp))
+                            OutlinedButton(
+                                onClick = {
+                                    val txt = buildString {
+                                        appendLine("O-LEASING · PROPUESTA FINANCIERA DE ARRENDAMIENTO")
+                                        appendLine("Valor del Activo s/IVA: ${formatCurrency(res.valorSinIva)}")
+                                        appendLine("Anticipo s/IVA: ${formatCurrency(res.anticipoMonto)}")
+                                        appendLine("Inversión Neta Financiada: ${formatCurrency(res.inversionNeta)}")
+                                        appendLine("Plazo: ${res.plazo} meses")
+                                        appendLine("Renta Mensual s/IVA: ${formatCurrency(res.mensualidadSinIva)}")
+                                        appendLine("Renta Mensual c/IVA (16%): ${formatCurrency(rentaConIva)}")
+                                        appendLine("Valor Residual Pactado: ${formatCurrency(res.residualMonto)}")
+                                        if (res.comisionMonto > 0) appendLine("Comisión por Apertura: ${formatCurrency(res.comisionMonto)}")
+                                    }
+                                    shareExecutiveText(context, "Cotización O-Leasing", txt)
+                                },
+                                modifier = Modifier.fillMaxWidth().height(46.dp),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("Compartir Cotización con Cliente", fontWeight = FontWeight.Bold, color = OrangePrimary)
+                            }
                             if (OLeasingApiClient.currentUser?.puedeEditar != false) {
+                                Spacer(modifier = Modifier.height(8.dp))
                                 Button(
                                     onClick = {
                                         onNavigateToNewContrato(

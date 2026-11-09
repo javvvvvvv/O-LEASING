@@ -15,13 +15,16 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.oleasing.app.model.CobranzaMesResponse
 import com.oleasing.app.network.OLeasingApiClient
 import com.oleasing.app.ui.components.formatCurrency
+import com.oleasing.app.ui.components.shareExecutiveText
 import com.oleasing.app.ui.theme.OrangePrimary
 import com.oleasing.app.ui.theme.SlateSecondary
 import kotlinx.coroutines.launch
@@ -33,6 +36,7 @@ fun CobranzaMesScreen(
     onBack: () -> Unit,
     onNavigateToEstadoCuenta: (String) -> Unit
 ) {
+    val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val cal = remember { Calendar.getInstance() }
     var anioSel by remember { mutableStateOf(cal.get(Calendar.YEAR)) }
@@ -224,12 +228,54 @@ fun CobranzaMesScreen(
                                 ) {
                                     Column {
                                         Text("Capital del Mes", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
-                                        Text(formatCurrency(data.capitalTotalMes), fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                        Text(formatCurrency(data.capitalTotalMes), fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color(0xFF16A34A))
                                     }
                                     Column(horizontalAlignment = Alignment.End) {
                                         Text("Interés Leasing del Mes", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
                                         Text(formatCurrency(data.interesTotalMes), fontWeight = FontWeight.Bold, fontSize = 13.sp, color = SlateSecondary)
                                     }
+                                }
+                                val totDev = (data.capitalTotalMes + data.interesTotalMes).coerceAtLeast(1.0).toFloat()
+                                val wCap = (data.capitalTotalMes.toFloat() / totDev).coerceIn(0.05f, 0.95f)
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(8.dp)
+                                        .clip(RoundedCornerShape(4.dp))
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(wCap)
+                                            .fillMaxHeight()
+                                            .background(Color(0xFF16A34A))
+                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .weight((1f - wCap).coerceAtLeast(0.05f))
+                                            .fillMaxHeight()
+                                            .background(OrangePrimary)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                OutlinedButton(
+                                    onClick = {
+                                        val txt = buildString {
+                                            appendLine("O-LEASING · CORTE DE COBRANZA ${data.periodo}")
+                                            appendLine("Contratos en Cobro: ${data.contratosEnCobro}")
+                                            appendLine("Renta Total s/IVA: ${formatCurrency(data.rentaTotalSinIva)}")
+                                            appendLine("IVA (16%): ${formatCurrency(data.ivaTotal)}")
+                                            appendLine("Total Cobranza c/IVA: ${formatCurrency(data.totalCobranzaConIva)}")
+                                            appendLine("Capital Devengado: ${formatCurrency(data.capitalTotalMes)}")
+                                            appendLine("Interés Leasing Devengado: ${formatCurrency(data.interesTotalMes)}")
+                                        }
+                                        shareExecutiveText(context, "Cobranza ${data.periodo}", txt)
+                                    },
+                                    modifier = Modifier.fillMaxWidth().height(38.dp),
+                                    shape = RoundedCornerShape(8.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
+                                ) {
+                                    Text("Compartir Resumen de Cobranza del Mes", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = OrangePrimary)
                                 }
                             }
                         }

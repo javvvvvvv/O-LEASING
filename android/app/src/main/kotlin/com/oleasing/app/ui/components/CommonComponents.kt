@@ -1,5 +1,7 @@
 package com.oleasing.app.ui.components
 
+import android.content.Context
+import android.content.Intent
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -23,6 +25,40 @@ fun formatCurrency(amount: Double): String {
 
 fun formatPercent(pct: Double): String {
     return String.format(Locale.US, "%.2f%%", pct)
+}
+
+fun shareExecutiveText(context: Context, subject: String, body: String) {
+    val sendIntent = Intent().apply {
+        action = Intent.ACTION_SEND
+        putExtra(Intent.EXTRA_SUBJECT, subject)
+        putExtra(Intent.EXTRA_TEXT, body)
+        type = "text/plain"
+    }
+    val shareIntent = Intent.createChooser(sendIntent, subject)
+    context.startActivity(shareIntent)
+}
+
+@Composable
+fun MorosidadBadge(nivel: Int, modifier: Modifier = Modifier) {
+    if (nivel <= 0) return
+    val (bg, fg) = when (nivel) {
+        1 -> Pair(Color(0xFFFEF3C7), Color(0xFFB45309))
+        2 -> Pair(Color(0xFFFFEDD5), Color(0xFFC2410C))
+        else -> Pair(Color(0xFFFEE2E2), Color(0xFFB91C1C))
+    }
+    Box(
+        modifier = modifier
+            .background(bg, shape = RoundedCornerShape(6.dp))
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = "MORA N$nivel",
+            color = fg,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.ExtraBold
+        )
+    }
 }
 
 @Composable

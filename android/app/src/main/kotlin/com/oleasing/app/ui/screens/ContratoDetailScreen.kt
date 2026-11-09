@@ -22,9 +22,11 @@ import com.oleasing.app.model.AnotacionItem
 import com.oleasing.app.model.ContratoDetalle
 import com.oleasing.app.network.OLeasingApiClient
 import com.oleasing.app.ui.components.InfoRow
+import com.oleasing.app.ui.components.MorosidadBadge
 import com.oleasing.app.ui.components.StatusBadge
 import com.oleasing.app.ui.components.formatCurrency
 import com.oleasing.app.ui.components.formatPercent
+import com.oleasing.app.ui.components.shareExecutiveText
 import com.oleasing.app.ui.theme.OrangePrimary
 import com.oleasing.app.ui.theme.SlateSecondary
 import kotlinx.coroutines.launch
@@ -146,7 +148,10 @@ fun ContratoDetailScreen(
                                     fontWeight = FontWeight.Black,
                                     color = OrangePrimary
                                 )
-                                StatusBadge(estatus = c.estatus)
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    MorosidadBadge(nivel = c.nivelMorosidad)
+                                    StatusBadge(estatus = c.estatus)
+                                }
                             }
                             Spacer(modifier = Modifier.height(6.dp))
                             Text(
@@ -291,7 +296,7 @@ fun ContratoDetailScreen(
                                             onClick = {
                                                 if (!isCurrent) {
                                                     coroutineScope.launch {
-                                                        val upd = OLeasingApiClient.actualizarEstatusContrato(c.idContrato, est)
+                                                        val upd = OLeasingApiClient.actualizarEstatusContrato(c.idContrato, est, c.nivelMorosidad)
                                                         if (upd.isSuccess) {
                                                             contrato = upd.getOrNull()
                                                         }
@@ -306,22 +311,77 @@ fun ContratoDetailScreen(
                                         )
                                     }
                                 }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text("Nivel de Seguimiento / Morosidad:", fontSize = 12.sp, color = MaterialTheme.colorScheme.outline)
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    listOf(0 to "Normal", 1 to "N1", 2 to "N2", 3 to "N3", 4 to "N4").forEach { (niv, lbl) ->
+                                        val sel = c.nivelMorosidad == niv
+                                        FilterChip(
+                                            selected = sel,
+                                            onClick = {
+                                                if (!sel) {
+                                                    coroutineScope.launch {
+                                                        val upd = OLeasingApiClient.actualizarEstatusContrato(c.idContrato, c.estatus, niv)
+                                                        if (upd.isSuccess) {
+                                                            contrato = upd.getOrNull()
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                            label = { Text(lbl, fontSize = 11.sp, fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal) },
+                                            colors = FilterChipDefaults.filterChipColors(
+                                                selectedContainerColor = if (niv == 0) SlateSecondary else Color(0xFFDC2626),
+                                                selectedLabelColor = Color.White
+                                            )
+                                        )
+                                    }
+                                }
                                 Spacer(modifier = Modifier.height(6.dp))
                             }
-                            OutlinedButton(
-                                onClick = {
-                                    coroutineScope.launch {
-                                        val linkRes = OLeasingApiClient.requestPdfSignedUrl(c.idContrato)
-                                        if (linkRes.isSuccess) {
-                                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(linkRes.getOrNull()!!))
-                                            context.startActivity(intent)
-                                        }
-                                    }
-                                },
+                            Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(10.dp)
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Text("Descargar / Compartir Estado de Cuenta en PDF", fontWeight = FontWeight.Bold, color = OrangePrimary)
+                                OutlinedButton(
+                                    onClick = {
+                                        val resumen = buildString {
+                                            appendLine("O-LEASING · FICHA DE CONTRATO ${c.idContrato}")
+                                            appendLine("Cliente: ${c.cliente}")
+                                            if (c.vehiculo.isNotBlank()) appendLine("Activo: ${c.vehiculo}")
+                                            appendLine("Estatus: ${c.estatus}")
+                                            appendLine("Valor s/IVA: ${formatCurrency(c.valorSinIva)}")
+                                            appendLine("Inversión Neta: ${formatCurrency(c.inversionNeta)}")
+                                            appendLine("Renta Mensual s/IVA: ${formatCurrency(c.mensualidadSinIva)}")
+                                            appendLine("Plazo: ${c.plazo} meses (${c.fechaAlta} a ${c.fechaVencimiento})")
+                                            appendLine("Residual Pactado: ${formatCurrency(c.residualMonto)}")
+                                            appendLine("Saldo Insoluto Est.: ${formatCurrency(c.saldoActualEstimado)}")
+                                        }
+                                        shareExecutiveText(context, "Ficha Contrato ${c.idContrato}", resumen)
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Text("Compartir Resumen", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = SlateSecondary)
+                                }
+                                Button(
+                                    onClick = {
+                                        coroutineScope.launch {
+                                            val linkRes = OLeasingApiClient.requestPdfSignedUrl(c.idContrato)
+                                            if (linkRes.isSuccess) {
+                                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(linkRes.getOrNull()!!))
+                                                context.startActivity(intent)
+                                            }
+                                        }
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(10.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = OrangePrimary)
+                                ) {
+                                    Text("Abrir PDF Oficial", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color.White)
+                                }
                             }
                         }
                     }

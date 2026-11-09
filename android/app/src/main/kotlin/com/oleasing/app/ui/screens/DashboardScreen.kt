@@ -11,6 +11,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -18,18 +19,21 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.oleasing.app.R
 import com.oleasing.app.model.ContratoResumen
 import com.oleasing.app.model.DashboardMetrics
 import com.oleasing.app.network.OLeasingApiClient
+import com.oleasing.app.ui.components.MorosidadBadge
 import com.oleasing.app.ui.components.StatCard
 import com.oleasing.app.ui.components.StatusBadge
 import com.oleasing.app.ui.components.formatCurrency
@@ -59,10 +63,19 @@ fun DashboardScreen(
     var recentContratos by remember { mutableStateOf<List<ContratoResumen>>(emptyList()) }
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+
     var showServerDialog by remember { mutableStateOf(false) }
     var serverHostInput by remember { mutableStateOf(OLeasingApiClient.baseUrl) }
+    var pingStatusMessage by remember { mutableStateOf<String?>(null) }
+
     var showQuickJumpDialog by remember { mutableStateOf(false) }
     var quickJumpId by remember { mutableStateOf("") }
+
+    var showPasswordDialog by remember { mutableStateOf(false) }
+    var currentPwInput by remember { mutableStateOf("") }
+    var newPwInput by remember { mutableStateOf("") }
+    var pwFeedback by remember { mutableStateOf<String?>(null) }
+    var pwSuccess by remember { mutableStateOf(false) }
 
     fun loadData() {
         coroutineScope.launch {
@@ -102,7 +115,21 @@ fun DashboardScreen(
                 },
                 actions = {
                     IconButton(onClick = {
+                        currentPwInput = ""
+                        newPwInput = ""
+                        pwFeedback = null
+                        pwSuccess = false
+                        showPasswordDialog = true
+                    }) {
+                        Icon(
+                            imageVector = Icons.Default.Lock,
+                            contentDescription = "Seguridad y Contraseña",
+                            tint = SlateSecondary
+                        )
+                    }
+                    IconButton(onClick = {
                         serverHostInput = OLeasingApiClient.baseUrl
+                        pingStatusMessage = null
                         showServerDialog = true
                     }) {
                         Icon(
@@ -214,7 +241,7 @@ fun DashboardScreen(
                                     Text(
                                         text = metrics?.let { formatCurrency(it.carteraActivaValor) } ?: "$0.00",
                                         color = Color.White,
-                                        fontSize = 24.sp,
+                                        fontSize = 23.sp,
                                         fontWeight = FontWeight.ExtraBold
                                     )
                                 }
@@ -228,6 +255,29 @@ fun DashboardScreen(
                                         text = metrics?.let { formatCurrency(it.flujoMensualEstimado) } ?: "$0.00",
                                         color = Color(0xFFFFB380),
                                         fontSize = 16.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+
+                            if ((metrics?.residualTotalActivo ?: 0.0) > 0.0) {
+                                HorizontalDivider(
+                                    modifier = Modifier.padding(vertical = 10.dp),
+                                    color = Color(0xFF334155)
+                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = "Valor Residual Pactado en Activos:",
+                                        color = Color(0xFF94A3B8),
+                                        fontSize = 11.sp
+                                    )
+                                    Text(
+                                        text = formatCurrency(metrics?.residualTotalActivo ?: 0.0),
+                                        color = Color.White,
+                                        fontSize = 12.sp,
                                         fontWeight = FontWeight.Bold
                                     )
                                 }
@@ -281,6 +331,7 @@ fun DashboardScreen(
                 }
             }
 
+            // KPIs y barra de composición de cartera
             item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -289,17 +340,80 @@ fun DashboardScreen(
                     StatCard(
                         title = "Contratos Activos",
                         value = metrics?.contratosActivos?.toString() ?: "0",
-                        subtitle = "Concluidos: ${metrics?.contratosConcluidos ?: 0}",
+                        subtitle = "Por vencer (90d): ${metrics?.contratosPorVencer90d ?: 0}",
                         colorAccent = Color(0xFF16A34A),
                         modifier = Modifier.weight(1f)
                     )
                     StatCard(
                         title = "Total Histórico",
                         value = metrics?.totalContratos?.toString() ?: "0",
-                        subtitle = "Bajas: ${metrics?.contratosBaja ?: 0}",
+                        subtitle = "Bajas: ${metrics?.contratosBaja ?: 0} · Mora: ${metrics?.contratosEnMora ?: 0}",
                         colorAccent = SlateSecondary,
                         modifier = Modifier.weight(1f)
                     )
+                }
+            }
+
+            // Barra visual de composición de cartera
+            metrics?.let { m ->
+                val tot = (m.totalContratos).coerceAtLeast(1).toFloat()
+                val wAct = (m.contratosActivos / tot).coerceIn(0.05f, 1f)
+                val wBaja = (m.contratosBaja / tot).coerceIn(0.05f, 1f)
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        border = BorderStroke(1.dp, AppCardBorder)
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "Distribución del Portafolio",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = SlateSecondary
+                                )
+                                Text(
+                                    text = "${((m.contratosActivos * 100) / m.totalContratos.coerceAtLeast(1))}% Vigente",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = Color(0xFF16A34A)
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(10.dp)
+                                    .clip(RoundedCornerShape(5.dp))
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .weight(wAct)
+                                        .fillMaxHeight()
+                                        .background(Color(0xFF16A34A))
+                                )
+                                if (m.contratosConcluidos > 0) {
+                                    Box(
+                                        modifier = Modifier
+                                            .weight((m.contratosConcluidos / tot).coerceAtLeast(0.03f))
+                                            .fillMaxHeight()
+                                            .background(Color(0xFF2563EB))
+                                    )
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .weight(wBaja)
+                                        .fillMaxHeight()
+                                        .background(Color(0xFF94A3B8))
+                                )
+                            }
+                        }
+                    }
                 }
             }
 
@@ -358,6 +472,78 @@ fun DashboardScreen(
                         color = OrangePrimary,
                         fontSize = 13.sp
                     )
+                }
+            }
+
+            // Alertas de Vencimientos Próximos (90 días)
+            val vencimientos = metrics?.vencimientosProximos ?: emptyList()
+            if (vencimientos.isNotEmpty()) {
+                item {
+                    Text(
+                        text = "Alertas de Vencimiento Próximo (90 días)",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
+                }
+                items(vencimientos.take(3)) { v ->
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onNavigateToEstadoCuenta(v.idContrato) },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFFBEB)),
+                        border = BorderStroke(1.dp, Color(0xFFFDE68A))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = v.idContrato,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        fontSize = 13.sp,
+                                        color = Color(0xFFB45309)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "Vence: ${v.fechaVencimiento}",
+                                        fontSize = 11.sp,
+                                        color = Color(0xFF92400E)
+                                    )
+                                }
+                                Text(
+                                    text = v.cliente,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    color = SlateDark
+                                )
+                                Text(
+                                    text = "Residual: ${formatCurrency(v.residualMonto)}",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = SlateSecondary
+                                )
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .background(Color(0xFFFEF3C7), RoundedCornerShape(8.dp))
+                                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                            ) {
+                                Text(
+                                    text = "${v.diasRestantes} días",
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 11.sp,
+                                    color = Color(0xFFB45309)
+                                )
+                            }
+                        }
+                    }
                 }
             }
 
@@ -429,7 +615,10 @@ fun DashboardScreen(
                                     fontSize = 14.sp,
                                     color = OrangePrimary
                                 )
-                                StatusBadge(estatus = c.estatus)
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    MorosidadBadge(nivel = c.nivelMorosidad)
+                                    StatusBadge(estatus = c.estatus)
+                                }
                             }
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
@@ -497,6 +686,32 @@ fun DashboardScreen(
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = {
+                            coroutineScope.launch {
+                                OLeasingApiClient.updateBaseUrl(context, serverHostInput)
+                                val res = OLeasingApiClient.checkHealth()
+                                pingStatusMessage = if (res.isSuccess) {
+                                    "Conexión exitosa con el servidor (${OLeasingApiClient.baseUrl})"
+                                } else {
+                                    "Sin respuesta: ${res.exceptionOrNull()?.message}"
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Probar Conexión Ahora", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                    if (pingStatusMessage != null) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = pingStatusMessage ?: "",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (pingStatusMessage?.startsWith("Conexión exitosa") == true) Color(0xFF16A34A) else Color(0xFFDC2626)
+                        )
+                    }
                 }
             },
             confirmButton = {
@@ -514,6 +729,73 @@ fun DashboardScreen(
             dismissButton = {
                 TextButton(onClick = { showServerDialog = false }) {
                     Text("Cancelar")
+                }
+            }
+        )
+    }
+
+    if (showPasswordDialog) {
+        AlertDialog(
+            onDismissRequest = { showPasswordDialog = false },
+            title = { Text("Seguridad de la Cuenta", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Usuario: ${currentUser?.username ?: ""} (${currentUser?.rol?.uppercase() ?: ""})",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = SlateSecondary
+                    )
+                    OutlinedTextField(
+                        value = currentPwInput,
+                        onValueChange = { currentPwInput = it },
+                        label = { Text("Contraseña Actual") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = newPwInput,
+                        onValueChange = { newPwInput = it },
+                        label = { Text("Nueva Contraseña (mín. 6 caracteres)") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (pwFeedback != null) {
+                        Text(
+                            text = pwFeedback ?: "",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (pwSuccess) Color(0xFF16A34A) else Color(0xFFDC2626)
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        coroutineScope.launch {
+                            val res = OLeasingApiClient.cambiarPassword(currentPwInput, newPwInput)
+                            if (res.isSuccess) {
+                                pwSuccess = true
+                                pwFeedback = res.getOrNull() ?: "Contraseña actualizada."
+                                currentPwInput = ""
+                                newPwInput = ""
+                            } else {
+                                pwSuccess = false
+                                pwFeedback = res.exceptionOrNull()?.message ?: "Error al cambiar contraseña"
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = OrangePrimary)
+                ) {
+                    Text("Actualizar Contraseña")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPasswordDialog = false }) {
+                    Text("Cerrar")
                 }
             }
         )

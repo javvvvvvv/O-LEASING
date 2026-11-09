@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.oleasing.app.model.ContratoResumen
 import com.oleasing.app.network.OLeasingApiClient
+import com.oleasing.app.ui.components.MorosidadBadge
 import com.oleasing.app.ui.components.StatusBadge
 import com.oleasing.app.ui.components.formatCurrency
 import com.oleasing.app.ui.components.formatPercent
@@ -49,7 +50,7 @@ fun ContratosListScreen(
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var searchJob by remember { mutableStateOf<Job?>(null) }
 
-    val statusOptions = listOf("Todos", "Activo", "Concluido", "Baja")
+    val statusOptions = listOf("Todos", "Activo", "Concluido", "Baja", "Mora")
 
     fun fetchContratos(query: String = searchQuery, estatus: String = selectedEstatus) {
         searchJob?.cancel()
@@ -220,7 +221,10 @@ fun ContratosListScreen(
                                         fontSize = 15.sp,
                                         color = OrangePrimary
                                     )
-                                    StatusBadge(estatus = c.estatus)
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        MorosidadBadge(nivel = c.nivelMorosidad)
+                                        StatusBadge(estatus = c.estatus)
+                                    }
                                 }
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(

@@ -26,6 +26,7 @@ import com.oleasing.app.ui.components.InfoRow
 import com.oleasing.app.ui.components.StatusBadge
 import com.oleasing.app.ui.components.formatCurrency
 import com.oleasing.app.ui.components.formatPercent
+import com.oleasing.app.ui.components.shareExecutiveText
 import com.oleasing.app.ui.theme.OrangePrimary
 import com.oleasing.app.ui.theme.SlateSecondary
 import com.oleasing.app.ui.theme.StatusActivo
@@ -271,6 +272,29 @@ fun EstadoCuentaScreen(
                                 ) {
                                     Text("Descargar PDF", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                 }
+                            }
+                            Spacer(modifier = Modifier.height(6.dp))
+                            OutlinedButton(
+                                onClick = {
+                                    val rentaConIva = ec.mensualidadSinIva * 1.16
+                                    val txt = buildString {
+                                        appendLine("O-LEASING · ESTADO DE CUENTA ${ec.idContrato}")
+                                        appendLine("Cliente: ${ec.cliente}")
+                                        if (ec.vehiculo.isNotBlank()) appendLine("Unidad: ${ec.vehiculo}")
+                                        appendLine("Avance: Mes ${ec.mesesTranscurridos} de ${ec.plazo} (${ec.porcentajeAvance}%)")
+                                        appendLine("Pagos Restantes: ${ec.pagosRestantes}")
+                                        appendLine("Renta Mensual s/IVA: ${formatCurrency(ec.mensualidadSinIva)}")
+                                        appendLine("Renta Mensual c/IVA (16%): ${formatCurrency(rentaConIva)}")
+                                        appendLine("Capital Amortizado: ${formatCurrency(ec.capitalAmortizado)}")
+                                        appendLine("Saldo Insoluto Actual: ${formatCurrency(ec.saldoActualEstimado)}")
+                                        appendLine("Residual al Vencimiento (${ec.fechaVencimiento}): ${formatCurrency(ec.residualMonto)}")
+                                    }
+                                    shareExecutiveText(context, "Estado de Cuenta ${ec.idContrato}", txt)
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("Compartir Estado de Cuenta (WhatsApp / Correo)", color = OrangePrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                             }
                         }
                     }

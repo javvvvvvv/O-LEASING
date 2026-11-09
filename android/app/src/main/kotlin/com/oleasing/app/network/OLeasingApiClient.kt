@@ -203,6 +203,17 @@ object OLeasingApiClient {
         clearSession(context)
     }
 
+    suspend fun cambiarPassword(passwordActual: String, passwordNueva: String): Result<String> {
+        val payload = JSONObject().apply {
+            put("password_actual", passwordActual)
+            put("password_nueva", passwordNueva)
+        }
+        return makeRequest("/api/auth/cambiar_password", method = "POST", bodyJson = payload.toString()) { jsonStr ->
+            val obj = JSONObject(jsonStr)
+            obj.optString("message", "Contraseña actualizada correctamente.")
+        }
+    }
+
     suspend fun checkHealth(): Result<String> {
         return makeRequest("/api/health") { jsonStr ->
             val obj = JSONObject(jsonStr)
@@ -213,6 +224,22 @@ object OLeasingApiClient {
     suspend fun getDashboard(): Result<DashboardMetrics> {
         return makeRequest("/api/dashboard") { jsonStr ->
             val obj = JSONObject(jsonStr)
+            val vencArr = obj.optJSONArray("vencimientos_proximos") ?: JSONArray()
+            val vencList = mutableListOf<VencimientoProximoItem>()
+            for (i in 0 until vencArr.length()) {
+                val v = vencArr.getJSONObject(i)
+                vencList.add(
+                    VencimientoProximoItem(
+                        idContrato = v.optString("id_contrato"),
+                        cliente = v.optString("cliente"),
+                        vehiculo = v.optString("vehiculo", ""),
+                        fechaVencimiento = v.optString("fecha_vencimiento", ""),
+                        diasRestantes = v.optInt("dias_restantes", 0),
+                        residualMonto = v.optDouble("residual_monto", 0.0),
+                        mensualidadSinIva = v.optDouble("mensualidad_sin_iva", 0.0)
+                    )
+                )
+            }
             DashboardMetrics(
                 totalContratos = if (obj.has("total_contratos")) obj.optInt("total_contratos") else obj.optInt("total_historico"),
                 contratosActivos = obj.optInt("contratos_activos"),
@@ -220,7 +247,11 @@ object OLeasingApiClient {
                 contratosBaja = if (obj.has("contratos_baja")) obj.optInt("contratos_baja") else obj.optInt("contratos_bajas"),
                 carteraActivaValor = if (obj.has("cartera_activa_valor")) obj.optDouble("cartera_activa_valor") else obj.optDouble("cartera_activa_monto"),
                 flujoMensualEstimado = if (obj.has("flujo_mensual_estimado")) obj.optDouble("flujo_mensual_estimado") else obj.optDouble("flujo_mensual_rentas"),
-                fechaCorte = obj.optString("fecha_corte")
+                fechaCorte = obj.optString("fecha_corte"),
+                residualTotalActivo = obj.optDouble("residual_total_activo", 0.0),
+                contratosPorVencer90d = obj.optInt("contratos_por_vencer_90d", 0),
+                contratosEnMora = obj.optInt("contratos_en_mora", 0),
+                vencimientosProximos = vencList
             )
         }
     }
@@ -267,7 +298,8 @@ object OLeasingApiClient {
                         mensualidadSinIva = item.optDouble("mensualidad_sin_iva"),
                         residualMonto = item.optDouble("residual_monto"),
                         tasaMensualPct = item.optDouble("tasa_mensual_pct"),
-                        tasaAnualPct = item.optDouble("tasa_anual_pct")
+                        tasaAnualPct = item.optDouble("tasa_anual_pct"),
+                        nivelMorosidad = item.optInt("nivel_morosidad", 0)
                     )
                 )
             }
@@ -307,7 +339,8 @@ object OLeasingApiClient {
                 tasaAnualPct = item.optDouble("tasa_anual_pct"),
                 anotaciones = item.optString("anotaciones", ""),
                 saldoActualEstimado = item.optDouble("saldo_actual_estimado"),
-                interesesTotalesEstimados = item.optDouble("intereses_totales_estimados")
+                interesesTotalesEstimados = item.optDouble("intereses_totales_estimados"),
+                nivelMorosidad = item.optInt("nivel_morosidad", 0)
             )
         }
     }
@@ -465,7 +498,8 @@ object OLeasingApiClient {
                 tasaAnualPct = item.optDouble("tasa_anual_pct"),
                 anotaciones = item.optString("anotaciones", ""),
                 saldoActualEstimado = item.optDouble("saldo_actual_estimado"),
-                interesesTotalesEstimados = item.optDouble("intereses_totales_estimados")
+                interesesTotalesEstimados = item.optDouble("intereses_totales_estimados"),
+                nivelMorosidad = item.optInt("nivel_morosidad", 0)
             )
         }
     }

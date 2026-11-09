@@ -22,6 +22,16 @@ data class CotizacionDraft(
     val comisionPct: Double
 )
 
+data class VencimientoProximoItem(
+    val idContrato: String,
+    val cliente: String,
+    val vehiculo: String,
+    val fechaVencimiento: String,
+    val diasRestantes: Int,
+    val residualMonto: Double,
+    val mensualidadSinIva: Double
+)
+
 data class DashboardMetrics(
     val totalContratos: Int,
     val contratosActivos: Int,
@@ -29,7 +39,11 @@ data class DashboardMetrics(
     val contratosBaja: Int,
     val carteraActivaValor: Double,
     val flujoMensualEstimado: Double,
-    val fechaCorte: String
+    val fechaCorte: String,
+    val residualTotalActivo: Double = 0.0,
+    val contratosPorVencer90d: Int = 0,
+    val contratosEnMora: Int = 0,
+    val vencimientosProximos: List<VencimientoProximoItem> = emptyList()
 )
 
 data class ContratoResumen(
@@ -45,7 +59,8 @@ data class ContratoResumen(
     val mensualidadSinIva: Double,
     val residualMonto: Double,
     val tasaMensualPct: Double,
-    val tasaAnualPct: Double
+    val tasaAnualPct: Double,
+    val nivelMorosidad: Int = 0
 )
 
 data class ContratoListResponse(
@@ -78,7 +93,8 @@ data class ContratoDetalle(
     val tasaAnualPct: Double,
     val anotaciones: String,
     val saldoActualEstimado: Double,
-    val interesesTotalesEstimados: Double
+    val interesesTotalesEstimados: Double,
+    val nivelMorosidad: Int = 0
 )
 
 data class PeriodoAmortizacion(
